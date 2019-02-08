@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/source'
 
@@ -7,6 +8,10 @@ class TestGemSourceSpecificFile < Gem::TestCase
 
     @a, @a_gem = util_gem "a", '1'
     @sf = Gem::Source::SpecificFile.new(@a_gem)
+  end
+
+  def test_path
+    assert_equal @a_gem, @sf.path
   end
 
   def test_spec

@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/commands/environment_command'
 
@@ -22,12 +23,14 @@ class TestGemCommandsEnvironmentCommand < Gem::TestCase
     end
 
     assert_match %r|RUBYGEMS VERSION: (\d\.)+\d|, @ui.output
-    assert_match %r|RUBY VERSION: \d\.\d\.\d \(.*\) \[.*\]|, @ui.output
+    assert_match %r|RUBY VERSION: \d+\.\d+\.\d+ \(.*\) \[.*\]|, @ui.output
     assert_match %r|INSTALLATION DIRECTORY: #{Regexp.escape @gemhome}|,
                  @ui.output
     assert_match %r|RUBYGEMS PREFIX: |, @ui.output
-    assert_match %r|RUBY EXECUTABLE:.*#{Gem::ConfigMap[:ruby_install_name]}|,
+    assert_match %r|RUBY EXECUTABLE:.*#{RbConfig::CONFIG['ruby_install_name']}|,
                  @ui.output
+    assert_match %r|GIT EXECUTABLE: #{@cmd.send(:git_path)}|, @ui.output
+    assert_match %r|SYSTEM CONFIGURATION DIRECTORY:|, @ui.output
     assert_match %r|EXECUTABLE DIRECTORY:|, @ui.output
     assert_match %r|RUBYGEMS PLATFORMS:|, @ui.output
     assert_match %r|- #{Gem::Platform.local}|, @ui.output

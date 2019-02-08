@@ -1,9 +1,10 @@
 # coding: ASCII-8BIT
+# frozen_string_literal: false
 
 require 'test/unit'
 require "-test-/bignum"
 
-class TestBignum < Test::Unit::TestCase
+class Test_Bignum < Test::Unit::TestCase
   class TestPack < Test::Unit::TestCase
 
     MSWORD_FIRST = Integer::INTEGER_PACK_MSWORD_FIRST
@@ -210,6 +211,30 @@ class TestBignum < Test::Unit::TestCase
           assert_equal([+2, "\x00"*w],            (+n  ).test_pack(numwords, wordsize, 0, TWOCOMP|LITTLE_ENDIAN))
           assert_equal([+2, "\x01"+"\x00"*(w-1)], (+n+1).test_pack(numwords, wordsize, 0, TWOCOMP|LITTLE_ENDIAN))
         }
+      }
+
+      2.upto(16) {|wordsize|
+        w = wordsize
+        b = 8*wordsize-1
+        n = 2**b
+        assert_equal([-2, "\x7F"+"\xFF"*(w-2)+"\xFF"], (-n-1).test_pack(1, wordsize, 1, TWOCOMP|MSBYTE_FIRST))
+        assert_equal([-1, "\x00"+"\x00"*(w-2)+"\x00"], (-n  ).test_pack(1, wordsize, 1, TWOCOMP|MSBYTE_FIRST))
+        assert_equal([-1, "\x00"+"\x00"*(w-2)+"\x01"], (-n+1).test_pack(1, wordsize, 1, TWOCOMP|MSBYTE_FIRST))
+        assert_equal([+1, "\x7F"+"\xFF"*(w-2)+"\xFF"], (+n-1).test_pack(1, wordsize, 1, TWOCOMP|MSBYTE_FIRST))
+        assert_equal([+2, "\x00"+"\x00"*(w-2)+"\x00"], (+n  ).test_pack(1, wordsize, 1, TWOCOMP|MSBYTE_FIRST))
+        assert_equal([+2, "\x00"+"\x00"*(w-2)+"\x01"], (+n+1).test_pack(1, wordsize, 1, TWOCOMP|MSBYTE_FIRST))
+      }
+
+      2.upto(16) {|wordsize|
+        w = wordsize
+        b = 8*wordsize-1
+        n = 2**b
+        assert_equal([-2, "\xFF"+"\xFF"*(w-2)+"\x7F"], (-n-1).test_pack(1, wordsize, 1, TWOCOMP|LSBYTE_FIRST))
+        assert_equal([-1, "\x00"+"\x00"*(w-2)+"\x00"], (-n  ).test_pack(1, wordsize, 1, TWOCOMP|LSBYTE_FIRST))
+        assert_equal([-1, "\x01"+"\x00"*(w-2)+"\x00"], (-n+1).test_pack(1, wordsize, 1, TWOCOMP|LSBYTE_FIRST))
+        assert_equal([+1, "\xFF"+"\xFF"*(w-2)+"\x7F"], (+n-1).test_pack(1, wordsize, 1, TWOCOMP|LSBYTE_FIRST))
+        assert_equal([+2, "\x00"+"\x00"*(w-2)+"\x00"], (+n  ).test_pack(1, wordsize, 1, TWOCOMP|LSBYTE_FIRST))
+        assert_equal([+2, "\x01"+"\x00"*(w-2)+"\x00"], (+n+1).test_pack(1, wordsize, 1, TWOCOMP|LSBYTE_FIRST))
       }
 
     end

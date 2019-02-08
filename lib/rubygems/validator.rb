@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 #--
 # Copyright 2006 by Chad Fowler, Rich Kilmer, Jim Weirich and others.
 # All rights reserved.
@@ -16,29 +17,6 @@ class Gem::Validator
 
   def initialize # :nodoc:
     require 'find'
-  end
-
-  ##
-  # Given a gem file's contents, validates against its own MD5 checksum
-  # gem_data:: [String] Contents of the gem file
-
-  def verify_gem(gem_data)
-    # TODO remove me? The code here only validate an MD5SUM that was
-    # in some old formatted gems, but hasn't been for a long time.
-  end
-
-  ##
-  # Given the path to a gem file, validates against its own MD5 checksum
-  #
-  # gem_path:: [String] Path to gem file
-
-  def verify_gem_file(gem_path)
-    open gem_path, Gem.binary_mode do |file|
-      gem_data = file.read
-      verify_gem gem_data
-    end
-  rescue Errno::ENOENT, Errno::EINVAL
-    raise Gem::VerificationError, "missing gem file #{gem_path}"
   end
 
   private
@@ -61,7 +39,7 @@ class Gem::Validator
   # Describes a problem with a file in a gem.
 
   ErrorData = Struct.new :path, :problem do
-    def <=> other # :nodoc:
+    def <=>(other) # :nodoc:
       return nil unless self.class === other
 
       [path, problem] <=> [other.path, other.problem]
@@ -86,28 +64,31 @@ class Gem::Validator
 
     Gem::Specification.each do |spec|
       next unless gems.include? spec.name unless gems.empty?
+      next if spec.default_gem?
 
       gem_name      = spec.file_name
       gem_path      = spec.cache_file
       spec_path     = spec.spec_file
       gem_directory = spec.full_gem_path
 
-      unless File.directory? gem_directory then
+      unless File.directory? gem_directory
         errors[gem_name][spec.full_name] =
           "Gem registered but doesn't exist at #{gem_directory}"
         next
       end
 
-      unless File.exist? spec_path then
+      unless File.exist? spec_path
         errors[gem_name][spec_path] = "Spec file missing for installed gem"
       end
 
       begin
-        verify_gem_file(gem_path)
+        unless File.readable?(gem_path)
+          raise Gem::VerificationError, "missing gem file #{gem_path}"
+        end
 
         good, gone, unreadable = nil, nil, nil, nil
 
-        open gem_path, Gem.binary_mode do |file|
+        File.open gem_path, Gem.binary_mode do |file|
           package = Gem::Package.new gem_path
 
           good, gone = package.contents.partition { |file_name|
@@ -132,8 +113,8 @@ class Gem::Validator
 
               source = File.join gem_directory, entry['path']
 
-              open source, Gem.binary_mode do |f|
-                unless f.read == data then
+              File.open source, Gem.binary_mode do |f|
+                unless f.read == data
                   errors[gem_name][entry['path']] = "Modified from original"
                 end
               end
@@ -161,4 +142,3 @@ class Gem::Validator
     errors
   end
 end
-

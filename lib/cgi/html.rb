@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 class CGI
   # Base module for HTML-generation mixins.
   #
@@ -25,7 +26,7 @@ class CGI
     #   - O EMPTY
     def nOE_element(element, attributes = {})
       attributes={attributes=>nil} if attributes.kind_of?(String)
-      s = "<#{element.upcase}"
+      s = "<#{element.upcase}".dup
       attributes.each do|name, value|
         next unless value
         s << " "
@@ -407,7 +408,7 @@ class CGI
       end
       pretty = attributes.delete("PRETTY")
       pretty = "  " if true == pretty
-      buf = ""
+      buf = "".dup
 
       if attributes.has_key?("DOCTYPE")
         if attributes["DOCTYPE"]
@@ -865,7 +866,7 @@ class CGI
       %|<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">|
     end
 
-    # Initialise the HTML generation methods for this version.
+    # Initialize the HTML generation methods for this version.
     # - -
     instance_method(:nn_element_def).tap do |m|
       for element in %w[ TT I B BIG SMALL EM STRONG DFN CODE SAMP KBD

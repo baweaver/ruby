@@ -1,9 +1,17 @@
+# frozen_string_literal: false
 require 'rbconfig'
-
-require 'test/unit'
 
 src_testdir = File.dirname(File.realpath(__FILE__))
 $LOAD_PATH << src_testdir
+$LOAD_PATH.unshift "#{src_testdir}/lib"
+
+# Get bundled gems on load path
+Dir.glob("#{src_testdir}/../gems/*/*.gemspec")
+  .reject {|f| f =~ /minitest|test-unit|power_assert/ }
+  .map {|f| $LOAD_PATH.unshift File.join(File.dirname(f), "lib") }
+
+require 'test/unit'
+
 module Gem
 end
 class Gem::TestCase < MiniTest::Unit::TestCase
@@ -12,18 +20,13 @@ end
 
 ENV["GEM_SKIP"] = ENV["GEM_HOME"] = ENV["GEM_PATH"] = "".freeze
 
-require_relative 'profile_test_all' if ENV.has_key?('RUBY_TEST_ALL_PROFILE')
+require_relative 'lib/profile_test_all' if ENV.has_key?('RUBY_TEST_ALL_PROFILE')
+require_relative 'lib/tracepointchecker'
+require_relative 'lib/zombie_hunter'
+require_relative 'lib/iseq_loader_checker'
 
-module Test::Unit
-  module ZombieHunter
-    def after_teardown
-      super
-      assert_empty(Process.waitall)
-    end
-  end
-  class TestCase
-    include ZombieHunter
-  end
+if ENV['COVERAGE']
+  require_relative "../tool/test-coverage.rb"
 end
 
 begin

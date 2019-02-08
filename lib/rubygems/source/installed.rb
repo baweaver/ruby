@@ -1,14 +1,22 @@
+# frozen_string_literal: true
+##
+# Represents an installed gem.  This is used for dependency resolution.
+
 class Gem::Source::Installed < Gem::Source
 
-  def initialize
+  def initialize # :nodoc:
     @uri = nil
   end
 
   ##
   # Installed sources sort before all other sources
 
-  def <=> other
+  def <=>(other)
     case other
+    when Gem::Source::Git,
+         Gem::Source::Lock,
+         Gem::Source::Vendor then
+      -1
     when Gem::Source::Installed then
       0
     when Gem::Source then
@@ -21,9 +29,12 @@ class Gem::Source::Installed < Gem::Source
   ##
   # We don't need to download an installed gem
 
-  def download spec, path
+  def download(spec, path)
     nil
   end
 
-end
+  def pretty_print(q) # :nodoc:
+    q.text '[Installed]'
+  end
 
+end

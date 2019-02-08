@@ -72,7 +72,7 @@ yaml_parser_load(yaml_parser_t *parser, yaml_document_t *document)
     assert(document);   /* Non-NULL document object is expected. */
 
     memset(document, 0, sizeof(yaml_document_t));
-    if (!STACK_INIT(parser, document->nodes, INITIAL_STACK_SIZE))
+    if (!STACK_INIT(parser, document->nodes, yaml_node_t*))
         goto error;
 
     if (!parser->stream_start_produced) {
@@ -90,7 +90,7 @@ yaml_parser_load(yaml_parser_t *parser, yaml_document_t *document)
         return 1;
     }
 
-    if (!STACK_INIT(parser, parser->aliases, INITIAL_STACK_SIZE))
+    if (!STACK_INIT(parser, parser->aliases, yaml_alias_data_t*))
         goto error;
 
     parser->document = document;
@@ -239,8 +239,8 @@ yaml_parser_register_anchor(yaml_parser_t *parser,
         if (strcmp((char *)alias_data->anchor, (char *)anchor) == 0) {
             yaml_free(anchor);
             return yaml_parser_set_composer_error_context(parser,
-                    "found duplicate anchor; first occurence",
-                    alias_data->mark, "second occurence", data.mark);
+                    "found duplicate anchor; first occurrence",
+                    alias_data->mark, "second occurrence", data.mark);
         }
     }
 
@@ -286,6 +286,8 @@ yaml_parser_load_scalar(yaml_parser_t *parser, yaml_event_t *first_event)
     int index;
     yaml_char_t *tag = first_event->data.scalar.tag;
 
+    if (!STACK_LIMIT(parser, parser->document->nodes, INT_MAX-1)) goto error;
+
     if (!tag || strcmp((char *)tag, "!") == 0) {
         yaml_free(tag);
         tag = yaml_strdup((yaml_char_t *)YAML_DEFAULT_SCALAR_TAG);
@@ -329,13 +331,15 @@ yaml_parser_load_sequence(yaml_parser_t *parser, yaml_event_t *first_event)
     int index, item_index;
     yaml_char_t *tag = first_event->data.sequence_start.tag;
 
+    if (!STACK_LIMIT(parser, parser->document->nodes, INT_MAX-1)) goto error;
+
     if (!tag || strcmp((char *)tag, "!") == 0) {
         yaml_free(tag);
         tag = yaml_strdup((yaml_char_t *)YAML_DEFAULT_SEQUENCE_TAG);
         if (!tag) goto error;
     }
 
-    if (!STACK_INIT(parser, items, INITIAL_STACK_SIZE)) goto error;
+    if (!STACK_INIT(parser, items, yaml_node_item_t*)) goto error;
 
     SEQUENCE_NODE_INIT(node, tag, items.start, items.end,
             first_event->data.sequence_start.style,
@@ -351,6 +355,9 @@ yaml_parser_load_sequence(yaml_parser_t *parser, yaml_event_t *first_event)
     if (!yaml_parser_parse(parser, &event)) return 0;
 
     while (event.type != YAML_SEQUENCE_END_EVENT) {
+        if (!STACK_LIMIT(parser,
+                    parser->document->nodes.start[index-1].data.sequence.items,
+                    INT_MAX-1)) return 0;
         item_index = yaml_parser_load_node(parser, &event);
         if (!item_index) return 0;
         if (!PUSH(parser,
@@ -387,13 +394,15 @@ yaml_parser_load_mapping(yaml_parser_t *parser, yaml_event_t *first_event)
     yaml_node_pair_t pair;
     yaml_char_t *tag = first_event->data.mapping_start.tag;
 
+    if (!STACK_LIMIT(parser, parser->document->nodes, INT_MAX-1)) goto error;
+
     if (!tag || strcmp((char *)tag, "!") == 0) {
         yaml_free(tag);
         tag = yaml_strdup((yaml_char_t *)YAML_DEFAULT_MAPPING_TAG);
         if (!tag) goto error;
     }
 
-    if (!STACK_INIT(parser, pairs, INITIAL_STACK_SIZE)) goto error;
+    if (!STACK_INIT(parser, pairs, yaml_node_pair_t*)) goto error;
 
     MAPPING_NODE_INIT(node, tag, pairs.start, pairs.end,
             first_event->data.mapping_start.style,
@@ -409,6 +418,9 @@ yaml_parser_load_mapping(yaml_parser_t *parser, yaml_event_t *first_event)
     if (!yaml_parser_parse(parser, &event)) return 0;
 
     while (event.type != YAML_MAPPING_END_EVENT) {
+        if (!STACK_LIMIT(parser,
+                    parser->document->nodes.start[index-1].data.mapping.pairs,
+                    INT_MAX-1)) return 0;
         pair.key = yaml_parser_load_node(parser, &event);
         if (!pair.key) return 0;
         if (!yaml_parser_parse(parser, &event)) return 0;

@@ -7,6 +7,15 @@
 #include <ctype.h>
 #include <fiddle.h>
 
+#ifdef PRIsVALUE
+# define RB_OBJ_CLASSNAME(obj) rb_obj_class(obj)
+# define RB_OBJ_STRING(obj) (obj)
+#else
+# define PRIsVALUE "s"
+# define RB_OBJ_CLASSNAME(obj) rb_obj_classname(obj)
+# define RB_OBJ_STRING(obj) StringValueCStr(obj)
+#endif
+
 VALUE rb_cPointer;
 
 typedef void (*freefunc_t)(void*);
@@ -56,13 +65,14 @@ fiddle_ptr_free(void *ptr)
 	    (*(data->free))(data->ptr);
 	}
     }
+    xfree(ptr);
 }
 
 static size_t
 fiddle_ptr_memsize(const void *ptr)
 {
     const struct ptr_data *data = ptr;
-    return data ? sizeof(*data) + data->size : 0;
+    return sizeof(*data) + data->size;
 }
 
 static const rb_data_type_t fiddle_ptr_data_type = {
@@ -427,12 +437,10 @@ static VALUE
 rb_fiddle_ptr_inspect(VALUE self)
 {
     struct ptr_data *data;
-    char str[1024];
 
     TypedData_Get_Struct(self, struct ptr_data, &fiddle_ptr_data_type, data);
-    snprintf(str, 1023, "#<%s:%p ptr=%p size=%ld free=%p>",
-	     rb_class2name(CLASS_OF(self)), data, data->ptr, data->size, data->free);
-    return rb_str_new2(str);
+    return rb_sprintf("#<%"PRIsVALUE":%p ptr=%p size=%ld free=%p>",
+		      RB_OBJ_CLASSNAME(self), (void *)data, data->ptr, data->size, (void *)data->free);
 }
 
 /*
@@ -669,6 +677,7 @@ rb_fiddle_ptr_s_to_ptr(VALUE self, VALUE val)
 void
 Init_fiddle_pointer(void)
 {
+#undef rb_intern
     id_to_ptr = rb_intern("to_ptr");
 
     /* Document-class: Fiddle::Pointer

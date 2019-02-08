@@ -1,15 +1,9 @@
 # encoding: utf-8
-######################################################################
-# This file is imported from the minitest project.
-# DO NOT make modifications in this repo. They _will_ be reverted!
-# File a patch instead and assign it to Ryan Davis.
-######################################################################
+# frozen_string_literal: false
 
 require 'minitest/autorun'
 
 class TestMiniTestMock < MiniTest::Unit::TestCase
-  parallelize_me!
-
   def setup
     @mock = MiniTest::Mock.new.expect(:foo, nil)
     @mock.expect(:meaning_of_life, 42)
@@ -138,10 +132,10 @@ class TestMiniTestMock < MiniTest::Unit::TestCase
   end
 
   def test_mock_is_a_blank_slate
-    @mock.expect :kind_of?, true, [Fixnum]
+    @mock.expect :kind_of?, true, [Integer]
     @mock.expect :==, true, [1]
 
-    assert @mock.kind_of?(Fixnum), "didn't mock :kind_of\?"
+    assert @mock.kind_of?(Integer), "didn't mock :kind_of\?"
     assert @mock == 1, "didn't mock :=="
   end
 
@@ -278,8 +272,6 @@ end
 require "minitest/metametameta"
 
 class TestMiniTestStub < MiniTest::Unit::TestCase
-  parallelize_me!
-
   def setup
     super
     MiniTest::Unit::TestCase.reset

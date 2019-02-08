@@ -1,6 +1,15 @@
-
 require 'benchmark'
 require 'pp'
+require 'optparse'
+
+$list = true
+$gcprof = false
+
+opt = OptionParser.new
+opt.on('-q'){$list = false}
+opt.on('-d'){$gcprof = false}
+opt.on('-p'){$gcprof = true}
+opt.parse!(ARGV)
 
 script = File.join(File.dirname(__FILE__), ARGV.shift)
 script += '.rb' unless FileTest.exist?(script)
@@ -8,14 +17,25 @@ raise "#{script} not found" unless FileTest.exist?(script)
 
 puts "Script: #{script}"
 
-GC::Profiler.enable
+if $gcprof
+  GC::Profiler.enable
+end
+
 tms = Benchmark.measure{|x|
   load script
 }
-gc_time = GC::Profiler.total_time
-GC::Profiler.report if RUBY_VERSION >= '2.0.0' # before 1.9.3, report() may run infinite loop
-GC::Profiler.disable
+
+gc_time = 0
+
+if $gcprof
+  gc_time = GC::Profiler.total_time
+  GC::Profiler.report if $list and RUBY_VERSION >= '2.0.0' # before 1.9.3, report() may run infinite loop
+  GC::Profiler.disable
+end
+
 pp GC.stat
+
+puts "#{RUBY_DESCRIPTION} #{GC::OPTS.inspect}" if defined?(GC::OPTS)
 
 desc = "#{RUBY_VERSION}#{RUBY_PATCHLEVEL >= 0 ? "p#{RUBY_PATCHLEVEL}" : "dev"}"
 name = File.basename(script, '.rb')

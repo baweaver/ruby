@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require_relative 'helper'
 
 module Psych
@@ -24,6 +25,10 @@ module Psych
 
     def test_datetime_has_references
       assert_reference_trip DateTime.now
+    end
+
+    def test_struct_has_references
+      assert_reference_trip Struct.new(:foo).new(1)
     end
 
     def assert_reference_trip obj

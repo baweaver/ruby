@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require 'test/unit'
 require 'tempfile'
 require_relative 'marshaltestlib'
@@ -102,17 +103,19 @@ class TestMarshal < Test::Unit::TestCase
   def test_pipe
     o1 = C.new("a" * 10000)
 
-    o2 = IO.pipe do |r, w|
-      Thread.new {Marshal.dump(o1, w)}
-      Marshal.load(r)
+    IO.pipe do |r, w|
+      th = Thread.new {Marshal.dump(o1, w)}
+      o2 = Marshal.load(r)
+      th.join
+      assert_equal(o1.str, o2.str)
     end
-    assert_equal(o1.str, o2.str)
 
-    o2 = IO.pipe do |r, w|
-      Thread.new {Marshal.dump(o1, w, 2)}
-      Marshal.load(r)
+    IO.pipe do |r, w|
+      th = Thread.new {Marshal.dump(o1, w, 2)}
+      o2 = Marshal.load(r)
+      th.join
+      assert_equal(o1.str, o2.str)
     end
-    assert_equal(o1.str, o2.str)
 
     assert_raise(TypeError) { Marshal.dump("foo", Object.new) }
     assert_raise(TypeError) { Marshal.load(Object.new) }
@@ -244,6 +247,21 @@ class TestMarshal < Test::Unit::TestCase
     bug2548 = '[ruby-core:27375]'
     ary = [:$1, nil]
     assert_equal(ary, Marshal.load(Marshal.dump(ary)), bug2548)
+  end
+
+  def test_symlink
+    assert_include(Marshal.dump([:a, :a]), ';')
+  end
+
+  def test_symlink_in_ivar
+    bug10991 = '[ruby-core:68587] [Bug #10991]'
+    sym = Marshal.load("\x04\x08" +
+                       "I" ":\x0bKernel" +
+                       ("\x06" +
+                        ("I" ":\x07@a" +
+                         ("\x06" ":\x07@b" "e;\x0""o:\x0bObject""\x0")) +
+                        "0"))
+    assert_equal(:Kernel, sym, bug10991)
   end
 
   ClassUTF8 = eval("class R\u{e9}sum\u{e9}; self; end")
@@ -484,10 +502,10 @@ class TestMarshal < Test::Unit::TestCase
   def test_marshal_load_should_not_taint_classes
     bug7325 = '[ruby-core:49198]'
     for c in [TestClass, TestModule]
-      assert(!c.tainted?)
+      assert_not_predicate(c, :tainted?)
       c2 = Marshal.load(Marshal.dump(c).taint)
       assert_same(c, c2)
-      assert(!c.tainted?, bug7325)
+      assert_not_predicate(c, :tainted?, bug7325)
     end
   end
 
@@ -550,7 +568,7 @@ class TestMarshal < Test::Unit::TestCase
     s.instance_variable_set(:@t, 42)
     t = Bug8276.new(s)
     s = Marshal.dump(t)
-    assert_raise(RuntimeError) {Marshal.load(s)}
+    assert_raise(FrozenError) {Marshal.load(s)}
   end
 
   def test_marshal_load_ivar
@@ -594,5 +612,171 @@ class TestMarshal < Test::Unit::TestCase
     assert_nothing_raised(ArgumentError, '[Bug #7722]') do
       Marshal.dump(TestForRespondToFalse.new)
     end
+  end
+
+  def test_packed_string
+    packed = ["foo"].pack("p")
+    bare = "".force_encoding(Encoding::ASCII_8BIT) << packed
+    assert_equal(Marshal.dump(bare), Marshal.dump(packed))
+  end
+
+  def test_untainted_numeric
+    bug8945 = '[ruby-core:57346] [Bug #8945] Numerics never be tainted'
+    b = RbConfig::LIMITS['FIXNUM_MAX'] + 1
+    tainted = [0, 1.0, 1.72723e-77, b].select do |x|
+      Marshal.load(Marshal.dump(x).taint).tainted?
+    end
+    assert_empty(tainted.map {|x| [x, x.class]}, bug8945)
+  end
+
+  class Bug9523
+    attr_reader :cc
+    def marshal_dump
+      callcc {|c| @cc = c }
+      nil
+    end
+    def marshal_load(v)
+    end
+  end
+
+  def test_continuation
+    require "continuation"
+    c = Bug9523.new
+    assert_raise_with_message(RuntimeError, /Marshal\.dump reentered at marshal_dump/) do
+      Marshal.dump(c)
+      GC.start
+      1000.times {"x"*1000}
+      GC.start
+      c.cc.call
+    end
+  end
+
+  def test_undumpable_message
+    c = Module.new {break module_eval("class IO\u{26a1} < IO;self;end")}
+    assert_raise_with_message(TypeError, /IO\u{26a1}/) {
+      Marshal.dump(c.new(0, autoclose: false))
+    }
+  end
+
+  def test_undumpable_data
+    c = Module.new {break module_eval("class T\u{23F0 23F3}<Time;undef _dump;self;end")}
+    assert_raise_with_message(TypeError, /T\u{23F0 23F3}/) {
+      Marshal.dump(c.new)
+    }
+  end
+
+  def test_unloadable_data
+    c = eval("class Unloadable\u{23F0 23F3}<Time;;self;end")
+    c.class_eval {
+      alias _dump_data _dump
+      undef _dump
+    }
+    d = Marshal.dump(c.new)
+    assert_raise_with_message(TypeError, /Unloadable\u{23F0 23F3}/) {
+      Marshal.load(d)
+    }
+  end
+
+  def test_unloadable_userdef
+    c = eval("class Userdef\u{23F0 23F3}<Time;self;end")
+    class << c
+      undef _load
+    end
+    d = Marshal.dump(c.new)
+    assert_raise_with_message(TypeError, /Userdef\u{23F0 23F3}/) {
+      Marshal.load(d)
+    }
+  end
+
+  def test_unloadable_usrmarshal
+    c = eval("class UsrMarshal\u{23F0 23F3}<Time;self;end")
+    c.class_eval {
+      alias marshal_dump _dump
+    }
+    d = Marshal.dump(c.new)
+    assert_raise_with_message(TypeError, /UsrMarshal\u{23F0 23F3}/) {
+      Marshal.load(d)
+    }
+  end
+
+  def test_no_internal_ids
+    opt = %w[--disable=gems]
+    args = [opt, 'Marshal.dump("",STDOUT)', true, true, encoding: Encoding::ASCII_8BIT]
+    out, err, status = EnvUtil.invoke_ruby(*args)
+    assert_empty(err)
+    assert_predicate(status, :success?)
+    expected = out
+
+    opt << "--enable=frozen-string-literal"
+    opt << "--debug=frozen-string-literal"
+    out, err, status = EnvUtil.invoke_ruby(*args)
+    assert_empty(err)
+    assert_predicate(status, :success?)
+    assert_equal(expected, out)
+  end
+
+  def test_marshal_honor_post_proc_value_for_link
+    str = 'x' # for link
+    obj = [str, str]
+    assert_equal(['X', 'X'], Marshal.load(Marshal.dump(obj), ->(v) { v == str ? v.upcase : v }))
+  end
+
+  def test_marshal_load_extended_class_crash
+    assert_separately([], "#{<<-"begin;"}\n#{<<-"end;"}")
+    begin;
+      assert_raise_with_message(ArgumentError, /undefined/) do
+        Marshal.load("\x04\be:\x0F\x00omparableo:\vObject\x00")
+      end
+    end;
+  end
+
+  def test_marshal_load_r_prepare_reference_crash
+    crash = "\x04\bI/\x05\x00\x06:\x06E{\x06@\x05T"
+
+    opt = %w[--disable=gems]
+    assert_separately(opt, <<-RUBY)
+      assert_raise_with_message(ArgumentError, /bad link/) do
+        Marshal.load(#{crash.dump})
+      end
+    RUBY
+  end
+
+  MethodMissingWithoutRespondTo = Struct.new(:wrapped_object) do
+    undef respond_to?
+    def method_missing(*args, &block)
+      wrapped_object.public_send(*args, &block)
+    end
+    def respond_to_missing?(name, private = false)
+      wrapped_object.respond_to?(name, false)
+    end
+  end
+
+  def test_method_missing_without_respond_to
+    bug12353 = "[ruby-core:75377] [Bug #12353]: try method_missing if" \
+               " respond_to? is undefined"
+    obj = MethodMissingWithoutRespondTo.new("foo")
+    dump = assert_nothing_raised(NoMethodError, bug12353) do
+      Marshal.dump(obj)
+    end
+    assert_equal(obj, Marshal.load(dump))
+  end
+
+  class Bug12974
+    def marshal_dump
+      dup
+    end
+  end
+
+  def test_marshal_dump_recursion
+    assert_raise_with_message(RuntimeError, /same class instance/) do
+      Marshal.dump(Bug12974.new)
+    end
+  end
+
+  Bug14314 = Struct.new(:foo, keyword_init: true)
+
+  def test_marshal_keyword_init_struct
+    obj = Bug14314.new(foo: 42)
+    assert_equal obj, Marshal.load(Marshal.dump(obj))
   end
 end

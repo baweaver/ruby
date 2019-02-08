@@ -1,16 +1,10 @@
-#!/usr/bin/env ruby -w
-# encoding: UTF-8
+# -*- coding: utf-8 -*-
+# frozen_string_literal: false
 
-# tc_interface.rb
-#
-#  Created by James Edward Gray II on 2005-10-31.
-#  Copyright 2005 James Edward Gray II. You can redistribute or modify this code
-#  under the terms of Ruby's license.
-
-require_relative "base"
+require_relative "helper"
 require "tempfile"
 
-class TestCSV::Interface < TestCSV
+class TestCSVInterface < Test::Unit::TestCase
   extend DifferentOFS
 
   def setup
@@ -50,17 +44,66 @@ class TestCSV::Interface < TestCSV
     csv = CSV.open(@path, "r+", col_sep: "\t", row_sep: "\r\n")
     assert_not_nil(csv)
     assert_instance_of(CSV, csv)
-    assert_equal(false, csv.closed?)
+    assert_not_predicate(csv, :closed?)
     csv.close
-    assert(csv.closed?)
+    assert_predicate(csv, :closed?)
 
     ret = CSV.open(@path) do |new_csv|
       csv = new_csv
       assert_instance_of(CSV, new_csv)
       "Return value."
     end
-    assert(csv.closed?)
+    assert_predicate(csv, :closed?)
     assert_equal("Return value.", ret)
+  end
+
+  def test_open_encoding_valid
+    # U+1F600 GRINNING FACE
+    # U+1F601 GRINNING FACE WITH SMILING EYES
+    File.open(@path, "w") do |file|
+      file << "\u{1F600},\u{1F601}"
+    end
+    CSV.open(@path, encoding: "utf-8") do |csv|
+      assert_equal([["\u{1F600}", "\u{1F601}"]],
+                   csv.to_a)
+    end
+  end
+
+  def test_open_encoding_invalid
+    # U+1F600 GRINNING FACE
+    # U+1F601 GRINNING FACE WITH SMILING EYES
+    File.open(@path, "w") do |file|
+      file << "\u{1F600},\u{1F601}"
+    end
+    CSV.open(@path, encoding: "EUC-JP") do |csv|
+      error = assert_raise(CSV::MalformedCSVError) do
+        csv.shift
+      end
+      assert_equal("Invalid byte sequence in EUC-JP in line 1.",
+                   error.message)
+    end
+  end
+
+  def test_open_encoding_nonexistent
+    _output, error = capture_io do
+      CSV.open(@path, encoding: "nonexistent") do
+      end
+    end
+    assert_equal("path:0: warning: Unsupported encoding nonexistent ignored\n",
+                 error.gsub(/\A.+:\d+: /, "path:0: "))
+  end
+
+  def test_open_encoding_utf_8_with_bom
+    # U+FEFF ZERO WIDTH NO-BREAK SPACE, BOM
+    # U+1F600 GRINNING FACE
+    # U+1F601 GRINNING FACE WITH SMILING EYES
+    File.open(@path, "w") do |file|
+      file << "\u{FEFF}\u{1F600},\u{1F601}"
+    end
+    CSV.open(@path, encoding: "bom|utf-8") do |csv|
+      assert_equal([["\u{1F600}", "\u{1F601}"]],
+                   csv.to_a)
+    end
   end
 
   def test_parse
@@ -89,6 +132,18 @@ class TestCSV::Interface < TestCSV
   def test_parse_line_with_empty_lines
     assert_equal(nil,       CSV.parse_line(""))  # to signal eof
     assert_equal(Array.new, CSV.parse_line("\n1,2,3"))
+  end
+
+  def test_parse_header_only
+    table = CSV.parse("a,b,c", headers: true)
+    assert_equal([
+                   ["a", "b", "c"],
+                   [],
+                 ],
+                 [
+                   table.headers,
+                   table.each.to_a,
+                 ])
   end
 
   def test_read_and_readlines
@@ -130,6 +185,20 @@ class TestCSV::Interface < TestCSV
     end
   end
 
+  def test_nil_is_not_acceptable
+    assert_raise_with_message ArgumentError, "Cannot parse nil as CSV" do
+      CSV.new(nil)
+    end
+  end
+
+  def test_open_handles_prematurely_closed_file_descriptor_gracefully
+    assert_nothing_raised(Exception) do
+      CSV.open(@path) do |csv|
+        csv.close
+      end
+    end
+  end
+
   ### Test Write Interface ###
 
   def test_generate
@@ -146,6 +215,9 @@ class TestCSV::Interface < TestCSV
       assert_equal(csv, csv << ["last", %Q{"row"}])
     end
     assert_equal(%Q{1,2,3\n4,,5\nlast,"""row"""\n}, str)
+
+    out = CSV.generate("test") { |csv| csv << ["row"] }
+    assert_equal("testrow\n", out)
   end
 
   def test_generate_line
@@ -159,6 +231,9 @@ class TestCSV::Interface < TestCSV
     assert_not_nil(line)
     assert_instance_of(String, line)
     assert_equal("1;2;3\n", line)
+
+    line = CSV.generate_line(%w"1 2", row_sep: nil)
+    assert_equal("1,2", line)
   end
 
   def test_write_header_detection
@@ -168,7 +243,7 @@ class TestCSV::Interface < TestCSV
     CSV.open(@path, "w", headers: true) do |csv|
       csv << headers
       csv << %w{1 2 3}
-      assert_equal(headers, csv.instance_variable_get(:@headers))
+      assert_equal(headers, csv.headers)
     end
   end
 
@@ -195,6 +270,25 @@ class TestCSV::Interface < TestCSV
                            converters:        :all,
                            header_converters: :symbol ) do |csv|
       csv.each { |line| assert_equal(lines.shift, line.to_hash) }
+    end
+  end
+
+  def test_write_hash_with_string_keys
+    File.unlink(@path)
+
+    lines = [{a: 1, b: 2, c: 3}, {a: 4, b: 5, c: 6}]
+    CSV.open( @path, "wb", headers: true ) do |csv|
+      csv << lines.first.keys
+      lines.each { |line| csv << line }
+    end
+    CSV.open( @path, "rb", headers: true ) do |csv|
+      csv.each do |line|
+        csv.headers.each_with_index do |header, h|
+          keys = line.to_hash.keys
+          assert_instance_of(String, keys[h])
+          assert_same(header, keys[h])
+        end
+      end
     end
   end
 
@@ -263,6 +357,19 @@ class TestCSV::Interface < TestCSV
                            col_sep:    "|",
                            converters: :all ) do |csv|
       csv.each { |line| assert_equal(lines.shift, line.to_hash) }
+    end
+  end
+
+  def test_write_headers_empty
+    File.unlink(@path)
+
+    CSV.open( @path, "wb", headers:       "b|a|c",
+                           write_headers: true,
+                           col_sep:       "|" ) do |csv|
+    end
+
+    File.open(@path, "rb") do |f|
+      assert_equal("b|a|c", f.gets.strip)
     end
   end
 

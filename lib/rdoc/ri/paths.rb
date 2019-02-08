@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rdoc/ri'
 
 ##
@@ -81,8 +82,6 @@ module RDoc::RI::Paths
   # ri documentation.
 
   def self.gemdirs filter = :latest
-    require 'rubygems' unless defined?(Gem)
-
     ri_paths = {}
 
     all = Gem::Specification.map do |spec|
@@ -184,4 +183,3 @@ module RDoc::RI::Paths
   end
 
 end
-

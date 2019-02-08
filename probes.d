@@ -17,7 +17,7 @@ provider ruby {
      ruby:::method-return(classname, methodname, filename, lineno);
 
      This probe is fired just after a method has returned. The arguments are
-     the same as "ruby:::function-entry".
+     the same as "ruby:::method-entry".
   */
   probe method__return(const char *classname, const char *methodname, const char *filename, int lineno);
 
@@ -25,14 +25,14 @@ provider ruby {
      ruby:::cmethod-entry(classname, methodname, filename, lineno);
 
      This probe is fired just before a C method is entered. The arguments are
-     the same as "ruby:::function-entry".
+     the same as "ruby:::method-entry".
   */
   probe cmethod__entry(const char *classname, const char *methodname, const char *filename, int lineno);
   /*
      ruby:::cmethod-return(classname, methodname, filename, lineno);
 
      This probe is fired just before a C method returns. The arguments are
-     the same as "ruby:::function-entry".
+     the same as "ruby:::method-entry".
   */
   probe cmethod__return(const char *classname, const char *methodname, const char *filename, int lineno);
 
@@ -214,6 +214,17 @@ provider ruby {
      Fired at the end of a sweep phase.
   */
   probe gc__sweep__end();
+
+  /*
+     ruby:::method-cache-clear(class, filename, lineno);
+
+     This probe is fired when the method cache is cleared.
+
+     * `class` the name of the class or "global" (a string)
+     * `filename` the file name where the cache is _being cleared_ (a string)
+     * `lineno` the line number where the cache is _being cleared_ (an int)
+  */
+  probe method__cache__clear(const char *class, const char *filename, int lineno);
 };
 
 #pragma D attributes Stable/Evolving/Common provider ruby provider

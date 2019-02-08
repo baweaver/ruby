@@ -1,8 +1,8 @@
+#frozen_string_literal: false
 unless defined?(::JSON::JSON_LOADED) and ::JSON::JSON_LOADED
   require 'json'
 end
 
-# Range serialization/deserialization
 class Range
 
   # Deserializes JSON string by constructing new Range object with arguments
@@ -16,7 +16,7 @@ class Range
   def as_json(*)
     {
       JSON.create_id  => self.class.name,
-      'a'             => [ first, self.end, exclude_end? ]
+      'a'             => [ first, last, exclude_end? ]
     }
   end
 

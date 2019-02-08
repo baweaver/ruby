@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # logger.rb - simple logging utility
 # Copyright (C) 2000-2003, 2005, 2008, 2011  NAKAMURA, Hiroshi <nahi@ruby-lang.org>.
 #
@@ -108,7 +109,7 @@ require 'monitor'
 # 3. Create a logger for the specified file.
 #
 #      file = File.open('foo.log', File::WRONLY | File::APPEND)
-#      # To create new (and to remove old) logfile, add File::CREAT like:
+#      # To create new logfile, add File::CREAT like:
 #      # file = File.open('foo.log', File::WRONLY | File::APPEND | File::CREAT)
 #      logger = Logger.new(file)
 #
@@ -176,6 +177,19 @@ require 'monitor'
 #
 #      # DEBUG < INFO < WARN < ERROR < FATAL < UNKNOWN
 #
+# 3. Symbol or String (case insensitive)
+#
+#      logger.level = :info
+#      logger.level = 'INFO'
+#
+#      # :debug < :info < :warn < :error < :fatal < :unknown
+#
+# 4. Constructor
+#
+#      Logger.new(logdev, level: Logger::INFO)
+#      Logger.new(logdev, level: :info)
+#      Logger.new(logdev, level: 'INFO')
+#
 # == Format
 #
 # Log messages are rendered in the output stream in a certain format by
@@ -192,6 +206,10 @@ require 'monitor'
 #   logger.datetime_format = '%Y-%m-%d %H:%M:%S'
 #         # e.g. "2004-01-03 00:54:26"
 #
+# or via the constructor.
+#
+#   Logger.new(logdev, datetime_format: '%Y-%m-%d %H:%M:%S')
+#
 # Or, you may change the overall format via the #formatter= method.
 #
 #   logger.formatter = proc do |severity, datetime, progname, msg|
@@ -199,8 +217,14 @@ require 'monitor'
 #   end
 #   # e.g. "2005-09-22 08:51:08 +0900: hello world"
 #
+# or via the constructor.
+#
+#   Logger.new(logdev, formatter: proc {|severity, datetime, progname, msg|
+#     "#{datetime}: #{msg}\n"
+#   })
+#
 class Logger
-  VERSION = "1.2.7"
+  VERSION = "1.3.0"
   _, name, rev = %w$Id$
   if name
     name = name.chomp(",v")
@@ -208,7 +232,7 @@ class Logger
     name = File.basename(__FILE__)
   end
   rev ||= "v#{VERSION}"
-  ProgName = "#{name}/#{rev}"
+  ProgName = "#{name}/#{rev}".freeze
 
   class Error < RuntimeError # :nodoc:
   end
@@ -234,7 +258,33 @@ class Logger
   include Severity
 
   # Logging severity threshold (e.g. <tt>Logger::INFO</tt>).
-  attr_accessor :level
+  attr_reader :level
+
+  # Set logging severity threshold.
+  #
+  # +severity+:: The Severity of the log message.
+  def level=(severity)
+    if severity.is_a?(Integer)
+      @level = severity
+    else
+      case severity.to_s.downcase
+      when 'debug'
+        @level = DEBUG
+      when 'info'
+        @level = INFO
+      when 'warn'
+        @level = WARN
+      when 'error'
+        @level = ERROR
+      when 'fatal'
+        @level = FATAL
+      when 'unknown'
+        @level = UNKNOWN
+      else
+        raise ArgumentError, "invalid log level: #{severity}"
+      end
+    end
+  end
 
   # Program name to include in log messages.
   attr_accessor :progname
@@ -290,8 +340,12 @@ class Logger
 
   #
   # :call-seq:
-  #   Logger.new(name, shift_age = 7, shift_size = 1048576)
-  #   Logger.new(name, shift_age = 'weekly')
+  #   Logger.new(logdev, shift_age = 0, shift_size = 1048576)
+  #   Logger.new(logdev, shift_age = 'weekly')
+  #   Logger.new(logdev, level: :info)
+  #   Logger.new(logdev, progname: 'progname')
+  #   Logger.new(logdev, formatter: formatter)
+  #   Logger.new(logdev, datetime_format: '%Y-%m-%d %H:%M:%S')
   #
   # === Args
   #
@@ -300,24 +354,61 @@ class Logger
   #   +STDOUT+, +STDERR+, or an open file).
   # +shift_age+::
   #   Number of old log files to keep, *or* frequency of rotation (+daily+,
-  #   +weekly+ or +monthly+).
+  #   +weekly+ or +monthly+). Default value is 0.
   # +shift_size+::
-  #   Maximum logfile size (only applies when +shift_age+ is a number).
+  #   Maximum logfile size in bytes (only applies when +shift_age+ is a number).
+  #   Defaults to +1048576+ (1MB).
+  # +level+::
+  #   Logging severity threshold. Default values is Logger::DEBUG.
+  # +progname+::
+  #   Program name to include in log messages. Default value is nil.
+  # +formatter+::
+  #   Logging formatter. Default values is an instance of Logger::Formatter.
+  # +datetime_format+::
+  #   Date and time format. Default value is '%Y-%m-%d %H:%M:%S'.
+  # +shift_period_suffix+::
+  #   The log file suffix format for +daily+, +weekly+ or +monthly+ rotation.
+  #   Default is '%Y%m%d'.
   #
   # === Description
   #
   # Create an instance.
   #
-  def initialize(logdev, shift_age = 0, shift_size = 1048576)
-    @progname = nil
-    @level = DEBUG
+  def initialize(logdev, shift_age = 0, shift_size = 1048576, level: DEBUG,
+                 progname: nil, formatter: nil, datetime_format: nil,
+                 shift_period_suffix: '%Y%m%d')
+    self.level = level
+    self.progname = progname
     @default_formatter = Formatter.new
-    @formatter = nil
+    self.datetime_format = datetime_format
+    self.formatter = formatter
     @logdev = nil
     if logdev
       @logdev = LogDevice.new(logdev, :shift_age => shift_age,
-        :shift_size => shift_size)
+        :shift_size => shift_size,
+        :shift_period_suffix => shift_period_suffix)
     end
+  end
+
+  #
+  # :call-seq:
+  #   Logger#reopen
+  #   Logger#reopen(logdev)
+  #
+  # === Args
+  #
+  # +logdev+::
+  #   The log device.  This is a filename (String) or IO object (typically
+  #   +STDOUT+, +STDERR+, or an open file).  reopen the same filename if
+  #   it is +nil+, do nothing for IO.  Default is +nil+.
+  #
+  # === Description
+  #
+  # Reopen a log device.
+  #
+  def reopen(logdev = nil)
+    @logdev.reopen(logdev)
+    self
   end
 
   #
@@ -361,12 +452,14 @@ class Logger
   # * Append open does not need to lock file.
   # * If the OS supports multi I/O, records possibly may be mixed.
   #
-  def add(severity, message = nil, progname = nil, &block)
+  def add(severity, message = nil, progname = nil)
     severity ||= UNKNOWN
     if @logdev.nil? or severity < @level
       return true
     end
-    progname ||= @progname
+    if progname.nil?
+      progname = @progname
+    end
     if message.nil?
       if block_given?
         message = yield
@@ -386,9 +479,7 @@ class Logger
   # device exists, return +nil+.
   #
   def <<(msg)
-    unless @logdev.nil?
-      @logdev.write(msg)
-    end
+    @logdev&.write(msg)
   end
 
   #
@@ -475,13 +566,13 @@ class Logger
   # Close the logging device.
   #
   def close
-    @logdev.close if @logdev
+    @logdev&.close
   end
 
 private
 
   # Severity label for logging (max 5 chars).
-  SEV_LABEL = %w(DEBUG INFO WARN ERROR FATAL ANY)
+  SEV_LABEL = %w(DEBUG INFO WARN ERROR FATAL ANY).each(&:freeze).freeze
 
   def format_severity(severity)
     SEV_LABEL[severity] || 'ANY'
@@ -494,7 +585,7 @@ private
 
   # Default formatter for log messages.
   class Formatter
-    Format = "%s, [%s#%d] %5s -- %s: %s\n"
+    Format = "%s, [%s#%d] %5s -- %s: %s\n".freeze
 
     attr_accessor :datetime_format
 
@@ -510,11 +601,7 @@ private
   private
 
     def format_datetime(time)
-      if @datetime_format.nil?
-        time.strftime("%Y-%m-%dT%H:%M:%S.") << "%06d " % time.usec
-      else
-        time.strftime(@datetime_format)
-      end
+      time.strftime(@datetime_format || "%Y-%m-%dT%H:%M:%S.%6N ".freeze)
     end
 
     def msg2str(msg)
@@ -530,33 +617,73 @@ private
     end
   end
 
+  module Period
+    module_function
+
+    SiD = 24 * 60 * 60
+
+    def next_rotate_time(now, shift_age)
+      case shift_age
+      when 'daily'
+        t = Time.mktime(now.year, now.month, now.mday) + SiD
+      when 'weekly'
+        t = Time.mktime(now.year, now.month, now.mday) + SiD * (7 - now.wday)
+      when 'monthly'
+        t = Time.mktime(now.year, now.month, 1) + SiD * 32
+        return Time.mktime(t.year, t.month, 1)
+      else
+        return now
+      end
+      if t.hour.nonzero? or t.min.nonzero? or t.sec.nonzero?
+        hour = t.hour
+        t = Time.mktime(t.year, t.month, t.mday)
+        t += SiD if hour > 12
+      end
+      t
+    end
+
+    def previous_period_end(now, shift_age)
+      case shift_age
+      when 'daily'
+        t = Time.mktime(now.year, now.month, now.mday) - SiD / 2
+      when 'weekly'
+        t = Time.mktime(now.year, now.month, now.mday) - (SiD * now.wday + SiD / 2)
+      when 'monthly'
+        t = Time.mktime(now.year, now.month, 1) - SiD / 2
+      else
+        return now
+      end
+      Time.mktime(t.year, t.month, t.mday, 23, 59, 59)
+    end
+  end
 
   # Device used for logging messages.
   class LogDevice
+    include Period
+
     attr_reader :dev
     attr_reader :filename
+    include MonitorMixin
 
-    class LogDeviceMutex
-      include MonitorMixin
-    end
+    def initialize(log = nil, shift_age: nil, shift_size: nil, shift_period_suffix: nil)
+      @dev = @filename = @shift_age = @shift_size = @shift_period_suffix = nil
+      mon_initialize
+      set_dev(log)
+      if @filename
+        @shift_age = shift_age || 7
+        @shift_size = shift_size || 1048576
+        @shift_period_suffix = shift_period_suffix || '%Y%m%d'
 
-    def initialize(log = nil, opt = {})
-      @dev = @filename = @shift_age = @shift_size = nil
-      @mutex = LogDeviceMutex.new
-      if log.respond_to?(:write) and log.respond_to?(:close)
-        @dev = log
-      else
-        @dev = open_logfile(log)
-        @dev.sync = true
-        @filename = log
-        @shift_age = opt[:shift_age] || 7
-        @shift_size = opt[:shift_size] || 1048576
+        unless @shift_age.is_a?(Integer)
+          base_time = @dev.respond_to?(:stat) ? @dev.stat.mtime : Time.now
+          @next_rotate_time = next_rotate_time(base_time, @shift_age)
+        end
       end
     end
 
     def write(message)
       begin
-        @mutex.synchronize do
+        synchronize do
           if @shift_age and @dev.respond_to?(:stat)
             begin
               check_shift_log
@@ -577,7 +704,7 @@ private
 
     def close
       begin
-        @mutex.synchronize do
+        synchronize do
           @dev.close rescue nil
         end
       rescue Exception
@@ -585,11 +712,36 @@ private
       end
     end
 
+    def reopen(log = nil)
+      # reopen the same filename if no argument, do nothing for IO
+      log ||= @filename if @filename
+      if log
+        synchronize do
+          if @filename and @dev
+            @dev.close rescue nil # close only file opened by Logger
+            @filename = nil
+          end
+          set_dev(log)
+        end
+      end
+      self
+    end
+
   private
+
+    def set_dev(log)
+      if log.respond_to?(:write) and log.respond_to?(:close)
+        @dev = log
+      else
+        @dev = open_logfile(log)
+        @dev.sync = true
+        @filename = log
+      end
+    end
 
     def open_logfile(filename)
       begin
-        open(filename, (File::WRONLY | File::APPEND))
+        File.open(filename, (File::WRONLY | File::APPEND))
       rescue Errno::ENOENT
         create_logfile(filename)
       end
@@ -597,7 +749,7 @@ private
 
     def create_logfile(filename)
       begin
-        logdev = open(filename, (File::WRONLY | File::APPEND | File::CREAT | File::EXCL))
+        logdev = File.open(filename, (File::WRONLY | File::APPEND | File::CREAT | File::EXCL))
         logdev.flock(File::LOCK_EX)
         logdev.sync = true
         add_log_header(logdev)
@@ -616,8 +768,6 @@ private
       ) if file.size == 0
     end
 
-    SiD = 24 * 60 * 60
-
     def check_shift_log
       if @shift_age.is_a?(Integer)
         # Note: always returns false if '0'.
@@ -626,9 +776,9 @@ private
         end
       else
         now = Time.now
-        period_end = previous_period_end(now)
-        if @dev.stat.mtime <= period_end
-          lock_shift_log { shift_log_period(period_end) }
+        if now >= @next_rotate_time
+          @next_rotate_time = next_rotate_time(now, @shift_age)
+          lock_shift_log { shift_log_period(previous_period_end(now, @shift_age)) }
         end
       end
     end
@@ -644,8 +794,7 @@ private
         begin
           File.open(@filename, File::WRONLY | File::APPEND) do |lock|
             lock.flock(File::LOCK_EX) # inter-process locking. will be unlocked at closing file
-            ino = lock.stat.ino
-            if ino == File.stat(@filename).ino
+            if File.identical?(@filename, lock) and File.identical?(lock, @dev)
               yield # log shifting
             else
               # log shifted by another process (i-node before locking and i-node after locking are different)
@@ -683,15 +832,15 @@ private
     end
 
     def shift_log_period(period_end)
-      postfix = period_end.strftime("%Y%m%d") # YYYYMMDD
-      age_file = "#{@filename}.#{postfix}"
+      suffix = period_end.strftime(@shift_period_suffix)
+      age_file = "#{@filename}.#{suffix}"
       if FileTest.exist?(age_file)
         # try to avoid filename crash caused by Timestamp change.
         idx = 0
         # .99 can be overridden; avoid too much file search with 'loop do'
         while idx < 100
           idx += 1
-          age_file = "#{@filename}.#{postfix}.#{idx}"
+          age_file = "#{@filename}.#{suffix}.#{idx}"
           break unless FileTest.exist?(age_file)
         end
       end
@@ -699,147 +848,6 @@ private
       File.rename("#{@filename}", age_file)
       @dev = create_logfile(@filename)
       return true
-    end
-
-    def previous_period_end(now)
-      case @shift_age
-      when /^daily$/
-        eod(now - 1 * SiD)
-      when /^weekly$/
-        eod(now - ((now.wday + 1) * SiD))
-      when /^monthly$/
-        eod(now - now.mday * SiD)
-      else
-        now
-      end
-    end
-
-    def eod(t)
-      Time.mktime(t.year, t.month, t.mday, 23, 59, 59)
-    end
-  end
-
-
-  #
-  # == Description
-  #
-  # Logger::Application --- Add logging support to your application.
-  #
-  # == Usage
-  #
-  # 1. Define your application class as a sub-class of this class.
-  # 2. Override the +run+ method in your class to do many things.
-  # 3. Instantiate it and invoke #start.
-  #
-  # == Example
-  #
-  #   class FooApp < Logger::Application
-  #     def initialize(foo_app, application_specific, arguments)
-  #       super('FooApp') # Name of the application.
-  #     end
-  #
-  #     def run
-  #       ...
-  #       log(WARN, 'warning', 'my_method1')
-  #       ...
-  #       @log.error('my_method2') { 'Error!' }
-  #       ...
-  #     end
-  #   end
-  #
-  #   status = FooApp.new(....).start
-  #
-  class Application
-    include Logger::Severity
-
-    # Name of the application given at initialize.
-    attr_reader :appname
-
-    #
-    # :call-seq:
-    #   Logger::Application.new(appname = '')
-    #
-    # == Args
-    #
-    # +appname+:: Name of the application.
-    #
-    # == Description
-    #
-    # Create an instance.  Log device is +STDERR+ by default.  This can be
-    # changed with #set_log.
-    #
-    def initialize(appname = nil)
-      @appname = appname
-      @log = Logger.new(STDERR)
-      @log.progname = @appname
-      @level = @log.level
-    end
-
-    #
-    # Start the application.  Return the status code.
-    #
-    def start
-      status = -1
-      begin
-        log(INFO, "Start of #{ @appname }.")
-        status = run
-      rescue
-        log(FATAL, "Detected an exception. Stopping ... #{$!} (#{$!.class})\n" << $@.join("\n"))
-      ensure
-        log(INFO, "End of #{ @appname }. (status: #{ status.to_s })")
-      end
-      status
-    end
-
-    # Logger for this application.  See the class Logger for an explanation.
-    def logger
-      @log
-    end
-
-    #
-    # Sets the logger for this application.  See the class Logger for an
-    # explanation.
-    #
-    def logger=(logger)
-      @log = logger
-      @log.progname = @appname
-      @log.level = @level
-    end
-
-    #
-    # Sets the log device for this application.  See <tt>Logger.new</tt> for
-    # an explanation of the arguments.
-    #
-    def set_log(logdev, shift_age = 0, shift_size = 1024000)
-      @log = Logger.new(logdev, shift_age, shift_size)
-      @log.progname = @appname
-      @log.level = @level
-    end
-
-    def log=(logdev)
-      set_log(logdev)
-    end
-
-    #
-    # Set the logging threshold, just like <tt>Logger#level=</tt>.
-    #
-    def level=(level)
-      @level = level
-      @log.level = @level
-    end
-
-    #
-    # See Logger#add.  This application's +appname+ is used.
-    #
-    def log(severity, message = nil, &block)
-      @log.add(severity, message, @appname, &block) if @log
-    end
-
-  private
-
-    def run
-      # TODO: should be an NotImplementedError
-      raise RuntimeError.new('Method run must be defined in the derived class.')
     end
   end
 end

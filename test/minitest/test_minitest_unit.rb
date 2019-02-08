@@ -1,9 +1,5 @@
 # encoding: utf-8
-######################################################################
-# This file is imported from the minitest project.
-# DO NOT make modifications in this repo. They _will_ be reverted!
-# File a patch instead and assign it to Ryan Davis.
-######################################################################
+# frozen_string_literal: false
 
 require 'pathname'
 require 'minitest/metametameta'
@@ -13,8 +9,6 @@ class AnError < StandardError; include MyModule; end
 class ImmutableString < String; def inspect; super.freeze; end; end
 
 class TestMiniTestUnit < MetaMetaMetaTestCase
-  parallelize_me!
-
   pwd = Pathname.new File.expand_path Dir.pwd
   basedir = Pathname.new(File.expand_path "lib/minitest") + 'mini'
   basedir = basedir.relative_path_from(pwd).to_s
@@ -197,11 +191,7 @@ class TestMiniTestUnit < MetaMetaMetaTestCase
   end
 
   def util_expand_bt bt
-    if RUBY_VERSION >= '1.9.0' then
-      bt.map { |f| (f =~ /^\./) ? File.expand_path(f) : f }
-    else
-      bt
-    end
+    bt.map { |f| (f =~ /^\./) ? File.expand_path(f) : f }
   end
 end
 
@@ -562,56 +552,6 @@ class TestMiniTestRunner < MetaMetaMetaTestCase
     def await
       @lock.synchronize { @cv.wait_while { @count > 0 } }
     end
-  end
-
-  def test_parallel_each_size
-    assert_equal 0, ParallelEach.new([]).size
-  end
-
-  def test_run_parallel
-    skip "I don't have ParallelEach debugged yet" if maglev?
-
-    test_count = 2
-    test_latch = Latch.new test_count
-    main_latch = Latch.new
-
-    thread = Thread.new {
-      Thread.current.abort_on_exception = true
-
-      # This latch waits until both test latches have been released.  Both
-      # latches can't be released unless done in separate threads because
-      # `main_latch` keeps the test method from finishing.
-      test_latch.await
-      main_latch.release
-    }
-
-    Class.new MiniTest::Unit::TestCase do
-      parallelize_me!
-
-      test_count.times do |i|
-        define_method :"test_wait_on_main_thread_#{i}" do
-          test_latch.release
-
-          # This latch blocks until the "main thread" releases it. The main
-          # thread can't release this latch until both test latches have
-          # been released.  This forces the latches to be released in separate
-          # threads.
-          main_latch.await
-          assert true
-        end
-      end
-    end
-
-    expected = clean <<-EOM
-      ..
-
-      Finished tests in 0.00
-
-      2 tests, 2 assertions, 0 failures, 0 errors, 0 skips
-    EOM
-
-    assert_report expected
-    assert thread.join
   end
 end
 
@@ -1182,7 +1122,7 @@ class TestMiniTestUnitTestCase < MiniTest::Unit::TestCase
   # *sigh* This is quite an odd scenario, but it is from real (albeit
   # ugly) test code in ruby-core:
   #
-  # http://svn.ruby-lang.org/cgi-bin/viewvc.cgi?view=rev&revision=29259
+  # https://svn.ruby-lang.org/cgi-bin/viewvc.cgi?view=rev&revision=29259
 
   def test_assert_raises_skip
     @assertion_count = 0
@@ -1397,12 +1337,11 @@ class TestMiniTestUnitTestCase < MiniTest::Unit::TestCase
 
   def test_capture_subprocess_io
     @assertion_count = 0
-    skip "Dunno why but the parallel run of this fails"
 
     non_verbose do
       out, err = capture_subprocess_io do
-        system("echo 'hi'")
-        system("echo 'bye!' 1>&2")
+        system("echo", "hi")
+        system("echo", "bye!", out: :err)
       end
 
       assert_equal "hi\n", out
@@ -1589,7 +1528,11 @@ class TestMiniTestUnitTestCase < MiniTest::Unit::TestCase
 
   def test_refute_match_matcher_object
     @assertion_count = 2
-    @tc.refute_match Object.new, 5 # default #=~ returns false
+    non_verbose do
+      obj = Object.new
+      def obj.=~(other); false; end
+      @tc.refute_match obj, 5
+    end
   end
 
   def test_refute_match_object_triggered
@@ -1684,15 +1627,11 @@ class TestMiniTestUnitTestCase < MiniTest::Unit::TestCase
       def test_test1; assert "does not matter" end
       def test_test2; assert "does not matter" end
       def test_test3; assert "does not matter" end
+      @test_order = [1, 0, 2]
+      def self.rand(n) @test_order.shift; end
     end
 
-    srand 42
-    expected = case
-               when maglev? then
-                 %w(test_test2 test_test3 test_test1)
-               else
-                 %w(test_test2 test_test1 test_test3)
-               end
+    expected = %w(test_test2 test_test1 test_test3)
     assert_equal expected, sample_test_case.test_methods
   end
 
@@ -1710,29 +1649,7 @@ class TestMiniTestUnitTestCase < MiniTest::Unit::TestCase
     assert_equal expected, sample_test_case.test_methods
   end
 
-  def test_i_suck_and_my_tests_are_order_dependent_bang_sets_test_order_alpha
-    @assertion_count = 0
-
-    shitty_test_case = Class.new MiniTest::Unit::TestCase
-
-    shitty_test_case.i_suck_and_my_tests_are_order_dependent!
-
-    assert_equal :alpha, shitty_test_case.test_order
-  end
-
-  def test_i_suck_and_my_tests_are_order_dependent_bang_does_not_warn
-    @assertion_count = 0
-
-    shitty_test_case = Class.new MiniTest::Unit::TestCase
-
-    def shitty_test_case.test_order ; :lol end
-
-    assert_silent do
-      shitty_test_case.i_suck_and_my_tests_are_order_dependent!
-    end
-  end
-
-  def util_assert_triggered expected, klass = MiniTest::Assertion
+  def assert_triggered expected, klass = MiniTest::Assertion
     e = assert_raises klass do
       yield
     end
@@ -1743,6 +1660,7 @@ class TestMiniTestUnitTestCase < MiniTest::Unit::TestCase
 
     assert_equal expected, msg
   end
+  alias util_assert_triggered assert_triggered
 
   def util_msg exp, act, msg = nil
     s = "Expected: #{exp.inspect}\n  Actual: #{act.inspect}"
@@ -1761,8 +1679,6 @@ class TestMiniTestUnitTestCase < MiniTest::Unit::TestCase
 end
 
 class TestMiniTestGuard < MiniTest::Unit::TestCase
-  parallelize_me!
-
   def test_mri_eh
     assert self.class.mri? "ruby blah"
     assert self.mri? "ruby blah"

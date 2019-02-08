@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/command'
 require 'rubygems/local_remote_options'
 require 'rubygems/spec_fetcher'
@@ -49,6 +50,12 @@ class Gem::Commands::QueryCommand < Gem::Command
       options[:all] = value
     end
 
+    add_option('-e', '--exact',
+               'Name of gem(s) to query on matches the',
+               'provided STRING') do |value, options|
+      options[:exact] = value
+    end
+
     add_option(      '--[no-]prerelease',
                'Display prerelease versions') do |value, options|
       options[:prerelease] = value
@@ -78,13 +85,14 @@ is too hard to use.
     elsif !options[:name].source.empty?
       name = Array(options[:name])
     else
-      name = options[:args].to_a.map{|arg| /#{arg}/i }
+      args = options[:args].to_a
+      name = options[:exact] ? args.map{|arg| /\A#{Regexp.escape(arg)}\Z/ } : args.map{|arg| /#{arg}/i }
     end
 
     prerelease = options[:prerelease]
 
-    unless options[:installed].nil? then
-      if no_name then
+    unless options[:installed].nil?
+      if no_name
         alert_error "You must specify a gem name"
         exit_code |= 4
       elsif name.count > 1
@@ -94,7 +102,7 @@ is too hard to use.
         installed = installed? name.first, options[:version]
         installed = !installed unless options[:installed]
 
-        if installed then
+        if installed
           say "true"
         else
           say "false"
@@ -111,8 +119,8 @@ is too hard to use.
 
   private
 
-  def display_header type
-    if (ui.outs.tty? and Gem.configuration.verbose) or both? then
+  def display_header(type)
+    if (ui.outs.tty? and Gem.configuration.verbose) or both?
       say
       say "*** #{type} GEMS ***"
       say
@@ -120,14 +128,14 @@ is too hard to use.
   end
 
   #Guts of original execute
-  def show_gems name, prerelease
+  def show_gems(name, prerelease)
     req = Gem::Requirement.default
     # TODO: deprecate for real
     dep = Gem::Deprecate.skip_during { Gem::Dependency.new name, req }
     dep.prerelease = prerelease
 
-    if local? then
-      if prerelease and not both? then
+    if local?
+      if prerelease and not both?
         alert_warning "prereleases are always shown locally"
       end
 
@@ -144,7 +152,7 @@ is too hard to use.
       output_query_results spec_tuples
     end
 
-    if remote? then
+    if remote?
       display_header 'REMOTE'
 
       fetcher = Gem::SpecFetcher.fetcher
@@ -161,7 +169,7 @@ is too hard to use.
                :latest
              end
 
-      if name.source.empty?
+      if name.respond_to?(:source) && name.source.empty?
         spec_tuples = fetcher.detect(type) { true }
       else
         spec_tuples = fetcher.detect(type) do |name_tuple|
@@ -197,7 +205,7 @@ is too hard to use.
     say output.join(options[:details] ? "\n\n" : "\n")
   end
 
-  def output_versions output, versions
+  def output_versions(output, versions)
     versions.each do |gem_name, matching_tuples|
       matching_tuples = matching_tuples.sort_by { |n,_| n.version }.reverse
 
@@ -210,7 +218,7 @@ is too hard to use.
       seen = {}
 
       matching_tuples.delete_if do |n,_|
-        if seen[n.version] then
+        if seen[n.version]
           true
         else
           seen[n.version] = true
@@ -218,16 +226,16 @@ is too hard to use.
         end
       end
 
-      output << make_entry(matching_tuples, platforms)
+      output << clean_text(make_entry(matching_tuples, platforms))
     end
   end
 
-  def entry_details entry, detail_tuple, specs, platforms
+  def entry_details(entry, detail_tuple, specs, platforms)
     return unless options[:details]
 
     name_tuple, spec = detail_tuple
 
-    spec = spec.fetch_spec name_tuple unless Gem::Specification === spec
+    spec = spec.fetch_spec name_tuple if spec.respond_to? :fetch_spec
 
     entry << "\n"
 
@@ -239,28 +247,36 @@ is too hard to use.
     spec_summary     entry, spec
   end
 
-  def entry_versions entry, name_tuples, platforms
+  def entry_versions(entry, name_tuples, platforms, specs)
     return unless options[:versions]
 
     list =
-      if platforms.empty? or options[:details] then
+      if platforms.empty? or options[:details]
         name_tuples.map { |n| n.version }.uniq
       else
         platforms.sort.reverse.map do |version, pls|
-          if pls == [Gem::Platform::RUBY] then
-            version
-          else
-            ruby = pls.delete Gem::Platform::RUBY
-            platform_list = [ruby, *pls.sort].compact
-            "#{version} #{platform_list.join ' '}"
+          out = version.to_s
+
+          if options[:domain] == :local
+            default = specs.any? do |s|
+              !s.is_a?(Gem::Source) && s.version == version && s.default_gem?
+            end
+            out = "default: #{out}" if default
           end
+
+          if pls != [Gem::Platform::RUBY]
+            platform_list = [pls.delete(Gem::Platform::RUBY), *pls.sort].compact
+            out = platform_list.unshift(out).join(' ')
+          end
+
+          out
         end
       end
 
     entry << " (#{list.join ', '})"
   end
 
-  def make_entry entry_tuples, platforms
+  def make_entry(entry_tuples, platforms)
     detail_tuple = entry_tuples.first
 
     name_tuples, specs = entry_tuples.flatten.partition do |item|
@@ -269,36 +285,36 @@ is too hard to use.
 
     entry = [name_tuples.first.name]
 
-    entry_versions entry, name_tuples, platforms
+    entry_versions entry, name_tuples, platforms, specs
     entry_details  entry, detail_tuple, specs, platforms
 
     entry.join
   end
 
-  def spec_authors entry, spec
-    authors = "Author#{spec.authors.length > 1 ? 's' : ''}: "
+  def spec_authors(entry, spec)
+    authors = "Author#{spec.authors.length > 1 ? 's' : ''}: ".dup
     authors << spec.authors.join(', ')
     entry << format_text(authors, 68, 4)
   end
 
-  def spec_homepage entry, spec
+  def spec_homepage(entry, spec)
     return if spec.homepage.nil? or spec.homepage.empty?
 
     entry << "\n" << format_text("Homepage: #{spec.homepage}", 68, 4)
   end
 
-  def spec_license entry, spec
+  def spec_license(entry, spec)
     return if spec.license.nil? or spec.license.empty?
 
-    licenses = "License#{spec.licenses.length > 1 ? 's' : ''}: "
+    licenses = "License#{spec.licenses.length > 1 ? 's' : ''}: ".dup
     licenses << spec.licenses.join(', ')
     entry << "\n" << format_text(licenses, 68, 4)
   end
 
-  def spec_loaded_from entry, spec, specs
+  def spec_loaded_from(entry, spec, specs)
     return unless spec.loaded_from
 
-    if specs.length == 1 then
+    if specs.length == 1
       default = spec.default_gem? ? ' (default)' : nil
       entry << "\n" << "    Installed at#{default}: #{spec.base_dir}"
     else
@@ -312,14 +328,14 @@ is too hard to use.
     end
   end
 
-  def spec_platforms entry, platforms
+  def spec_platforms(entry, platforms)
     non_ruby = platforms.any? do |_, pls|
       pls.any? { |pl| pl != Gem::Platform::RUBY }
     end
 
     return unless non_ruby
 
-    if platforms.length == 1 then
+    if platforms.length == 1
       title = platforms.values.length == 1 ? 'Platform' : 'Platforms'
       entry << "    #{title}: #{platforms.values.sort.join ', '}\n"
     else
@@ -335,9 +351,9 @@ is too hard to use.
     end
   end
 
-  def spec_summary entry, spec
-    entry << "\n\n" << format_text(spec.summary, 68, 4)
+  def spec_summary(entry, spec)
+    summary = truncate_text(spec.summary, "the summary for #{spec.full_name}")
+    entry << "\n\n" << format_text(summary, 68, 4)
   end
 
 end
-

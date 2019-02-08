@@ -15,7 +15,7 @@ struct inetsock_arg
     VALUE sock;
     struct {
 	VALUE host, serv;
-	struct addrinfo *res;
+	struct rb_addrinfo *res;
     } remote, local;
     int type;
     int fd;
@@ -25,11 +25,11 @@ static VALUE
 inetsock_cleanup(struct inetsock_arg *arg)
 {
     if (arg->remote.res) {
-	freeaddrinfo(arg->remote.res);
+	rb_freeaddrinfo(arg->remote.res);
 	arg->remote.res = 0;
     }
     if (arg->local.res) {
-	freeaddrinfo(arg->local.res);
+	rb_freeaddrinfo(arg->local.res);
 	arg->local.res = 0;
     }
     if (arg->fd >= 0) {
@@ -41,30 +41,34 @@ inetsock_cleanup(struct inetsock_arg *arg)
 static VALUE
 init_inetsock_internal(struct inetsock_arg *arg)
 {
+    int error = 0;
     int type = arg->type;
     struct addrinfo *res, *lres;
     int fd, status = 0, local = 0;
+    int family = AF_UNSPEC;
     const char *syscall = 0;
 
-    arg->remote.res = rsock_addrinfo(arg->remote.host, arg->remote.serv, SOCK_STREAM,
-				    (type == INET_SERVER) ? AI_PASSIVE : 0);
+    arg->remote.res = rsock_addrinfo(arg->remote.host, arg->remote.serv,
+				     family, SOCK_STREAM,
+				     (type == INET_SERVER) ? AI_PASSIVE : 0);
     /*
      * Maybe also accept a local address
      */
 
     if (type != INET_SERVER && (!NIL_P(arg->local.host) || !NIL_P(arg->local.serv))) {
-	arg->local.res = rsock_addrinfo(arg->local.host, arg->local.serv, SOCK_STREAM, 0);
+	arg->local.res = rsock_addrinfo(arg->local.host, arg->local.serv,
+					family, SOCK_STREAM, 0);
     }
 
     arg->fd = fd = -1;
-    for (res = arg->remote.res; res; res = res->ai_next) {
+    for (res = arg->remote.res->ai; res; res = res->ai_next) {
 #if !defined(INET6) && defined(AF_INET6)
 	if (res->ai_family == AF_INET6)
 	    continue;
 #endif
         lres = NULL;
         if (arg->local.res) {
-            for (lres = arg->local.res; lres; lres = lres->ai_next) {
+            for (lres = arg->local.res->ai; lres; lres = lres->ai_next) {
                 if (lres->ai_family == res->ai_family)
                     break;
             }
@@ -73,13 +77,14 @@ init_inetsock_internal(struct inetsock_arg *arg)
                     continue;
                 /* Use a different family local address if no choice, this
                  * will cause EAFNOSUPPORT. */
-                lres = arg->local.res;
+                lres = arg->local.res->ai;
             }
         }
 	status = rsock_socket(res->ai_family,res->ai_socktype,res->ai_protocol);
 	syscall = "socket(2)";
 	fd = status;
 	if (fd < 0) {
+	    error = errno;
 	    continue;
 	}
 	arg->fd = fd;
@@ -107,6 +112,7 @@ init_inetsock_internal(struct inetsock_arg *arg)
 	}
 
 	if (status < 0) {
+	    error = errno;
 	    close(fd);
 	    arg->fd = fd = -1;
 	    continue;
@@ -124,7 +130,7 @@ init_inetsock_internal(struct inetsock_arg *arg)
 	    port = arg->remote.serv;
 	}
 
-	rsock_sys_fail_host_port(syscall, host, port);
+	rsock_syserr_fail_host_port(error, syscall, host, port);
     }
 
     arg->fd = -1;
@@ -132,8 +138,9 @@ init_inetsock_internal(struct inetsock_arg *arg)
     if (type == INET_SERVER) {
 	status = listen(fd, SOMAXCONN);
 	if (status < 0) {
+	    error = errno;
 	    close(fd);
-            rb_sys_fail("listen(2)");
+	    rb_syserr_fail(error, "listen(2)");
 	}
     }
 
@@ -184,6 +191,43 @@ rsock_revlookup_flag(VALUE revlookup, int *norevlookup)
 
 /*
  * call-seq:
+ *   ipsocket.inspect   -> string
+ *
+ * Return a string describing this IPSocket object.
+ */
+static VALUE
+ip_inspect(VALUE sock)
+{
+    VALUE str = rb_call_super(0, 0);
+    rb_io_t *fptr = RFILE(sock)->fptr;
+    union_sockaddr addr;
+    socklen_t len = (socklen_t)sizeof addr;
+    ID id;
+    if (fptr && fptr->fd >= 0 &&
+	getsockname(fptr->fd, &addr.addr, &len) >= 0 &&
+	(id = rsock_intern_family(addr.addr.sa_family)) != 0) {
+	VALUE family = rb_id2str(id);
+	char hbuf[1024], pbuf[1024];
+	long slen = RSTRING_LEN(str);
+	const char last = (slen > 1 && RSTRING_PTR(str)[slen - 1] == '>') ?
+	    (--slen, '>') : 0;
+	str = rb_str_subseq(str, 0, slen);
+	rb_str_cat_cstr(str, ", ");
+	rb_str_append(str, family);
+	if (!rb_getnameinfo(&addr.addr, len, hbuf, sizeof(hbuf),
+			    pbuf, sizeof(pbuf), NI_NUMERICHOST | NI_NUMERICSERV)) {
+	    rb_str_cat_cstr(str, ", ");
+	    rb_str_cat_cstr(str, hbuf);
+	    rb_str_cat_cstr(str, ", ");
+	    rb_str_cat_cstr(str, pbuf);
+	}
+	if (last) rb_str_cat(str, &last, 1);
+    }
+    return str;
+}
+
+/*
+ * call-seq:
  *   ipsocket.addr([reverse_lookup]) => [address_family, port, hostname, numeric_address]
  *
  * Returns the local address as an array which contains
@@ -193,7 +237,7 @@ rsock_revlookup_flag(VALUE revlookup, int *norevlookup)
  * hostname is obtained from numeric_address using reverse lookup.
  * Or if it is +false+, or +:numeric+,
  * hostname is same as numeric_address.
- * Or if it is +nil+ or ommitted, obeys to +ipsocket.do_not_reverse_lookup+.
+ * Or if it is +nil+ or omitted, obeys to +ipsocket.do_not_reverse_lookup+.
  * See +Socket.getaddrinfo+ also.
  *
  *   TCPSocket.open("www.ruby-lang.org", 80) {|sock|
@@ -234,7 +278,7 @@ ip_addr(int argc, VALUE *argv, VALUE sock)
  * hostname is obtained from numeric_address using reverse lookup.
  * Or if it is +false+, or +:numeric+,
  * hostname is same as numeric_address.
- * Or if it is +nil+ or ommitted, obeys to +ipsocket.do_not_reverse_lookup+.
+ * Or if it is +nil+ or omitted, obeys to +ipsocket.do_not_reverse_lookup+.
  * See +Socket.getaddrinfo+ also.
  *
  *   TCPSocket.open("www.ruby-lang.org", 80) {|sock|
@@ -296,6 +340,8 @@ ip_recvfrom(int argc, VALUE *argv, VALUE sock)
  *
  * Lookups the IP address of _host_.
  *
+ *   require 'socket'
+ *
  *   IPSocket.getaddress("localhost")     #=> "127.0.0.1"
  *   IPSocket.getaddress("ip6-localhost") #=> "::1"
  *
@@ -304,13 +350,14 @@ static VALUE
 ip_s_getaddress(VALUE obj, VALUE host)
 {
     union_sockaddr addr;
-    struct addrinfo *res = rsock_addrinfo(host, Qnil, SOCK_STREAM, 0);
+    struct rb_addrinfo *res = rsock_addrinfo(host, Qnil, AF_UNSPEC, SOCK_STREAM, 0);
+    socklen_t len = res->ai->ai_addrlen;
 
     /* just take the first one */
-    memcpy(&addr, res->ai_addr, res->ai_addrlen);
-    freeaddrinfo(res);
+    memcpy(&addr, res->ai->ai_addr, len);
+    rb_freeaddrinfo(res);
 
-    return rsock_make_ipaddr(&addr.addr, res->ai_addrlen);
+    return rsock_make_ipaddr(&addr.addr, len);
 }
 
 void
@@ -322,6 +369,7 @@ rsock_init_ipsocket(void)
      * IPSocket is the super class of TCPSocket and UDPSocket.
      */
     rb_cIPSocket = rb_define_class("IPSocket", rb_cBasicSocket);
+    rb_define_method(rb_cIPSocket, "inspect", ip_inspect, 0);
     rb_define_method(rb_cIPSocket, "addr", ip_addr, -1);
     rb_define_method(rb_cIPSocket, "peeraddr", ip_peeraddr, -1);
     rb_define_method(rb_cIPSocket, "recvfrom", ip_recvfrom, -1);

@@ -150,6 +150,7 @@ static VALUE mSyslog_close(VALUE self)
 static VALUE mSyslog_open(int argc, VALUE *argv, VALUE self)
 {
     VALUE ident, opt, fac;
+    const char *ident_ptr;
 
     if (syslog_opened) {
         rb_raise(rb_eRuntimeError, "syslog already open");
@@ -160,8 +161,9 @@ static VALUE mSyslog_open(int argc, VALUE *argv, VALUE self)
     if (NIL_P(ident)) {
         ident = rb_gv_get("$0");
     }
-    SafeStringValue(ident);
-    syslog_ident = strdup(RSTRING_PTR(ident));
+    ident_ptr = StringValueCStr(ident);
+    rb_check_safe_obj(ident);
+    syslog_ident = strdup(ident_ptr);
 
     if (NIL_P(opt)) {
 	syslog_options = LOG_PID | LOG_CONS;
@@ -304,15 +306,13 @@ static VALUE mSyslog_log(int argc, VALUE *argv, VALUE self)
 {
     VALUE pri;
 
-    if (argc < 2) {
-        rb_raise(rb_eArgError, "wrong number of arguments (%d for 2+)", argc);
-    }
+    rb_check_arity(argc, 2, UNLIMITED_ARGUMENTS);
 
     argc--;
     pri = *argv++;
 
     if (!FIXNUM_P(pri)) {
-      rb_raise(rb_eTypeError, "type mismatch: %s given", rb_class2name(CLASS_OF(pri)));
+	rb_raise(rb_eTypeError, "type mismatch: %"PRIsVALUE" given", rb_obj_class(pri));
     }
 
     syslog_write(FIX2INT(pri), argc, argv);
@@ -327,10 +327,10 @@ static VALUE mSyslog_inspect(VALUE self)
     Check_Type(self, T_MODULE);
 
     if (!syslog_opened)
-	return rb_sprintf("<#%s: opened=false>", rb_class2name(self));
+	return rb_sprintf("<#%"PRIsVALUE": opened=false>", self);
 
-    return rb_sprintf("<#%s: opened=true, ident=\"%s\", options=%d, facility=%d, mask=%d>",
-		      rb_class2name(self),
+    return rb_sprintf("<#%"PRIsVALUE": opened=true, ident=\"%s\", options=%d, facility=%d, mask=%d>",
+		      self,
 		      syslog_ident,
 		      syslog_options,
 		      syslog_facility,
@@ -418,8 +418,9 @@ static VALUE mSyslogMacros_included(VALUE mod, VALUE target)
  *
  * The syslog protocol is standardized in RFC 5424.
  */
-void Init_syslog()
+void Init_syslog(void)
 {
+#undef rb_intern
     mSyslog = rb_define_module("Syslog");
 
     mSyslogConstants    = rb_define_module_under(mSyslog, "Constants");
@@ -506,7 +507,7 @@ void Init_syslog()
     rb_define_syslog_facility(LOG_NEWS);
 #endif
 #ifdef LOG_NTP
-   rb_define_syslog_facility(LOG_NTP);
+    rb_define_syslog_facility(LOG_NTP);
 #endif
 #ifdef LOG_SECURITY
     rb_define_syslog_facility(LOG_SECURITY);

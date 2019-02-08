@@ -1,4 +1,6 @@
+# frozen_string_literal: false
 require 'test/unit'
+require 'etc'
 require_relative 'allpairs'
 
 class TestM17NComb < Test::Unit::TestCase
@@ -87,7 +89,7 @@ class TestM17NComb < Test::Unit::TestCase
     r
   end
 
-  def assert_enccall(recv, meth, *args, &block)
+  def encdumpcall(recv, meth, *args, &block)
     desc = ''
     if String === recv
       desc << encdump(recv)
@@ -110,6 +112,11 @@ class TestM17NComb < Test::Unit::TestCase
     if block
       desc << ' {}'
     end
+    desc
+  end
+
+  def assert_enccall(recv, meth, *args, &block)
+    desc = encdumpcall(recv, meth, *args, &block)
     result = nil
     assert_nothing_raised(desc) {
       result = recv.send(meth, *args, &block)
@@ -124,7 +131,7 @@ class TestM17NComb < Test::Unit::TestCase
     elsif !s2.ascii_only?
       assert_equal(s2.encoding, t.encoding)
     else
-      assert([s1.encoding, s2.encoding].include?(t.encoding))
+      assert_include([s1.encoding, s2.encoding], t.encoding)
     end
   end
 
@@ -211,7 +218,7 @@ class TestM17NComb < Test::Unit::TestCase
         assert_raise(Encoding::CompatibilityError) { s1 + s2 }
       else
         t = enccall(s1, :+, s2)
-        assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+        assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
         assert_equal(b(s1) + b(s2), b(t))
         assert_str_enc_propagation(t, s1, s2)
       end
@@ -222,7 +229,7 @@ class TestM17NComb < Test::Unit::TestCase
     STRINGS.each {|s|
       [0,1,2].each {|n|
         t = s * n
-        assert(t.valid_encoding?) if s.valid_encoding?
+        assert_predicate(t, :valid_encoding?) if s.valid_encoding?
         assert_strenc(b(s) * n, s.encoding, t)
       }
     }
@@ -240,16 +247,16 @@ class TestM17NComb < Test::Unit::TestCase
 
   def test_str_eq_reflexive
     STRINGS.each {|s|
-      assert(s == s, "#{encdump s} == #{encdump s}")
+      assert_equal(s, s, "#{encdump s} == #{encdump s}")
     }
   end
 
   def test_str_eq_symmetric
     combination(STRINGS, STRINGS) {|s1, s2|
       if s1 == s2
-        assert(s2 == s1, "#{encdump s2} == #{encdump s1}")
+        assert_equal(s2, s1, "#{encdump s2} == #{encdump s1}")
       else
-        assert(!(s2 == s1), "!(#{encdump s2} == #{encdump s1})")
+        assert_not_equal(s2, s1, "!(#{encdump s2} == #{encdump s1})")
       end
     }
   end
@@ -257,7 +264,7 @@ class TestM17NComb < Test::Unit::TestCase
   def test_str_eq_transitive
     combination(STRINGS, STRINGS, STRINGS) {|s1, s2, s3|
       if s1 == s2 && s2 == s3
-        assert(s1 == s3, "transitive: #{encdump s1} == #{encdump s2} == #{encdump s3}")
+        assert_equal(s1, s3, "transitive: #{encdump s1} == #{encdump s2} == #{encdump s3}")
       end
     }
   end
@@ -268,15 +275,15 @@ class TestM17NComb < Test::Unit::TestCase
       if b(s1) == b(s2) and
           (s1.ascii_only? && s2.ascii_only? or
            s1.encoding == s2.encoding) then
-        assert(s1 == s2, desc_eq)
-        assert(!(s1 != s2))
+        assert_operator(s1, :==, s2, desc_eq)
+        assert_not_operator(s1, :!=, s2)
         assert_equal(0, s1 <=> s2)
-        assert(s1.eql?(s2), desc_eq)
+        assert_operator(s1, :eql?, s2, desc_eq)
       else
-        assert(!(s1 == s2), "!(#{desc_eq})")
-        assert(s1 != s2)
+        assert_not_operator(s1, :==, s2, "!(#{desc_eq})")
+        assert_operator(s1, :!=, s2)
         assert_not_equal(0, s1 <=> s2)
-        assert(!s1.eql?(s2))
+        assert_not_operator(s1, :eql?, s2)
       end
     }
   end
@@ -286,7 +293,7 @@ class TestM17NComb < Test::Unit::TestCase
       s = s1.dup
       if s1.ascii_only? || s2.ascii_only? || s1.encoding == s2.encoding
         s << s2
-        assert(s.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+        assert_predicate(s, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
         assert_equal(b(s), b(s1) + b(s2))
         assert_str_enc_propagation(s, s1, s2)
       else
@@ -300,7 +307,7 @@ class TestM17NComb < Test::Unit::TestCase
       t = ''.force_encoding(s.encoding)
       0.upto(s.length-1) {|i|
         u = s[i]
-        assert(u.valid_encoding?) if s.valid_encoding?
+        assert_predicate(u, :valid_encoding?) if s.valid_encoding?
         t << u
       }
       assert_equal(t, s)
@@ -312,7 +319,7 @@ class TestM17NComb < Test::Unit::TestCase
       t = ''.force_encoding(s.encoding)
       0.upto(s.length-1) {|i|
         u = s[i,1]
-        assert(u.valid_encoding?) if s.valid_encoding?
+        assert_predicate(u, :valid_encoding?) if s.valid_encoding?
         t << u
       }
       assert_equal(t, s)
@@ -322,7 +329,7 @@ class TestM17NComb < Test::Unit::TestCase
       t = ''.force_encoding(s.encoding)
       0.step(s.length-1, 2) {|i|
         u = s[i,2]
-        assert(u.valid_encoding?) if s.valid_encoding?
+        assert_predicate(u, :valid_encoding?) if s.valid_encoding?
         t << u
       }
       assert_equal(t, s)
@@ -334,7 +341,7 @@ class TestM17NComb < Test::Unit::TestCase
       if s1.ascii_only? || s2.ascii_only? || s1.encoding == s2.encoding
         t = enccall(s1, :[], s2)
         if t != nil
-          assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+          assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
           assert_equal(s2, t)
           assert_match(/#{Regexp.escape(b(s2))}/, b(s1))
           if s1.valid_encoding?
@@ -362,7 +369,7 @@ class TestM17NComb < Test::Unit::TestCase
         assert_nil(t, desc)
         next
       end
-      assert(t.valid_encoding?) if s.valid_encoding?
+      assert_predicate(t, :valid_encoding?) if s.valid_encoding?
       if last < 0
         last += s.length
       end
@@ -393,7 +400,7 @@ class TestM17NComb < Test::Unit::TestCase
       if last < 0
         last += s.length
       end
-      assert(t.valid_encoding?) if s.valid_encoding?
+      assert_predicate(t, :valid_encoding?) if s.valid_encoding?
       t2 = ''
       first.upto(last-1) {|i|
         c = s[i]
@@ -412,8 +419,8 @@ class TestM17NComb < Test::Unit::TestCase
             assert_raise(IndexError) { t[i] = s2 }
           else
             t[i] = s2
-            assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
-            assert(b(t).index(b(s2)))
+            assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+            assert_send([b(t), :index, b(s2)])
             if s1.valid_encoding? && s2.valid_encoding?
               if i == s1.length && s2.empty?
                 assert_nil(t[i])
@@ -440,9 +447,9 @@ class TestM17NComb < Test::Unit::TestCase
         if i < -s1.length || s1.length < i
           assert_raise(IndexError) { t[i,len] = s2 }
         else
-          assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+          assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
           t[i,len] = s2
-          assert(b(t).index(b(s2)))
+          assert_send([b(t), :index, b(s2)])
           if s1.valid_encoding? && s2.valid_encoding?
             if i == s1.length && s2.empty?
               assert_nil(t[i])
@@ -486,7 +493,7 @@ class TestM17NComb < Test::Unit::TestCase
         if !t[s2]
         else
           enccall(t, :[]=, s2, s3)
-          assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding? && s3.valid_encoding?
+          assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding? && s3.valid_encoding?
         end
       end
     }
@@ -500,8 +507,8 @@ class TestM17NComb < Test::Unit::TestCase
           assert_raise(RangeError) { t[first..last] = s2 }
         else
           enccall(t, :[]=, first..last, s2)
-          assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
-          assert(b(t).index(b(s2)))
+          assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+          assert_send([b(t), :index, b(s2)])
           if s1.valid_encoding? && s2.valid_encoding?
             if first < 0
               assert_equal(s2, t[s1.length+first, s2.length])
@@ -527,8 +534,8 @@ class TestM17NComb < Test::Unit::TestCase
           assert_raise(RangeError) { t[first...last] = s2 }
         else
           enccall(t, :[]=, first...last, s2)
-          assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
-          assert(b(t).index(b(s2)))
+          assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+          assert_send([b(t), :index, b(s2)])
           if s1.valid_encoding? && s2.valid_encoding?
             if first < 0
               assert_equal(s2, t[s1.length+first, s2.length])
@@ -563,11 +570,11 @@ class TestM17NComb < Test::Unit::TestCase
       begin
         t1 = s.capitalize
       rescue ArgumentError
-        assert(!s.valid_encoding?)
+        assert_not_predicate(s, :valid_encoding?)
         next
       end
-      assert(t1.valid_encoding?) if s.valid_encoding?
-      assert(t1.casecmp(s))
+      assert_predicate(t1, :valid_encoding?) if s.valid_encoding?
+      assert_operator(t1, :casecmp, s)
       t2 = s.dup
       t2.capitalize!
       assert_equal(t1, t2)
@@ -589,7 +596,7 @@ class TestM17NComb < Test::Unit::TestCase
   def test_str_center
     combination(STRINGS, [0,1,2,3,10]) {|s1, width|
       t = s1.center(width)
-      assert(b(t).index(b(s1)))
+      assert_send([b(t), :index, b(s1)])
     }
     combination(STRINGS, [0,1,2,3,10], STRINGS) {|s1, width, s2|
       if s2.empty?
@@ -601,8 +608,8 @@ class TestM17NComb < Test::Unit::TestCase
         next
       end
       t = enccall(s1, :center, width, s2)
-      assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
-      assert(b(t).index(b(s1)))
+      assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+      assert_send([b(t), :index, b(s1)])
       assert_str_enc_propagation(t, s1, s2) if (t != s1)
     }
   end
@@ -610,7 +617,7 @@ class TestM17NComb < Test::Unit::TestCase
   def test_str_ljust
     combination(STRINGS, [0,1,2,3,10]) {|s1, width|
       t = s1.ljust(width)
-      assert(b(t).index(b(s1)))
+      assert_send([b(t), :index, b(s1)])
     }
     combination(STRINGS, [0,1,2,3,10], STRINGS) {|s1, width, s2|
       if s2.empty?
@@ -622,8 +629,8 @@ class TestM17NComb < Test::Unit::TestCase
         next
       end
       t = enccall(s1, :ljust, width, s2)
-      assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
-      assert(b(t).index(b(s1)))
+      assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+      assert_send([b(t), :index, b(s1)])
       assert_str_enc_propagation(t, s1, s2) if (t != s1)
     }
   end
@@ -631,7 +638,7 @@ class TestM17NComb < Test::Unit::TestCase
   def test_str_rjust
     combination(STRINGS, [0,1,2,3,10]) {|s1, width|
       t = s1.rjust(width)
-      assert(b(t).index(b(s1)))
+      assert_send([b(t), :index, b(s1)])
     }
     combination(STRINGS, [0,1,2,3,10], STRINGS) {|s1, width, s2|
       if s2.empty?
@@ -643,8 +650,8 @@ class TestM17NComb < Test::Unit::TestCase
         next
       end
       t = enccall(s1, :rjust, width, s2)
-      assert(t.valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
-      assert(b(t).index(b(s1)))
+      assert_predicate(t, :valid_encoding?) if s1.valid_encoding? && s2.valid_encoding?
+      assert_send([b(t), :index, b(s1)])
       assert_str_enc_propagation(t, s1, s2) if (t != s1)
     }
   end
@@ -653,17 +660,30 @@ class TestM17NComb < Test::Unit::TestCase
     combination(STRINGS, STRINGS) {|s1, s2|
       if !s1.ascii_only? && !s2.ascii_only? && !Encoding.compatible?(s1,s2)
         if s1.bytesize > s2.bytesize
-          assert_raise(Encoding::CompatibilityError) { s1.chomp(s2) }
+          assert_raise(Encoding::CompatibilityError, "#{encdump(s1)}.chomp(#{encdump(s2)})") do
+            s1.chomp(s2)
+          end
         end
         next
       end
       t = enccall(s1, :chomp, s2)
-      assert(t.valid_encoding?, "#{encdump(s1)}.chomp(#{encdump(s2)})") if s1.valid_encoding? && s2.valid_encoding?
+      assert_predicate(t, :valid_encoding?, "#{encdump(s1)}.chomp(#{encdump(s2)})") if s1.valid_encoding? && s2.valid_encoding?
       assert_equal(s1.encoding, t.encoding)
       t2 = s1.dup
       t2.chomp!(s2)
       assert_equal(t, t2)
     }
+  end
+
+  def test_str_smart_chomp
+    bug10893 = '[ruby-core:68258] [Bug #10893]'
+    encodings = Encoding.list.select {|enc| !enc.dummy?}
+    combination(encodings, encodings) do |e1, e2|
+      expected = "abc".encode(e1)
+      combination(["abc\n", "abc\r\n"], ["", "\n"]) do |str, rs|
+        assert_equal(expected, str.encode(e1).chomp(rs.encode(e2)), bug10893)
+      end
+    end
   end
 
   def test_str_chop
@@ -672,8 +692,8 @@ class TestM17NComb < Test::Unit::TestCase
       desc = "#{encdump s}.chop"
       t = nil
       assert_nothing_raised(desc) { t = s.chop }
-      assert(t.valid_encoding?) if s.valid_encoding?
-      assert(b(s).index(b(t)))
+      assert_predicate(t, :valid_encoding?) if s.valid_encoding?
+      assert_send([b(s), :index, b(t)])
       t2 = s.dup
       t2.chop!
       assert_equal(t, t2)
@@ -684,8 +704,8 @@ class TestM17NComb < Test::Unit::TestCase
     STRINGS.each {|s|
       t = s.dup
       t.clear
-      assert(t.valid_encoding?)
-      assert(t.empty?)
+      assert_predicate(t, :valid_encoding?)
+      assert_empty(t)
     }
   end
 
@@ -709,12 +729,13 @@ class TestM17NComb < Test::Unit::TestCase
 
   def test_str_count
     combination(STRINGS, STRINGS) {|s1, s2|
+      desc = proc {encdumpcall(s1, :count, s2)}
       if !s1.valid_encoding? || !s2.valid_encoding?
-        assert_raise(ArgumentError, Encoding::CompatibilityError) { s1.count(s2) }
+        assert_raise(ArgumentError, Encoding::CompatibilityError, desc) { s1.count(s2) }
         next
       end
       if !s1.ascii_only? && !s2.ascii_only? && s1.encoding != s2.encoding
-        assert_raise(Encoding::CompatibilityError) { s1.count(s2) }
+        assert_raise(Encoding::CompatibilityError, desc) { s1.count(s2) }
         next
       end
       n = enccall(s1, :count, s2)
@@ -723,27 +744,41 @@ class TestM17NComb < Test::Unit::TestCase
     }
   end
 
-  def test_str_crypt
-    begin
-      # glibc 2.16 or later denies salt contained other than [0-9A-Za-z./] #7312
-      glibcpath = `ldd #{RbConfig.ruby}`[/\S+\/libc.so\S+/]
-      glibcver = `#{glibcpath}`[/\AGNU C Library.*version ([0-9.]+)/, 1].split('.').map(&:to_i)
-      strict_crypt = (glibcver <=> [2, 16]) > -1
-    rescue
-    end
+  # glibc 2.16 or later denies salt contained other than [0-9A-Za-z./] #7312
+  # we use this check to test strict and non-strict behavior separately #11045
+  strict_crypt = if defined? Etc::CS_GNU_LIBC_VERSION
+    glibcver = Etc.confstr(Etc::CS_GNU_LIBC_VERSION).scan(/\d+/).map(&:to_i)
+    (glibcver <=> [2, 16]) >= 0
+  end
 
+  def test_str_crypt
     combination(STRINGS, STRINGS) {|str, salt|
-      if strict_crypt
-        next unless salt.ascii_only? && /\A[0-9a-zA-Z.\/]+\z/ =~ salt
-      end
-      if b(salt).length < 2
-        assert_raise(ArgumentError) { str.crypt(salt) }
-        next
-      end
-      t = str.crypt(salt)
-      assert_equal(b(str).crypt(b(salt)), t, "#{encdump(str)}.crypt(#{encdump(salt)})")
-      assert_encoding('ASCII-8BIT', t.encoding)
+      # skip input other than [0-9A-Za-z./] to confirm strict behavior
+      next unless salt.ascii_only? && /\A[0-9a-zA-Z.\/]+\z/ =~ salt
+
+      confirm_crypt_result(str, salt)
     }
+  end
+
+  if !strict_crypt
+    def test_str_crypt_nonstrict
+      combination(STRINGS, STRINGS) {|str, salt|
+        # only test input other than [0-9A-Za-z./] to confirm non-strict behavior
+        next if salt.ascii_only? && /\A[0-9a-zA-Z.\/]+\z/ =~ salt
+
+        confirm_crypt_result(str, salt)
+      }
+    end
+  end
+
+  private def confirm_crypt_result(str, salt)
+    if b(salt).length < 2
+      assert_raise(ArgumentError) { str.crypt(salt) }
+      return
+    end
+    t = str.crypt(salt)
+    assert_equal(b(str).crypt(b(salt)), t, "#{encdump(str)}.crypt(#{encdump(salt)})")
+    assert_encoding('ASCII-8BIT', t.encoding)
   end
 
   def test_str_delete
@@ -761,7 +796,7 @@ class TestM17NComb < Test::Unit::TestCase
         next
       end
       t = enccall(s1, :delete, s2)
-      assert(t.valid_encoding?)
+      assert_predicate(t, :valid_encoding?)
       assert_equal(t.encoding, s1.encoding)
       assert_operator(t.length, :<=, s1.length)
       t2 = s1.dup
@@ -773,13 +808,13 @@ class TestM17NComb < Test::Unit::TestCase
   def test_str_downcase
     STRINGS.each {|s|
       if !s.valid_encoding?
-        assert_raise(ArgumentError) { s.downcase }
+        assert_raise(ArgumentError, "Offending string: #{s.inspect}, encoding: #{s.encoding}") { s.downcase }
         next
       end
       t = s.downcase
-      assert(t.valid_encoding?)
+      assert_predicate(t, :valid_encoding?)
       assert_equal(t.encoding, s.encoding)
-      assert(t.casecmp(s))
+      assert_operator(t, :casecmp, s)
       t2 = s.dup
       t2.downcase!
       assert_equal(t, t2)
@@ -789,8 +824,8 @@ class TestM17NComb < Test::Unit::TestCase
   def test_str_dump
     STRINGS.each {|s|
       t = s.dump
-      assert(t.valid_encoding?)
-      assert(t.ascii_only?)
+      assert_predicate(t, :valid_encoding?)
+      assert_predicate(t, :ascii_only?)
       u = eval(t)
       assert_equal(b(s), b(u))
     }
@@ -829,9 +864,9 @@ class TestM17NComb < Test::Unit::TestCase
   def test_str_empty?
     STRINGS.each {|s|
       if s.length == 0
-        assert(s.empty?)
+        assert_empty(s)
       else
-        assert(!s.empty?)
+        assert_not_empty(s)
       end
     }
   end
@@ -854,12 +889,12 @@ class TestM17NComb < Test::Unit::TestCase
       end
       t = enccall(s1, :include?, s2)
       if t
-        assert(b(s1).include?(b(s2)))
-        assert(s1.index(s2))
-        assert(s1.rindex(s2))
+        assert_include(b(s1), b(s2))
+        assert_send([s1, :index, s2])
+        assert_send([s1, :rindex, s2])
       else
-        assert(!s1.index(s2))
-        assert(!s1.rindex(s2), "!#{encdump(s1)}.rindex(#{encdump(s2)})")
+        assert_not_send([s1, :index, s2])
+        assert_not_send([s1, :rindex, s2], "!#{encdump(s1)}.rindex(#{encdump(s2)})")
       end
       if s2.empty?
         assert_equal(true, t)
@@ -935,7 +970,7 @@ class TestM17NComb < Test::Unit::TestCase
       end
       if t
         #puts "#{encdump s1}.rindex(#{encdump s2}, #{pos}) => #{t}"
-        assert(b(s1).index(b(s2)))
+        assert_send([b(s1), :index, b(s2)])
         pos2 = pos
         pos2 += s1.length if pos < 0
         re = /\A(.{0,#{pos2}})#{Regexp.escape(s2)}/m
@@ -1036,25 +1071,26 @@ class TestM17NComb < Test::Unit::TestCase
 
   def test_str_scan
     combination(STRINGS, STRINGS) {|s1, s2|
+      desc = proc {"#{s1.dump}.scan(#{s2.dump})"}
       if !s2.valid_encoding?
-        assert_raise(RegexpError) { s1.scan(s2) }
+        assert_raise(RegexpError, desc) { s1.scan(s2) }
         next
       end
       if !s1.ascii_only? && !s2.ascii_only? && s1.encoding != s2.encoding
         if s1.valid_encoding?
-          assert_raise(Encoding::CompatibilityError) { s1.scan(s2) }
+          assert_raise(Encoding::CompatibilityError, desc) { s1.scan(s2) }
         else
-          assert_match(/invalid byte sequence/, assert_raise(ArgumentError) { s1.scan(s2) }.message)
+          assert_raise_with_message(ArgumentError, /invalid byte sequence/, desc) { s1.scan(s2) }
         end
         next
       end
       if !s1.valid_encoding?
-        assert_raise(ArgumentError) { s1.scan(s2) }
+        assert_raise(ArgumentError, desc) { s1.scan(s2) }
         next
       end
       r = enccall(s1, :scan, s2)
       r.each {|t|
-        assert_equal(s2, t)
+        assert_equal(s2, t, desc)
       }
     }
   end
@@ -1093,8 +1129,8 @@ class TestM17NComb < Test::Unit::TestCase
                     "#{encdump s}.slice!#{encdumpargs args}.encoding")
       end
       if [s, *args].all? {|o| !(String === o) || o.valid_encoding? }
-        assert(r.valid_encoding?)
-        assert(t.valid_encoding?)
+        assert_predicate(r, :valid_encoding?)
+        assert_predicate(t, :valid_encoding?)
         assert_equal(s.length, r.length + t.length)
       end
     }
@@ -1116,13 +1152,13 @@ class TestM17NComb < Test::Unit::TestCase
       end
       t = enccall(s1, :split, s2)
       t.each {|r|
-        assert(b(s1).include?(b(r)))
+        assert_include(b(s1), b(r))
         assert_equal(s1.encoding, r.encoding)
       }
-      assert(b(s1).include?(t.map {|u| b(u) }.join(b(s2))))
+      assert_include(b(s1), t.map {|u| b(u) }.join(b(s2)))
       if s1.valid_encoding? && s2.valid_encoding?
         t.each {|r|
-          assert(r.valid_encoding?)
+          assert_predicate(r, :valid_encoding?)
         }
       end
     }
@@ -1184,8 +1220,8 @@ class TestM17NComb < Test::Unit::TestCase
         next
       end
       t1 = s.swapcase
-      assert(t1.valid_encoding?) if s.valid_encoding?
-      assert(t1.casecmp(s))
+      assert_predicate(t1, :valid_encoding?) if s.valid_encoding?
+      assert_operator(t1, :casecmp, s)
       t2 = s.dup
       t2.swapcase!
       assert_equal(t1, t2)
@@ -1298,8 +1334,8 @@ class TestM17NComb < Test::Unit::TestCase
         next
       end
       t1 = s.upcase
-      assert(t1.valid_encoding?)
-      assert(t1.casecmp(s))
+      assert_predicate(t1, :valid_encoding?)
+      assert_operator(t1, :casecmp, s)
       t2 = s.dup
       t2.upcase!
       assert_equal(t1, t2)
@@ -1321,7 +1357,7 @@ class TestM17NComb < Test::Unit::TestCase
         #puts encdump(s)
         t = s.succ
         if s.valid_encoding?
-          assert(t.valid_encoding?, "#{encdump s}.succ.valid_encoding?")
+          assert_predicate(t, :valid_encoding?, "#{encdump s}.succ.valid_encoding?")
         end
         s = t
       }
@@ -1540,8 +1576,8 @@ class TestM17NComb < Test::Unit::TestCase
         assert_raise(Encoding::CompatibilityError, desc) { s1.start_with?(s2) }
         next
       end
-      s1 = s1.dup.force_encoding("ASCII-8BIT")
-      s2 = s2.dup.force_encoding("ASCII-8BIT")
+      s1 = s1.b
+      s2 = s2.b
       if s1.length < s2.length
         assert_equal(false, enccall(s1, :start_with?, s2), desc)
         next
@@ -1600,4 +1636,9 @@ class TestM17NComb < Test::Unit::TestCase
     }
   end
 
+  def test_bug11486
+    bug11486 = '[Bug #11486]'
+    assert_nil ("\u3042"*19+"\r"*19+"\u3042"*20+"\r"*20).encode(Encoding::EUC_JP).gsub!(/xxx/i, ""), bug11486
+    assert_match Regexp.new("ABC\uff41".encode(Encoding::EUC_JP), Regexp::IGNORECASE), "abc\uFF21".encode(Encoding::EUC_JP), bug11486
+  end
 end

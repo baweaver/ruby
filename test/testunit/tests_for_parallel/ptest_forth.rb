@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require 'test/unit'
 
 class TestE < Test::Unit::TestCase
@@ -13,6 +14,14 @@ class TestE < Test::Unit::TestCase
 
   def test_always_fail
     assert_equal(0,1)
+  end
+
+  def test_skip_after_unknown_error
+    begin
+      raise UnknownError, "unknown error"
+    rescue
+      skip "after raise"
+    end
   end
 
   def test_unknown_error

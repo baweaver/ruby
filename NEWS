@@ -1,309 +1,56 @@
 # -*- rdoc -*-
 
-= NEWS for Ruby 2.1.0
+= NEWS for Ruby 2.7.0
 
 This document is a list of user visible feature changes made between
 releases except for bug fixes.
 
-Note that each entry is kept so brief that no reason behind or
-reference information is supplied with.  For a full list of changes
-with all sufficient information, see the ChangeLog file.
+Note that each entry is kept so brief that no reason behind or reference
+information is supplied with.  For a full list of changes with all
+sufficient information, see the ChangeLog file or Redmine
+(e.g. <tt>https://bugs.ruby-lang.org/issues/$FEATURE_OR_BUG_NUMBER</tt>)
 
-== Changes since the 2.0.0 release
+== Changes since the 2.6.0 release
 
 === Language changes
 
-* Now the default values of keyword arguments can be omitted.  Those
-  "required keyword arguments" need giving explicitly at the call time.
+* Method reference operator, <code>.:</code> is introduced as an
+  experimental feature.  [Feature #12125] [Feature #13581]
 
-* Added suffixes for integer and float literals: 'r', 'i', and 'ri'.
-  * "42r" and "3.14r" are evaluated as Rational(42, 1) and 3.14.rationalize,
-    respectively.  But exponential form with 'r' suffix like "6.022e+23r" is
-    not accepted because it is misleading.
-  * "42i" and "3.14i" are evaluated as Complex(0, 42) and Complex(0, 3.14),
-    respectively.
-  * "42ri" and "3.14ri" are evaluated as Complex(0, 42r) and Complex(0, 3.14r),
-    respectively.
+* Proc.new and proc with no block in a method called with a block is warned
+  now.
 
-* def-expr now returns the symbol of its name instead of nil.
-
-* Added 'f' suffix for string literals that returns a frozen String object.
+* lambda with no block in a method called with a block errs.
 
 === Core classes updates (outstanding ones only)
 
-* Array
-  * New methods
-    * Array#to_h converts an array of key-value pairs into a Hash.
+Enumerable::
 
-* Binding
-  * New methods
-    * Binding#local_variable_get(symbol)
-    * Binding#local_variable_set(symbol, obj)
-    * Binding#local_variable_defined?(symbol)
+  New method::
 
-* Enumerable
-  * New methods
-    * Enumerable#to_h converts a list of key-value pairs into a Hash.
-
-* GC
-  * added environment variable:
-    * RUBY_HEAP_SLOTS_GROWTH_FACTOR: growth rate of the heap.
-
-* Integer
-  * New methods
-    * Fixnum#bit_length
-    * Bignum#bit_length
-  * Bignum performance improvement
-    * Use GMP if available.
-      GMP is used only for several operations:
-      multiplication, division, radix conversion, GCD
-
-* IO
-  * extended methods:
-    * IO#seek supports SEEK_DATA and SEEK_HOLE as whence.
-    * IO#seek accepts symbols (:CUR, :END, :SET, :DATA, :HOLE) for 2nd argument.
-    * IO#read_nonblock accepts optional `exception: false` to return symbols
-    * IO#write_nonblock accepts optional `exception: false` to return symbols
-
-* Kernel
-  * New methods:
-    * Kernel#singleton_method
-
-* Module
-  * New methods:
-    * Module#using, which activates refinements of the specified module only
-      in the current class or module definition.
-    * Module#singleton_class? returns true if the receiver is a singleton class
-      or false if it is an ordinary class or module.
-  * extended methods:
-    * Module#refine is no longer experimental.
-    * Module#include and Module#prepend are now public methods.
-
-* Mutex
-  * misc
-    * Mutex#owned? is no longer experimental.
-
-* Numeric
-  * extended methods:
-    * Numeric#step allows the limit argument to be omitted, in which
-      case an infinite sequence of numbers is generated.  Keyword
-      arguments `to` and `by` are introduced for ease of use.
-
-* Process
-  * New methods:
-    * alternative methods to $0/$0=:
-      * Process.argv0() returns the original value of $0.
-      * Process.setproctitle() sets the process title without affecting $0.
-    * Process.clock_gettime
-    * Process.clock_getres
-
-* RbConfig
-  * New constants:
-    * RbConfig::SIZEOF is added to provide the size of C types.
-
-* String
-  * New methods:
-    * String#scrub and String#scrub! verify and fix invalid byte sequence.
-  * extended methods:
-    * If invalid: :replace is specified for String#encode, replace
-      invalid byte sequence even if the destination encoding equals to
-      the source encoding.
-
-* Symbol
-  * All symbols are now frozen.
-
-* pack/unpack (Array/String)
-  * Q! and q! directives for long long type if platform has the type.
-
-* toplevel
-  * extended methods:
-    * main.using is no longer experimental. The method activates refinements
-      in the ancestors of the argument module to support refinement
-      inheritance by Module#include.
-
-=== Core classes compatibility issues (excluding feature bug fixes)
-
-* IO
-  * incompatible changes:
-    * open ignore internal encoding if external encoding is ASCII-8BIT.
-
-* Kernel#eval, Kernel#instance_eval, and Module#module_eval.
-  * Copies the scope information of the original environment, which means
-    that private, protected, public, and module_function without arguments
-    do not affect the environment outside the eval string.
-    For example, `class Foo; eval "private"; def foo; end; end' doesn't make
-    Foo#foo private.
-
-* Kernel#untrusted?, untrust, and trust
-  * These methods are deprecated and their behavior is same as tainted?,
-    taint, and untaint, respectively.  If $VERBOSE is true, they show warnings.
-
-* Module#ancestors
-  * The ancestors of a singleton class now include singleton classes,
-    in particular itself.
-
-* Module#define_method and Object#define_singleton_method
-  * Now they return the symbols of the defined methods, not the methods/procs
-    themselves.
-
-* Numeric#quo
-  * Raises TypeError instead of ArgumentError if the receiver doesn't have
-    to_r method.
-
-* Proc
-  * Returning from lambda proc now always exits from the Proc, not from the
-    method where the lambda is created.  Returing from non-lambda proc exits
-    from the method, same as the former behavior.
+   * Added Enumerable#tally.  [Feature #11076]
 
 === Stdlib updates (outstanding ones only)
 
-* CGI::Util
-  * All class methods modulized.
+CSV::
 
-* Digest
-  * extended methods:
-    * Digest::Class.file takes optional arguments for its constructor
+  * Upgrade to 3.0.4.
+    See https://github.com/ruby/csv/blob/master/NEWS.md.
 
-* Matrix
-  * Added Vector#cross_product.
+RSS::
 
-* Net::SMTP
-  * Added Net::SMTP#rset to implement the RSET command
+  * Upgrade to RSS 0.2.8.
+    See https://github.com/ruby/rss/blob/master/NEWS.md.
 
-* Pathname
-  * New methods:
-    * Pathname#write
-    * Pathname#binwrite
-
-* OpenSSL::BN
-  * extended methods:
-    * OpenSSL::BN.new allows Fixnum/Bignum argument.
-
-* open-uri
-  * Support multiple fields with same field name (like Set-Cookie).
-
-* rake
-  * Updated to 10.1.0.  Major changes include removal of the class namespace,
-    Rake::DSL to hold the rake DSL methods and removal of support for legacy
-    rake features.
-
-    For a complete list of changes since rake 0.9.6 see:
-
-    http://rake.rubyforge.org/doc/release_notes/rake-10_1_0_rdoc.html
-
-    http://rake.rubyforge.org/doc/release_notes/rake-10_0_3_rdoc.html
-
-* RDoc
-  * Updated to 4.1.0.preview.1.  Major enhancements include a modified default
-    template and accessibility enhancements.
-
-    For a list of minor enhancements and bug fixes see:
-    https://github.com/rdoc/rdoc/blob/v4.1.0.preview.1/History.rdoc
-
-* Resolv
-  * New methods:
-    * Resolv::DNS.fetch_resource
-  * One-shot multicast DNS support
-  * Support LOC resources
-
-* REXML::Parsers::SAX2Parser
-  * Fixes wrong number of arguments of entitydecl event. Document of the event
-    says "an array of the entity declaration" but implemenation passes two
-    or more arguments. It is an implementation bug but it breaks backword
-    compatibility.
-
-* REXML::Parsers::StreamParser
-  * Supports "entity" event.
-
-* REXML::Text
-  * REXML::Text#<< supports method chain like 'text << "XXX" << "YYY"'.
-  * REXML::Text#<< supports not "raw" mode.
-
-* Rinda::RingServer, Rinda::RingFinger
-  * Rinda now supports multicast sockets.  See Rinda::RingServer and
-    Rinda::RingFinger for details.
-
-* RubyGems
-  * Updated to 2.2.0.preview.1  For a list of enhancements and bug fixes see:
-    https://github.com/rubygems/rubygems/blob/v2.2.0.preview.1/History.txt
-
-* Set
-  * New methods:
-    * Set#intersect?
-    * Set#disjoint?
-
-* Socket
-  * New methods:
-    * Socket.getifaddrs
-
-* StringScanner
-  * extended methods:
-    * StringScanner#[] supports named captures.
-
-* Syslog::Logger
-  * Added facility.
-
-* Tempfile
-  * New methods:
-    * Tempfile.create
-
-* Timeout
-  * No longer an exception to terminate the given block can be rescued
-    inside the block, by default, unless the exception class is given
-    explicitly.
-
-* TSort
-  * New methods:
-    * TSort.tsort
-    * TSort.tsort_each
-    * TSort.strongly_connected_components
-    * TSort.each_strongly_connected_component
-    * TSort.each_strongly_connected_component_from
-
-* WEBrick
-  * The body of a response may now be a StringIO or other IO-like that responds
-    to #readpartial and #read.
-
-* XMLRPC::Client
-  * New methods:
-    * XMLRPC::Client#http. It returns Net::HTTP for the client. Normally,
-      it is not needed. It is useful when you want to change minor HTTP client
-      options. You can change major HTTP client options by XMLRPC::Client
-      methods. You should use XMLRPC::Client methods for changing major
-      HTTP client options instead of XMLRPC::Client#http.
+=== Compatibility issues (excluding feature bug fixes)
 
 === Stdlib compatibility issues (excluding feature bug fixes)
 
-* objspace
-  * new method:
-    * ObjectSpace.trace_object_allocations
-    * ObjectSpace.trace_object_allocations_start
-    * ObjectSpace.trace_object_allocations_stop
-    * ObjectSpace.trace_object_allocations_clear
-    * ObjectSpace.allocation_sourcefile
-    * ObjectSpace.allocation_sourceline
-    * ObjectSpace.allocation_class_path
-    * ObjectSpace.allocation_method_id
-    * ObjectSpace.allocation_generation
-    * ObjectSpace.reachable_objects_from_root
-
-* Set
-  * incompatible changes:
-    * Set#to_set now returns self instead of generating a copy.
-
-* URI
-  * incompatible changes:
-    * URI.decode_www_form follows current WHATWG URL Standard.
-      It gets encoding argument to specify the character encoding.
-      It now allows loose percent encoded strings, but denies ;-separator.
-    * URI.encode_www_form follows current WHATWG URL Standard.
-      It gets encoding argument to convert before percent encode.
-      UTF-16 strings aren't converted to UTF-8 before percent encode by default.
-
-=== Built-in global variables compatibility issues
-
-* $SAFE
-  * $SAFE=4 is obsolete.  If $SAFE is set to 4 or larger, an ArgumentError
-    is raised.
-
 === C API updates
+
+=== Implementation improvements
+
+=== Miscellaneous changes
+
+* Require compilers to support C99 [Misc #15347]
+  * Details of our dialect: https://bugs.ruby-lang.org/projects/ruby-trunk/wiki/C99

@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'psych/scalar_scanner'
 require 'psych/class_loader'
 require 'psych/exception'
@@ -32,7 +33,7 @@ module Psych
         return result if @domain_types.empty? || !target.tag
 
         key = target.tag.sub(/^[!\/]*/, '').sub(/(,\d+)\//, '\1:')
-        key = "tag:#{key}" unless key =~ /^(tag:|x-private)/
+        key = "tag:#{key}" unless key =~ /^(?:tag:|x-private)/
 
         if @domain_types.key? key
           value, block = @domain_types[key]
@@ -61,7 +62,7 @@ module Psych
         case o.tag
         when '!binary', 'tag:yaml.org,2002:binary'
           o.value.unpack('m').first
-        when /^!(?:str|ruby\/string)(?::(.*))?/, 'tag:yaml.org,2002:str'
+        when /^!(?:str|ruby\/string)(?::(.*))?$/, 'tag:yaml.org,2002:str'
           klass = resolve_class($1)
           if klass
             klass.allocate.replace o.value
@@ -69,12 +70,14 @@ module Psych
             o.value
           end
         when '!ruby/object:BigDecimal'
-          require 'bigdecimal'
+          require 'bigdecimal' unless defined? BigDecimal
           class_loader.big_decimal._load o.value
         when "!ruby/object:DateTime"
           class_loader.date_time
-          require 'date'
+          require 'date' unless defined? DateTime
           @ss.parse_time(o.value).to_datetime
+        when '!ruby/encoding'
+          ::Encoding.find o.value
         when "!ruby/object:Complex"
           class_loader.complex
           Complex(o.value)
@@ -87,7 +90,7 @@ module Psych
           Float(@ss.tokenize(o.value))
         when "!ruby/regexp"
           klass = class_loader.regexp
-          o.value =~ /^\/(.*)\/([mixn]*)$/
+          o.value =~ /^\/(.*)\/([mixn]*)$/m
           source  = $1
           options = 0
           lang    = nil
@@ -156,7 +159,7 @@ module Psych
         if Psych.load_tags[o.tag]
           return revive(resolve_class(Psych.load_tags[o.tag]), o)
         end
-        return revive_hash({}, o) unless o.tag
+        return revive_hash(register(o, {}), o) unless o.tag
 
         case o.tag
         when /^!ruby\/struct:?(.*)?$/
@@ -181,9 +184,11 @@ module Psych
             klass = class_loader.struct
             members = o.children.map { |c| accept c }
             h = Hash[*members]
-            klass.new(*h.map { |k,v|
+            s = klass.new(*h.map { |k,v|
               class_loader.symbolize k
             }).new(*h.map { |k,v| v })
+            register(o, s)
+            s
           end
 
         when /^!ruby\/object:?(.*)?$/
@@ -197,12 +202,14 @@ module Psych
             class_loader.rational
             h = Hash[*o.children.map { |c| accept c }]
             register o, Rational(h['numerator'], h['denominator'])
+          elsif name == 'Hash'
+            revive_hash(register(o, {}), o)
           else
             obj = revive((resolve_class(name) || class_loader.object), o)
             obj
           end
 
-        when /^!(?:str|ruby\/string)(?::(.*))?/, 'tag:yaml.org,2002:str'
+        when /^!(?:str|ruby\/string)(?::(.*))?$/, 'tag:yaml.org,2002:str'
           klass   = resolve_class($1)
           members = {}
           string  = nil
@@ -255,8 +262,23 @@ module Psych
           end
           set
 
+        when /^!ruby\/hash-with-ivars(?::(.*))?$/
+          hash = $1 ? resolve_class($1).allocate : {}
+          register o, hash
+          o.children.each_slice(2) do |key, value|
+            case key.value
+            when 'elements'
+              revive_hash hash, value
+            when 'ivars'
+              value.children.each_slice(2) do |k,v|
+                hash.instance_variable_set accept(k), accept(v)
+              end
+            end
+          end
+          hash
+
         when /^!map:(.*)$/, /^!ruby\/hash:(.*)$/
-          revive_hash resolve_class($1).new, o
+          revive_hash register(o, resolve_class($1).allocate), o
 
         when '!omap', 'tag:yaml.org,2002:omap'
           map = register(o, class_loader.psych_omap.new)
@@ -265,8 +287,23 @@ module Psych
           end
           map
 
+        when /^!ruby\/marshalable:(.*)$/
+          name = $1
+          klass = resolve_class(name)
+          obj = register(o, klass.allocate)
+
+          if obj.respond_to?(:init_with)
+            init_with(obj, revive_hash({}, o), o)
+          elsif obj.respond_to?(:marshal_load)
+            marshal_data = o.children.map(&method(:accept))
+            obj.marshal_load(marshal_data)
+            obj
+          else
+            raise ArgumentError, "Cannot deserialize #{name}"
+          end
+
         else
-          revive_hash({}, o)
+          revive_hash(register(o, {}), o)
         end
       end
 
@@ -294,16 +331,15 @@ module Psych
         list
       end
 
+      SHOVEL = '<<'
       def revive_hash hash, o
-        @st[o.anchor] = hash if o.anchor
-
         o.children.each_slice(2) { |k,v|
           key = accept(k)
           val = accept(v)
 
-          if key == '<<'
+          if key == SHOVEL && k.tag != "tag:yaml.org,2002:str"
             case v
-            when Nodes::Alias
+            when Nodes::Alias, Nodes::Mapping
               begin
                 hash.merge! val
               rescue TypeError
@@ -334,10 +370,8 @@ module Psych
       end
 
       def revive klass, node
-        s = klass.allocate
-        @st[node.anchor] = s if node.anchor
-        h = Hash[*node.children.map { |c| accept c }]
-        init_with(s, h, node)
+        s = register(node, klass.allocate)
+        init_with(s, revive_hash({}, node), node)
       end
 
       def init_with o, h, node
@@ -346,11 +380,6 @@ module Psych
 
         if o.respond_to?(:init_with)
           o.init_with c
-        elsif o.respond_to?(:yaml_initialize)
-          if $VERBOSE
-            warn "Implementing #{o.class}#yaml_initialize is deprecated, please implement \"init_with(coder)\""
-          end
-          o.yaml_initialize c.tag, c.map
         else
           h.each { |k,v| o.instance_variable_set(:"@#{k}", v) }
         end

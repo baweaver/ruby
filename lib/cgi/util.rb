@@ -1,4 +1,9 @@
-class CGI; module Util; end; extend Util; end
+# frozen_string_literal: true
+class CGI
+  module Util; end
+  include Util
+  extend Util
+end
 module CGI::Util
   @@accept_charset="UTF-8" unless defined?(@@accept_charset)
   # URL-encode a string.
@@ -6,7 +11,7 @@ module CGI::Util
   #      # => "%27Stop%21%27+said+Fred"
   def escape(string)
     encoding = string.encoding
-    string.b.gsub(/([^ a-zA-Z0-9_.-]+)/) do |m|
+    string.b.gsub(/([^ a-zA-Z0-9_.\-~]+)/) do |m|
       '%' + m.unpack('H2' * m.bytesize).join('%').upcase
     end.tr(' ', '+').force_encoding(encoding)
   end
@@ -30,21 +35,42 @@ module CGI::Util
     '>' => '&gt;',
   }
 
-  # Escape special characters in HTML, namely &\"<>
+  # Escape special characters in HTML, namely '&\"<>
   #   CGI::escapeHTML('Usage: foo "bar" <baz>')
   #      # => "Usage: foo &quot;bar&quot; &lt;baz&gt;"
   def escapeHTML(string)
+    enc = string.encoding
+    unless enc.ascii_compatible?
+      if enc.dummy?
+        origenc = enc
+        enc = Encoding::Converter.asciicompat_encoding(enc)
+        string = enc ? string.encode(enc) : string.b
+      end
+      table = Hash[TABLE_FOR_ESCAPE_HTML__.map {|pair|pair.map {|s|s.encode(enc)}}]
+      string = string.gsub(/#{"['&\"<>]".encode(enc)}/, table)
+      string.encode!(origenc) if origenc
+      return string
+    end
     string.gsub(/['&\"<>]/, TABLE_FOR_ESCAPE_HTML__)
+  end
+
+  begin
+    require 'cgi/escape'
+  rescue LoadError
   end
 
   # Unescape a string that has been HTML-escaped
   #   CGI::unescapeHTML("Usage: foo &quot;bar&quot; &lt;baz&gt;")
   #      # => "Usage: foo \"bar\" <baz>"
   def unescapeHTML(string)
-    return string unless string.include? '&'
     enc = string.encoding
-    if enc != Encoding::UTF_8 && [Encoding::UTF_16BE, Encoding::UTF_16LE, Encoding::UTF_32BE, Encoding::UTF_32LE].include?(enc)
-      return string.gsub(Regexp.new('&(apos|amp|quot|gt|lt|#[0-9]+|#x[0-9A-Fa-f]+);'.encode(enc))) do
+    unless enc.ascii_compatible?
+      if enc.dummy?
+        origenc = enc
+        enc = Encoding::Converter.asciicompat_encoding(enc)
+        string = enc ? string.encode(enc) : string.b
+      end
+      string = string.gsub(Regexp.new('&(apos|amp|quot|gt|lt|#[0-9]+|#x[0-9A-Fa-f]+);'.encode(enc))) do
         case $1.encode(Encoding::US_ASCII)
         when 'apos'                then "'".encode(enc)
         when 'amp'                 then '&'.encode(enc)
@@ -55,8 +81,15 @@ module CGI::Util
         when /\A#x([0-9a-f]+)\z/i  then $1.hex.chr(enc)
         end
       end
+      string.encode!(origenc) if origenc
+      return string
     end
-    asciicompat = Encoding.compatible?(string, "a")
+    return string unless string.include? '&'
+    charlimit = case enc
+                when Encoding::UTF_8; 0x10ffff
+                when Encoding::ISO_8859_1; 256
+                else 128
+                end
     string.gsub(/&(apos|amp|quot|gt|lt|\#[0-9]+|\#[xX][0-9A-Fa-f]+);/) do
       match = $1.dup
       case match
@@ -67,18 +100,14 @@ module CGI::Util
       when 'lt'                  then '<'
       when /\A#0*(\d+)\z/
         n = $1.to_i
-        if enc == Encoding::UTF_8 or
-          enc == Encoding::ISO_8859_1 && n < 256 or
-          asciicompat && n < 128
+        if n < charlimit
           n.chr(enc)
         else
           "&##{$1};"
         end
       when /\A#x([0-9a-f]+)\z/i
         n = $1.hex
-        if enc == Encoding::UTF_8 or
-          enc == Encoding::ISO_8859_1 && n < 256 or
-          asciicompat && n < 128
+        if n < charlimit
           n.chr(enc)
         else
           "&#x#{$1};"
@@ -90,14 +119,10 @@ module CGI::Util
   end
 
   # Synonym for CGI::escapeHTML(str)
-  def escape_html(str)
-    escapeHTML(str)
-  end
+  alias escape_html escapeHTML
 
   # Synonym for CGI::unescapeHTML(str)
-  def unescape_html(str)
-    unescapeHTML(str)
-  end
+  alias unescape_html unescapeHTML
 
   # Escape only the tags of certain HTML elements in +string+.
   #
@@ -144,14 +169,10 @@ module CGI::Util
   end
 
   # Synonym for CGI::escapeElement(str)
-  def escape_element(str)
-    escapeElement(str)
-  end
+  alias escape_element escapeElement
 
   # Synonym for CGI::unescapeElement(str)
-  def unescape_element(str)
-    unescapeElement(str)
-  end
+  alias unescape_element unescapeElement
 
   # Abbreviated day-of-week names specified by RFC 822
   RFC822_DAYS = %w[ Sun Mon Tue Wed Thu Fri Sat ]

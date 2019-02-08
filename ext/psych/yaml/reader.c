@@ -460,6 +460,10 @@ yaml_parser_update_buffer(yaml_parser_t *parser, size_t length)
 
     }
 
+    if (parser->offset >= MAX_FILE_SIZE) {
+        return yaml_parser_set_reader_error(parser, "input is too long",
+            parser->offset, -1);
+    }
+
     return 1;
 }
-

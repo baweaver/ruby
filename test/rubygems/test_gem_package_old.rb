@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/simple_gem'
 
@@ -6,7 +7,7 @@ class TestGemPackageOld < Gem::TestCase
   def setup
     super
 
-    open 'old_format.gem', 'wb' do |io|
+    File.open 'old_format.gem', 'wb' do |io|
       io.write SIMPLE_GEM
     end
 
@@ -86,4 +87,3 @@ class TestGemPackageOld < Gem::TestCase
   end
 
 end
-

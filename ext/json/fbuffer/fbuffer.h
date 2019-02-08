@@ -12,9 +12,6 @@
 #define RFLOAT_VALUE(val) (RFLOAT(val)->value)
 #endif
 
-#ifndef RARRAY_PTR
-#define RARRAY_PTR(ARRAY) RARRAY(ARRAY)->ptr
-#endif
 #ifndef RARRAY_LEN
 #define RARRAY_LEN(ARRAY) RARRAY(ARRAY)->len
 #endif
@@ -23,6 +20,15 @@
 #endif
 #ifndef RSTRING_LEN
 #define RSTRING_LEN(string) RSTRING(string)->len
+#endif
+
+#ifdef PRIsVALUE
+# define RB_OBJ_CLASSNAME(obj) rb_obj_class(obj)
+# define RB_OBJ_STRING(obj) (obj)
+#else
+# define PRIsVALUE "s"
+# define RB_OBJ_CLASSNAME(obj) rb_obj_classname(obj)
+# define RB_OBJ_STRING(obj) StringValueCStr(obj)
 #endif
 
 #ifdef HAVE_RUBY_ENCODING_H
@@ -67,7 +73,7 @@ static VALUE fbuffer_to_s(FBuffer *fb);
 static FBuffer *fbuffer_alloc(unsigned long initial_length)
 {
     FBuffer *fb;
-    if (initial_length == 0) initial_length = FBUFFER_INITIAL_LENGTH_DEFAULT;
+    if (initial_length <= 0) initial_length = FBUFFER_INITIAL_LENGTH_DEFAULT;
     fb = ALLOC(FBuffer);
     memset((void *) fb, 0, sizeof(FBuffer));
     fb->initial_length = initial_length;
@@ -117,9 +123,9 @@ static void fbuffer_append_str(FBuffer *fb, VALUE str)
     const char *newstr = StringValuePtr(str);
     unsigned long len = RSTRING_LEN(str);
 
-    fbuffer_append(fb, newstr, len);
-
     RB_GC_GUARD(str);
+
+    fbuffer_append(fb, newstr, len);
 }
 #endif
 
@@ -172,7 +178,7 @@ static FBuffer *fbuffer_dup(FBuffer *fb)
 
 static VALUE fbuffer_to_s(FBuffer *fb)
 {
-    VALUE result = rb_str_new(FBUFFER_PAIR(fb));
+    VALUE result = rb_str_new(FBUFFER_PTR(fb), FBUFFER_LEN(fb));
     fbuffer_free(fb);
     FORCE_UTF8(result);
     return result;

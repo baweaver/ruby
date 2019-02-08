@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/command'
 
 class Gem::Commands::WhichCommand < Gem::Command
@@ -35,7 +36,7 @@ requiring to see why it does not behave as you expect.
   end
 
   def execute
-    found = false
+    found = true
 
     options[:args].each do |arg|
       arg = arg.sub(/#{Regexp.union(*Gem.suffixes)}$/, '')
@@ -43,8 +44,8 @@ requiring to see why it does not behave as you expect.
 
       spec = Gem::Specification.find_by_path arg
 
-      if spec then
-        if options[:search_gems_first] then
+      if spec
+        if options[:search_gems_first]
           dirs = spec.full_require_paths + $LOAD_PATH
         else
           dirs = $LOAD_PATH + spec.full_require_paths
@@ -54,11 +55,12 @@ requiring to see why it does not behave as you expect.
       # TODO: this is totally redundant and stupid
       paths = find_paths arg, dirs
 
-      if paths.empty? then
-        alert_error "Can't find ruby library file or shared library #{arg}"
+      if paths.empty?
+        alert_error "Can't find Ruby library file or shared library #{arg}"
+
+        found &&= false
       else
         say paths
-        found = true
       end
     end
 
@@ -71,7 +73,7 @@ requiring to see why it does not behave as you expect.
     dirs.each do |dir|
       Gem.suffixes.each do |ext|
         full_path = File.join dir, "#{package_name}#{ext}"
-        if File.exist? full_path and not File.directory? full_path then
+        if File.exist? full_path and not File.directory? full_path
           result << full_path
           return result unless options[:show_all]
         end
@@ -86,4 +88,3 @@ requiring to see why it does not behave as you expect.
   end
 
 end
-

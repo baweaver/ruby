@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'uri'
 require 'stringio'
 require 'time'
@@ -39,6 +40,13 @@ module Kernel
   module_function :open
 end
 
+module URI #:nodoc:
+  # alias for Kernel.open defined in open-uri.
+  def self.open(name, *rest, &block)
+    Kernel.open(name, *rest, &block)
+  end
+end
+
 # OpenURI is an easy-to-use wrapper for Net::HTTP, Net::HTTPS and Net::FTP.
 #
 # == Example
@@ -73,7 +81,7 @@ end
 # The environment variables such as http_proxy, https_proxy and ftp_proxy
 # are in effect by default. Here we disable proxy:
 #
-#   open("http://www.ruby-lang.org/en/raa.html", :proxy => nil) {|f|
+#   open("http://www.ruby-lang.org/en/", :proxy => nil) {|f|
 #     # ...
 #   }
 #
@@ -102,10 +110,12 @@ module OpenURI
     :content_length_proc => true,
     :http_basic_authentication => true,
     :read_timeout => true,
+    :open_timeout => true,
     :ssl_ca_cert => nil,
     :ssl_verify_mode => nil,
     :ftp_active_mode => false,
     :redirect => true,
+    :encoding => nil,
   }
 
   def OpenURI.check_options(options) # :nodoc:
@@ -139,6 +149,12 @@ module OpenURI
       encoding, = $1,Encoding.find($1) if $1
       mode = nil
     end
+    if options.has_key? :encoding
+      if !encoding.nil?
+        raise ArgumentError, "encoding specified twice"
+      end
+      encoding = Encoding.find(options[:encoding])
+    end
 
     unless mode == nil ||
            mode == 'r' || mode == 'rb' ||
@@ -155,7 +171,7 @@ module OpenURI
         if io.respond_to? :close!
           io.close! # Tempfile
         else
-          io.close
+          io.close if !io.closed?
         end
       end
     else
@@ -247,7 +263,7 @@ module OpenURI
     # (RFC 2109 4.3.1, RFC 2965 3.3, RFC 2616 15.1.3)
     # However this is ad hoc.  It should be extensible/configurable.
     uri1.scheme.downcase == uri2.scheme.downcase ||
-    (/\A(?:http|ftp)\z/i =~ uri1.scheme && /\A(?:http|ftp)\z/i =~ uri2.scheme)
+    (/\A(?:http|ftp)\z/i =~ uri1.scheme && /\A(?:https?|ftp)\z/i =~ uri2.scheme)
   end
 
   def OpenURI.open_http(buf, target, proxy, options) # :nodoc:
@@ -256,8 +272,7 @@ module OpenURI
       raise "Non-HTTP proxy URI: #{proxy_uri}" if proxy_uri.class != URI::HTTP
     end
 
-    if target.userinfo && "1.9.0" <= RUBY_VERSION
-      # don't raise for 1.8 because compatibility.
+    if target.userinfo
       raise ArgumentError, "userinfo not supported.  [RFC3986]"
     end
 
@@ -269,6 +284,9 @@ module OpenURI
     if URI::HTTP === target
       # HTTP or HTTPS
       if proxy
+        unless proxy_user && proxy_pass
+          proxy_user, proxy_pass = proxy_uri.userinfo.split(':') if proxy_uri.userinfo
+        end
         if proxy_user && proxy_pass
           klass = Net::HTTP::Proxy(proxy_uri.hostname, proxy_uri.port, proxy_user, proxy_pass)
         else
@@ -284,21 +302,24 @@ module OpenURI
       target_port = proxy_uri.port
       request_uri = target.to_s
       if proxy_user && proxy_pass
-        header["Proxy-Authorization"] = 'Basic ' + ["#{proxy_user}:#{proxy_pass}"].pack('m').delete("\r\n")
+        header["Proxy-Authorization"] =
+                        'Basic ' + ["#{proxy_user}:#{proxy_pass}"].pack('m0')
       end
     end
 
-    http = klass.new(target_host, target_port)
+    http = proxy ? klass.new(target_host, target_port) : klass.new(target_host, target_port, nil)
     if target.class == URI::HTTPS
       require 'net/https'
       http.use_ssl = true
       http.verify_mode = options[:ssl_verify_mode] || OpenSSL::SSL::VERIFY_PEER
       store = OpenSSL::X509::Store.new
       if options[:ssl_ca_cert]
-        if File.directory? options[:ssl_ca_cert]
-          store.add_path options[:ssl_ca_cert]
-        else
-          store.add_file options[:ssl_ca_cert]
+        Array(options[:ssl_ca_cert]).each do |cert|
+          if File.directory? cert
+            store.add_path cert
+          else
+            store.add_file cert
+          end
         end
       else
         store.set_default_paths
@@ -307,6 +328,9 @@ module OpenURI
     end
     if options.include? :read_timeout
       http.read_timeout = options[:read_timeout]
+    end
+    if options.include? :open_timeout
+      http.open_timeout = options[:open_timeout]
     end
 
     resp = nil
@@ -330,6 +354,7 @@ module OpenURI
           if options[:progress_proc] && Net::HTTPSuccess === resp
             options[:progress_proc].call(buf.size)
           end
+          str.clear
         }
       }
     }
@@ -534,8 +559,9 @@ module OpenURI
       end
     end
 
-    # returns a list of encodings in Content-Encoding field
-    # as an Array of String.
+    # Returns a list of encodings in Content-Encoding field as an array of
+    # strings.
+    #
     # The encodings are downcased for canonicalization.
     def content_encoding
       vs = @metas['content-encoding']
@@ -627,8 +653,8 @@ module OpenURI
     #  is called before actual transfer is started.
     #  It takes one argument, which is expected content length in bytes.
     #
-    #  If two or more transfer is done by HTTP redirection, the procedure
-    #  is called only one for a last transfer.
+    #  If two or more transfers are performed by HTTP redirection, the
+    #  procedure is called only once for the last transfer.
     #
     #  When expected content length is unknown, the procedure is called with
     #  nil.  This happens when the HTTP response has no Content-Length header.
@@ -667,9 +693,16 @@ module OpenURI
     #
     #  :read_timeout option specifies a timeout of read for http connections.
     #
+    # [:open_timeout]
+    #  Synopsis:
+    #    :open_timeout=>nil     (no timeout)
+    #    :open_timeout=>10      (10 second)
+    #
+    #  :open_timeout option specifies a timeout of open for http connections.
+    #
     # [:ssl_ca_cert]
     #  Synopsis:
-    #    :ssl_ca_cert=>filename
+    #    :ssl_ca_cert=>filename or an Array of filenames
     #
     #  :ssl_ca_cert is used to specify CA certificate for SSL.
     #  If it is given, default certificates are not used.
@@ -759,7 +792,7 @@ module URI
       # The access sequence is defined by RFC 1738
       ftp = Net::FTP.new
       ftp.connect(self.hostname, self.port)
-      ftp.passive = true if !options[:ftp_active_mode]
+      ftp.passive = !options[:ftp_active_mode]
       # todo: extract user/passwd from .netrc.
       user = 'anonymous'
       passwd = nil
