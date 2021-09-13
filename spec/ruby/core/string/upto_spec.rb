@@ -53,13 +53,13 @@ describe "String#upto" do
   end
 
   it "raises a TypeError if other can't be converted to a string" do
-    lambda { "abc".upto(123) { }      }.should raise_error(TypeError)
-    lambda { "abc".upto(mock('x')){ } }.should raise_error(TypeError)
+    -> { "abc".upto(123) { }      }.should raise_error(TypeError)
+    -> { "abc".upto(mock('x')){ } }.should raise_error(TypeError)
   end
 
 
   it "does not work with symbols" do
-    lambda { "a".upto(:c).to_a }.should raise_error(TypeError)
+    -> { "a".upto(:c).to_a }.should raise_error(TypeError)
   end
 
   it "returns non-alphabetic characters in the ASCII range for single letters" do
@@ -72,6 +72,12 @@ describe "String#upto" do
     a = []
     "a".upto("d", true) { |s| a << s}
     a.should == ["a", "b", "c"]
+  end
+
+  it "works with non-ASCII ranges" do
+    a = []
+    'Σ'.upto('Ω') { |s| a << s }
+    a.should == ["Σ", "Τ", "Υ", "Φ", "Χ", "Ψ", "Ω"]
   end
 
   describe "on sequence of numbers" do

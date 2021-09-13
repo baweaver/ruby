@@ -9,20 +9,39 @@
 
 **********************************************************************/
 
-#include "ruby/encoding.h"
-#include "internal.h"
-#include "ruby/util.h"
 #include "id.h"
+#include "internal.h"
+#include "internal/compar.h"
+#include "internal/enum.h"
+#include "internal/hash.h"
+#include "internal/imemo.h"
+#include "internal/numeric.h"
+#include "internal/object.h"
+#include "internal/proc.h"
+#include "internal/rational.h"
+#include "internal/re.h"
+#include "ruby/util.h"
+#include "ruby_assert.h"
 #include "symbol.h"
-#include "transient_heap.h"
-
-#include <assert.h>
 
 VALUE rb_mEnumerable;
 
 static ID id_next;
-static ID id_div;
+static ID id__alone;
+static ID id__separator;
+static ID id_chunk_categorize;
+static ID id_chunk_enumerable;
+static ID id_sliceafter_enum;
+static ID id_sliceafter_pat;
+static ID id_sliceafter_pred;
+static ID id_slicebefore_enumerable;
+static ID id_slicebefore_sep_pat;
+static ID id_slicebefore_sep_pred;
+static ID id_slicewhen_enum;
+static ID id_slicewhen_inverted;
+static ID id_slicewhen_pred;
 
+#define id_div idDiv
 #define id_each idEach
 #define id_eqq  idEqq
 #define id_cmp  idCmp
@@ -77,6 +96,22 @@ grep_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
 }
 
 static VALUE
+grep_regexp_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
+{
+    struct MEMO *memo = MEMO_CAST(args);
+    VALUE converted_element, match;
+    ENUM_WANT_SVALUE();
+
+    /* In case element can't be converted to a Symbol or String: not a match (don't raise) */
+    converted_element = SYMBOL_P(i) ? i : rb_check_string_type(i);
+    match = NIL_P(converted_element) ? Qfalse : rb_reg_match_p(memo->v1, i, 0);
+    if (match == memo->u3.value) {
+	rb_ary_push(memo->v2, i);
+    }
+    return Qnil;
+}
+
+static VALUE
 grep_iter_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
 {
     struct MEMO *memo = MEMO_CAST(args);
@@ -88,59 +123,88 @@ grep_iter_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
     return Qnil;
 }
 
-/*
- *  call-seq:
- *     enum.grep(pattern)                  -> array
- *     enum.grep(pattern) { |obj| block }  -> array
- *
- *  Returns an array of every element in <i>enum</i> for which
- *  <code>Pattern === element</code>. If the optional <em>block</em> is
- *  supplied, each matching element is passed to it, and the block's
- *  result is stored in the output array.
- *
- *     (1..100).grep 38..44   #=> [38, 39, 40, 41, 42, 43, 44]
- *     c = IO.constants
- *     c.grep(/SEEK/)         #=> [:SEEK_SET, :SEEK_CUR, :SEEK_END]
- *     res = c.grep(/SEEK/) { |v| IO.const_get(v) }
- *     res                    #=> [0, 1, 2]
- *
- */
-
 static VALUE
-enum_grep(VALUE obj, VALUE pat)
+enum_grep0(VALUE obj, VALUE pat, VALUE test)
 {
     VALUE ary = rb_ary_new();
-    struct MEMO *memo = MEMO_NEW(pat, ary, Qtrue);
-
-    rb_block_call(obj, id_each, 0, 0, rb_block_given_p() ? grep_iter_i : grep_i, (VALUE)memo);
+    struct MEMO *memo = MEMO_NEW(pat, ary, test);
+    rb_block_call_func_t fn;
+    if (rb_block_given_p()) {
+	fn = grep_iter_i;
+    }
+    else if (RB_TYPE_P(pat, T_REGEXP) &&
+      LIKELY(rb_method_basic_definition_p(CLASS_OF(pat), idEqq))) {
+	fn = grep_regexp_i;
+    }
+    else {
+	fn = grep_i;
+    }
+    rb_block_call(obj, id_each, 0, 0, fn, (VALUE)memo);
 
     return ary;
 }
 
 /*
- *  call-seq:
- *     enum.grep_v(pattern)                  -> array
- *     enum.grep_v(pattern) { |obj| block }  -> array
+ * call-seq:
+ *   grep(pattern) -> array
+ *   grep(pattern) {|element| ... } -> array
  *
- *  Inverted version of Enumerable#grep.
- *  Returns an array of every element in <i>enum</i> for which
- *  not <code>Pattern === element</code>.
+ * Returns an array of objects based elements of +self+ that match the given pattern.
  *
- *     (1..10).grep_v 2..5   #=> [1, 6, 7, 8, 9, 10]
- *     res =(1..10).grep_v(2..5) { |v| v * 2 }
- *     res                    #=> [2, 12, 14, 16, 18, 20]
+ * With no block given, returns an array containing each element
+ * for which <tt>pattern === element</tt> is +true+:
  *
+ *   a = ['foo', 'bar', 'car', 'moo']
+ *   a.grep(/ar/)                   # => ["bar", "car"]
+ *   (1..10).grep(3..8)             # => [3, 4, 5, 6, 7, 8]
+ *   ['a', 'b', 0, 1].grep(Integer) # => [0, 1]
+ *
+ * With a block given,
+ * calls the block with each matching element and returns an array containing each
+ * object returned by the block:
+ *
+ *   a = ['foo', 'bar', 'car', 'moo']
+ *   a.grep(/ar/) {|element| element.upcase } # => ["BAR", "CAR"]
+ *
+ * Related: #grep_v.
+ */
+
+static VALUE
+enum_grep(VALUE obj, VALUE pat)
+{
+    return enum_grep0(obj, pat, Qtrue);
+}
+
+/*
+ * call-seq:
+ *   grep_v(pattern) -> array
+ *   grep_v(pattern) {|element| ... } -> array
+ *
+ * Returns an array of objects based on elements of +self+
+ * that <em>don't</em> match the given pattern.
+ *
+ * With no block given, returns an array containing each element
+ * for which <tt>pattern === element</tt> is +false+:
+ *
+ *   a = ['foo', 'bar', 'car', 'moo']
+ *   a.grep_v(/ar/)                   # => ["foo", "moo"]
+ *   (1..10).grep_v(3..8)             # => [1, 2, 9, 10]
+ *   ['a', 'b', 0, 1].grep_v(Integer) # => ["a", "b"]
+ *
+ * With a block given,
+ * calls the block with each non-matching element and returns an array containing each
+ * object returned by the block:
+ *
+ *   a = ['foo', 'bar', 'car', 'moo']
+ *   a.grep_v(/ar/) {|element| element.upcase } # => ["FOO", "MOO"]
+ *
+ * Related: #grep.
  */
 
 static VALUE
 enum_grep_v(VALUE obj, VALUE pat)
 {
-    VALUE ary = rb_ary_new();
-    struct MEMO *memo = MEMO_NEW(pat, ary, Qfalse);
-
-    rb_block_call(obj, id_each, 0, 0, rb_block_given_p() ? grep_iter_i : grep_i, (VALUE)memo);
-
-    return ary;
+    return enum_grep0(obj, pat, Qfalse);
 }
 
 #define COUNT_BIGNUM IMEMO_FL_USER0
@@ -205,20 +269,28 @@ count_all_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, memop))
 }
 
 /*
- *  call-seq:
- *     enum.count                 -> int
- *     enum.count(item)           -> int
- *     enum.count { |obj| block } -> int
+ * call-seq:
+ *   count -> integer
+ *   count(object) -> integer
+ *   count {|element| ... } -> integer
  *
- *  Returns the number of items in +enum+ through enumeration.
- *  If an argument is given, the number of items in +enum+ that
- *  are equal to +item+ are counted.  If a block is given, it
- *  counts the number of elements yielding a true value.
+ * Returns the count of elements, based on an argument or block criterion, if given.
  *
- *     ary = [1, 2, 4, 2]
- *     ary.count               #=> 4
- *     ary.count(2)            #=> 2
- *     ary.count{ |x| x%2==0 } #=> 3
+ * With no argument and no block given, returns the number of elements:
+ *
+ *   [0, 1, 2].count                # => 3
+ *   {foo: 0, bar: 1, baz: 2}.count # => 3
+ *
+ * With argument +object+ given,
+ * returns the number of elements that are <tt>==</tt> to +object+:
+ *
+ *   [0, 1, 2, 1].count(1)           # => 2
+ *
+ * With a block given, calls the block with each element
+ * and returns the number of elements for which the block returns a truthy value:
+ *
+ *   [0, 1, 2, 3].count {|element| element < 2}              # => 2
+ *   {foo: 0, bar: 1, baz: 2}.count {|key, value| value < 2} # => 2
  *
  */
 
@@ -265,29 +337,26 @@ find_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, memop))
 }
 
 /*
- *  call-seq:
- *     enum.detect(ifnone = nil) { |obj| block } -> obj or nil
- *     enum.find(ifnone = nil)   { |obj| block } -> obj or nil
- *     enum.detect(ifnone = nil)                 -> an_enumerator
- *     enum.find(ifnone = nil)                   -> an_enumerator
+ * call-seq:
+ *   find(if_none_proc = nil) {|element| ... } -> object or nil
+ *   find(if_none_proc = nil) -> enumerator
  *
- *  Passes each entry in <i>enum</i> to <em>block</em>. Returns the
- *  first for which <em>block</em> is not false.  If no
- *  object matches, calls <i>ifnone</i> and returns its result when it
- *  is specified, or returns <code>nil</code> otherwise.
+ * Returns the first element for which the block returns a truthy value.
  *
- *  If no block is given, an enumerator is returned instead.
+ * With a block given, calls the block with successive elements of the collection;
+ * returns the first element for which the block returns a truthy value:
  *
- *     (1..100).detect  #=> #<Enumerator: 1..100:detect>
- *     (1..100).find    #=> #<Enumerator: 1..100:find>
+ *   (0..9).find {|element| element > 2}                # => 3
  *
- *     (1..10).detect   { |i| i % 5 == 0 and i % 7 == 0 }   #=> nil
- *     (1..10).find     { |i| i % 5 == 0 and i % 7 == 0 }   #=> nil
- *     (1..100).detect  { |i| i % 5 == 0 and i % 7 == 0 }   #=> 35
- *     (1..100).find    { |i| i % 5 == 0 and i % 7 == 0 }   #=> 35
+ * If no such element is found, calls +if_none_proc+ and returns its return value.
+ *
+ *   (0..9).find(proc {false}) {|element| element > 12} # => false
+ *   {foo: 0, bar: 1, baz: 2}.find {|key, value| key.start_with?('b') }            # => [:bar, 1]
+ *   {foo: 0, bar: 1, baz: 2}.find(proc {[]}) {|key, value| key.start_with?('c') } # => []
+ *
+ * With no block given, returns an \Enumerator.
  *
  */
-
 static VALUE
 enum_find(int argc, VALUE *argv, VALUE obj)
 {
@@ -336,21 +405,26 @@ find_index_iter_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, memop))
 }
 
 /*
- *  call-seq:
- *     enum.find_index(value)          -> int or nil
- *     enum.find_index { |obj| block } -> int or nil
- *     enum.find_index                 -> an_enumerator
+ * call-seq:
+ *   find_index(object) -> integer or nil
+ *   find_index {|element| ... } -> integer or nil
+ *   find_index -> enumerator
  *
- *  Compares each entry in <i>enum</i> with <em>value</em> or passes
- *  to <em>block</em>.  Returns the index for the first for which the
- *  evaluated value is non-false.  If no object matches, returns
- *  <code>nil</code>
+ * Returns the index of the first element that meets a specified criterion,
+ * or +nil+ if no such element is found.
  *
- *  If neither block nor argument is given, an enumerator is returned instead.
+ * With argument +object+ given,
+ * returns the index of the first element that is <tt>==</tt> +object+:
  *
- *     (1..10).find_index  { |i| i % 5 == 0 and i % 7 == 0 }  #=> nil
- *     (1..100).find_index { |i| i % 5 == 0 and i % 7 == 0 }  #=> 34
- *     (1..100).find_index(50)                                #=> 49
+ *   ['a', 'b', 'c', 'b'].find_index('b') # => 1
+ *
+ * With a block given, calls the block with successive elements;
+ * returns the first element for which the block returns a truthy value:
+ *
+ *   ['a', 'b', 'c', 'b'].find_index {|element| element.start_with?('b') } # => 1
+ *   {foo: 0, bar: 1, baz: 2}.find_index {|key, value| value > 1 }         # => 2
+ *
+ * With no argument and no block given, returns an \Enumerator.
  *
  */
 
@@ -414,29 +488,23 @@ enum_size_over_p(VALUE obj, long n)
 }
 
 /*
- *  call-seq:
- *     enum.find_all { |obj| block } -> array
- *     enum.select   { |obj| block } -> array
- *     enum.filter   { |obj| block } -> array
- *     enum.find_all                 -> an_enumerator
- *     enum.select                   -> an_enumerator
- *     enum.filter                   -> an_enumerator
+ * call-seq:
+ *   select {|element| ... } -> array
+ *   select -> enumerator
  *
- *  Returns an array containing all elements of +enum+
- *  for which the given +block+ returns a true value.
+ * Returns an array containing elements selected by the block.
  *
- *  If no block is given, an Enumerator is returned instead.
+ * With a block given, calls the block with successive elements;
+ * returns an array of those elements for which the block returns a truthy value:
  *
+ *   (0..9).select {|element| element % 3 == 0 } # => [0, 3, 6, 9]
+ *   a = {foo: 0, bar: 1, baz: 2}.select {|key, value| key.start_with?('b') }
+ *   a # => {:bar=>1, :baz=>2}
  *
- *     (1..10).find_all { |i|  i % 3 == 0 }   #=> [3, 6, 9]
+ * With no block given, returns an \Enumerator.
  *
- *     [1,2,3,4,5].select { |num|  num.even?  }   #=> [2, 4]
- *
- *     [:foo, :bar].filter { |x| x == :foo }   #=> [:foo]
- *
- *  See also Enumerable#reject.
+ * Related: #reject.
  */
-
 static VALUE
 enum_find_all(VALUE obj)
 {
@@ -451,6 +519,48 @@ enum_find_all(VALUE obj)
 }
 
 static VALUE
+filter_map_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, ary))
+{
+    i = rb_yield_values2(argc, argv);
+
+    if (RTEST(i)) {
+        rb_ary_push(ary, i);
+    }
+
+    return Qnil;
+}
+
+/*
+ * call-seq:
+ *   filter_map {|element| ... } -> array
+ *   filter_map -> enumerator
+ *
+ * Returns an array containing truthy elements returned by the block.
+ *
+ * With a block given, calls the block with successive elements;
+ * returns an array containing each truthy value returned by the block:
+ *
+ *   (0..9).filter_map {|i| i * 2 if i.even? }                              # => [0, 4, 8, 12, 16]
+ *   {foo: 0, bar: 1, baz: 2}.filter_map {|key, value| key if value.even? } # => [:foo, :baz]
+ *
+ * When no block given, returns an \Enumerator.
+ *
+ */
+static VALUE
+enum_filter_map(VALUE obj)
+{
+    VALUE ary;
+
+    RETURN_SIZED_ENUMERATOR(obj, 0, 0, enum_size);
+
+    ary = rb_ary_new();
+    rb_block_call(obj, id_each, 0, 0, filter_map_i, ary);
+
+    return ary;
+}
+
+
+static VALUE
 reject_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, ary))
 {
     ENUM_WANT_SVALUE();
@@ -462,20 +572,21 @@ reject_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, ary))
 }
 
 /*
- *  call-seq:
- *     enum.reject { |obj| block } -> array
- *     enum.reject                 -> an_enumerator
+ * call-seq:
+ *   reject {|element| ... } -> array
+ *   reject -> enumerator
  *
- *  Returns an array for all elements of +enum+ for which the given
- *  +block+ returns <code>false</code>.
+ * Returns an array of objects rejected by the block.
  *
- *  If no block is given, an Enumerator is returned instead.
+ * With a block given, calls the block with successive elements;
+ * returns an array of those elements for which the block returns +nil+ or +false+:
  *
- *     (1..10).reject { |i|  i % 3 == 0 }   #=> [1, 2, 4, 5, 7, 8, 10]
+ *   (0..9).reject {|i| i * 2 if i.even? }                             # => [1, 3, 5, 7, 9]
+ *   {foo: 0, bar: 1, baz: 2}.reject {|key, value| key if value.odd? } # => {:foo=>0, :baz=>2}
  *
- *     [1, 2, 3, 4, 5].reject { |num| num.even? } #=> [1, 3, 5]
+ * When no block given, returns an \Enumerator.
  *
- *  See also Enumerable#find_all.
+ * Related: #select.
  */
 
 static VALUE
@@ -502,29 +613,27 @@ collect_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, ary))
 static VALUE
 collect_all(RB_BLOCK_CALL_FUNC_ARGLIST(i, ary))
 {
-    rb_thread_check_ints();
     rb_ary_push(ary, rb_enum_values_pack(argc, argv));
 
     return Qnil;
 }
 
 /*
- *  call-seq:
- *     enum.collect { |obj| block } -> array
- *     enum.map     { |obj| block } -> array
- *     enum.collect                 -> an_enumerator
- *     enum.map                     -> an_enumerator
+ * call-seq:
+ *   map {|element| ... } -> array
+ *   map -> enumerator
  *
- *  Returns a new array with the results of running <em>block</em> once
- *  for every element in <i>enum</i>.
+ * Returns an array of objects returned by the block.
  *
- *  If no block is given, an enumerator is returned instead.
+ * With a block given, calls the block with successive elements;
+ * returns an array of the objects returned by the block:
  *
- *     (1..4).map { |i| i*i }      #=> [1, 4, 9, 16]
- *     (1..4).collect { "cat"  }   #=> ["cat", "cat", "cat", "cat"]
+ *   (0..4).map {|i| i*i }                               # => [0, 1, 4, 9, 16]
+ *   {foo: 0, bar: 1, baz: 2}.map {|key, value| value*2} # => [0, 2, 4]
+ *
+ * With no block given, returns an \Enumerator.
  *
  */
-
 static VALUE
 enum_collect(VALUE obj)
 {
@@ -558,22 +667,24 @@ flat_map_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, ary))
 }
 
 /*
- *  call-seq:
- *     enum.flat_map       { |obj| block } -> array
- *     enum.collect_concat { |obj| block } -> array
- *     enum.flat_map                       -> an_enumerator
- *     enum.collect_concat                 -> an_enumerator
+ * call-seq:
+ *   flat_map {|element| ... } -> array
+ *   flat_map -> enumerator
  *
- *  Returns a new array with the concatenated results of running
- *  <em>block</em> once for every element in <i>enum</i>.
+ * Returns an array of flattened objects returned by the block.
  *
- *  If no block is given, an enumerator is returned instead.
+ * With a block given, calls the block with successive elements;
+ * returns a flattened array of objects returned by the block:
  *
- *     [1, 2, 3, 4].flat_map { |e| [e, -e] } #=> [1, -1, 2, -2, 3, -3, 4, -4]
- *     [[1, 2], [3, 4]].flat_map { |e| e + [100] } #=> [1, 2, 100, 3, 4, 100]
+ *   [0, 1, 2, 3].flat_map {|element| -element }                    # => [0, -1, -2, -3]
+ *   [0, 1, 2, 3].flat_map {|element| [element, -element] }         # => [0, 0, 1, -1, 2, -2, 3, -3]
+ *   [[0, 1], [2, 3]].flat_map {|e| e + [100] }                     # => [0, 1, 100, 2, 3, 100]
+ *   {foo: 0, bar: 1, baz: 2}.flat_map {|key, value| [key, value] } # => [:foo, 0, :bar, 1, :baz, 2]
  *
+ * With no block given, returns an \Enumerator.
+ *
+ * Alias: #collect_concat.
  */
-
 static VALUE
 enum_flat_map(VALUE obj)
 {
@@ -589,16 +700,13 @@ enum_flat_map(VALUE obj)
 
 /*
  *  call-seq:
- *     enum.to_a(*args)      -> array
- *     enum.entries(*args)   -> array
+ *    to_a -> array
  *
- *  Returns an array containing the items in <i>enum</i>.
+ *  Returns an array containing the items in +self+:
  *
- *     (1..7).to_a                       #=> [1, 2, 3, 4, 5, 6, 7]
- *     { 'a'=>1, 'b'=>2, 'c'=>3 }.to_a   #=> [["a", 1], ["b", 2], ["c", 3]]
+ *    (0..4).to_a # => [0, 1, 2, 3, 4]
  *
- *     require 'prime'
- *     Prime.entries 10                  #=> [2, 3, 5, 7]
+ *  Enumerable#entries is an alias for Enumerable#to_a.
  */
 static VALUE
 enum_to_a(int argc, VALUE *argv, VALUE obj)
@@ -606,51 +714,55 @@ enum_to_a(int argc, VALUE *argv, VALUE obj)
     VALUE ary = rb_ary_new();
 
     rb_block_call(obj, id_each, argc, argv, collect_all, ary);
-    OBJ_INFECT(ary, obj);
 
     return ary;
 }
 
 static VALUE
+enum_hashify_into(VALUE obj, int argc, const VALUE *argv, rb_block_call_func *iter, VALUE hash)
+{
+    rb_block_call(obj, id_each, argc, argv, iter, hash);
+    return hash;
+}
+
+static VALUE
 enum_hashify(VALUE obj, int argc, const VALUE *argv, rb_block_call_func *iter)
 {
-    VALUE hash = rb_hash_new();
-    rb_block_call(obj, id_each, argc, argv, iter, hash);
-    OBJ_INFECT(hash, obj);
-    return hash;
+    return enum_hashify_into(obj, argc, argv, iter, rb_hash_new());
 }
 
 static VALUE
 enum_to_h_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, hash))
 {
     ENUM_WANT_SVALUE();
-    rb_thread_check_ints();
     return rb_hash_set_pair(hash, i);
 }
 
 static VALUE
 enum_to_h_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, hash))
 {
-    rb_thread_check_ints();
     return rb_hash_set_pair(hash, rb_yield_values2(argc, argv));
 }
 
 /*
  *  call-seq:
- *     enum.to_h(*args)        -> hash
- *     enum.to_h(*args) {...}  -> hash
+ *    to_h -> hash
+ *    to_h {|element| ... }  -> hash
  *
- *  Returns the result of interpreting <i>enum</i> as a list of
- *  <tt>[key, value]</tt> pairs.
+ *  When +self+ consists of 2-element arrays,
+ *  returns a hash each of whose entries is the key-value pair
+ *  formed from one of those arrays:
  *
- *     %i[hello world].each_with_index.to_h
- *       # => {:hello => 0, :world => 1}
+ *    [[:foo, 0], [:bar, 1], [:baz, 2]].to_h # => {:foo=>0, :bar=>1, :baz=>2}
  *
- *  If a block is given, the results of the block on each element of
- *  the enum will be used as pairs.
+ *  When a block is given, the block is called with each element of +self+;
+ *  the block should return a 2-element array which becomes a key-value pair
+ *  in the returned hash:
  *
- *     (1..5).to_h {|x| [x, x ** 2]}
- *       #=> {1=>1, 2=>4, 3=>9, 4=>16, 5=>25}
+ *    (0..3).to_h {|i| [i, i ** 2]} # => {0=>0, 1=>1, 2=>4, 3=>9}
+ *
+ *  Raises an exception if an element of +self+ is not a 2-element array,
+ *  and a block is not passed.
  */
 
 static VALUE
@@ -689,7 +801,7 @@ inject_op_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, p))
     }
     else if (SYMBOL_P(name = memo->u3.value)) {
 	const ID mid = SYM2ID(name);
-	MEMO_V1_SET(memo, rb_funcallv(memo->v1, mid, 1, &i));
+	MEMO_V1_SET(memo, rb_funcallv_public(memo->v1, mid, 1, &i));
     }
     else {
 	VALUE args[2];
@@ -732,11 +844,11 @@ ary_inject_op(VALUE ary, VALUE init, VALUE op)
                 if (FIXNUM_P(e)) {
                     n += FIX2LONG(e); /* should not overflow long type */
                     if (!FIXABLE(n)) {
-                        v = rb_big_plus(ULONG2NUM(n), v);
+                        v = rb_big_plus(LONG2NUM(n), v);
                         n = 0;
                     }
                 }
-                else if (RB_TYPE_P(e, T_BIGNUM))
+                else if (RB_BIGNUM_TYPE_P(e))
                     v = rb_big_plus(e, v);
                 else
                     goto not_integer;
@@ -759,14 +871,10 @@ ary_inject_op(VALUE ary, VALUE init, VALUE op)
 
 /*
  *  call-seq:
- *     enum.inject(initial, sym) -> obj
- *     enum.inject(sym)          -> obj
- *     enum.inject(initial) { |memo, obj| block }  -> obj
- *     enum.inject          { |memo, obj| block }  -> obj
- *     enum.reduce(initial, sym) -> obj
- *     enum.reduce(sym)          -> obj
- *     enum.reduce(initial) { |memo, obj| block }  -> obj
- *     enum.reduce          { |memo, obj| block }  -> obj
+ *     inject(symbol) -> obj
+ *     inject(initial_operand, symbol) -> obj
+ *     inject {|memo, element| ... } -> obj
+ *     inject(initial_operand) {|memo, element| ... } -> obj
  *
  *  Combines all elements of <i>enum</i> by applying a binary
  *  operation, specified by a block or a symbol that names a
@@ -801,7 +909,6 @@ ary_inject_op(VALUE ary, VALUE init, VALUE op)
  *        memo.length > word.length ? memo : word
  *     end
  *     longest                                        #=> "sheep"
- *
  */
 static VALUE
 enum_inject(int argc, VALUE *argv, VALUE obj)
@@ -935,48 +1042,74 @@ enum_group_by(VALUE obj)
     return enum_hashify(obj, 0, 0, group_by_i);
 }
 
-static void
-tally_up(VALUE hash, VALUE group)
+static int
+tally_up(st_data_t *group, st_data_t *value, st_data_t arg, int existing)
 {
-    VALUE tally = rb_hash_aref(hash, group);
-    if (NIL_P(tally)) {
+    VALUE tally = (VALUE)*value;
+    VALUE hash = (VALUE)arg;
+    if (!existing) {
         tally = INT2FIX(1);
     }
     else if (FIXNUM_P(tally) && tally < INT2FIX(FIXNUM_MAX)) {
         tally += INT2FIX(1) & ~FIXNUM_FLAG;
     }
     else {
+        Check_Type(tally, T_BIGNUM);
         tally = rb_big_plus(tally, INT2FIX(1));
+        RB_OBJ_WRITTEN(hash, Qundef, tally);
     }
-    rb_hash_aset(hash, group, tally);
+    *value = (st_data_t)tally;
+    if (!SPECIAL_CONST_P(*group)) RB_OBJ_WRITTEN(hash, Qundef, *group);
+    return ST_CONTINUE;
+}
+
+static VALUE
+rb_enum_tally_up(VALUE hash, VALUE group)
+{
+    rb_hash_stlike_update(hash, group, tally_up, (st_data_t)hash);
+    return hash;
 }
 
 static VALUE
 tally_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, hash))
 {
     ENUM_WANT_SVALUE();
-    tally_up(hash, i);
+    rb_enum_tally_up(hash, i);
     return Qnil;
 }
 
 /*
  *  call-seq:
- *     enum.tally -> a_hash
+ *     enum.tally         -> a_hash
+ *     enum.tally(a_hash) -> a_hash
  *
- *  Tallys the collection.  Returns a hash where the keys are the
- *  elements and the values are numbers of elements in the collection
- *  that correspond to the key.
+ *  Tallies the collection, i.e., counts the occurrences of each element.
+ *  Returns a hash with the elements of the collection as keys and the
+ *  corresponding counts as values.
  *
- *     (1..6).tally   #=> {1=>1, 2=>1, 3=>1, 4=>1, 5=>1, 6=>1}
+ *     ["a", "b", "c", "b"].tally  #=> {"a"=>1, "b"=>2, "c"=>1}
  *
+ *  If a hash is given, the number of occurrences is added to each value
+ *  in the hash, and the hash is returned. The value corresponding to
+ *  each element must be an integer.
  */
 
 static VALUE
-enum_tally(VALUE obj)
+enum_tally(int argc, VALUE *argv, VALUE obj)
 {
-    return enum_hashify(obj, 0, 0, tally_i);
+    VALUE hash;
+    if (rb_check_arity(argc, 0, 1)) {
+        hash = rb_convert_type(argv[0], T_HASH, "Hash", "to_hash");
+        rb_check_frozen(hash);
+    }
+    else {
+        hash = rb_hash_new();
+    }
+
+    return enum_hashify_into(obj, 0, 0, tally_i, hash);
 }
 
+NORETURN(static VALUE first_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, params)));
 static VALUE
 first_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, params))
 {
@@ -1123,10 +1256,10 @@ sort_by_cmp(const void *ap, const void *bp, void *data)
  *     %w{apple pear fig}.sort_by { |word| word.length }
  *                   #=> ["fig", "pear", "apple"]
  *
- *  The current implementation of <code>sort_by</code> generates an
- *  array of tuples containing the original collection element and the
- *  mapped value. This makes <code>sort_by</code> fairly expensive when
- *  the keysets are simple.
+ *  The current implementation of #sort_by generates an array of
+ *  tuples containing the original collection element and the mapped
+ *  value. This makes #sort_by fairly expensive when the keysets are
+ *  simple.
  *
  *     require 'benchmark'
  *
@@ -1145,15 +1278,15 @@ sort_by_cmp(const void *ap, const void *bp, void *data)
  *
  *  However, consider the case where comparing the keys is a non-trivial
  *  operation. The following code sorts some files on modification time
- *  using the basic <code>sort</code> method.
+ *  using the basic #sort method.
  *
  *     files = Dir["*"]
  *     sorted = files.sort { |a, b| File.new(a).mtime <=> File.new(b).mtime }
  *     sorted   #=> ["mon", "tues", "wed", "thurs"]
  *
- *  This sort is inefficient: it generates two new <code>File</code>
+ *  This sort is inefficient: it generates two new File
  *  objects during every comparison. A slightly better technique is to
- *  use the <code>Kernel#test</code> method to generate the modification
+ *  use the Kernel#test method to generate the modification
  *  times directly.
  *
  *     files = Dir["*"]
@@ -1162,23 +1295,27 @@ sort_by_cmp(const void *ap, const void *bp, void *data)
  *     }
  *     sorted   #=> ["mon", "tues", "wed", "thurs"]
  *
- *  This still generates many unnecessary <code>Time</code> objects. A
- *  more efficient technique is to cache the sort keys (modification
- *  times in this case) before the sort. Perl users often call this
- *  approach a Schwartzian transform, after Randal Schwartz. We
- *  construct a temporary array, where each element is an array
- *  containing our sort key along with the filename. We sort this array,
- *  and then extract the filename from the result.
+ *  This still generates many unnecessary Time objects. A more
+ *  efficient technique is to cache the sort keys (modification times
+ *  in this case) before the sort. Perl users often call this approach
+ *  a Schwartzian transform, after Randal Schwartz. We construct a
+ *  temporary array, where each element is an array containing our
+ *  sort key along with the filename. We sort this array, and then
+ *  extract the filename from the result.
  *
  *     sorted = Dir["*"].collect { |f|
  *        [test(?M, f), f]
  *     }.sort.collect { |f| f[1] }
  *     sorted   #=> ["mon", "tues", "wed", "thurs"]
  *
- *  This is exactly what <code>sort_by</code> does internally.
+ *  This is exactly what #sort_by does internally.
  *
  *     sorted = Dir["*"].sort_by { |f| test(?M, f) }
  *     sorted   #=> ["mon", "tues", "wed", "thurs"]
+ *
+ *  To produce the reverse of a specific order, the following can be used:
+ *
+ *    ary.sort_by { ... }.reverse!
  */
 
 static VALUE
@@ -1201,7 +1338,6 @@ enum_sort_by(VALUE obj)
     buf = rb_ary_tmp_new(SORT_BY_BUFSIZE*2);
     rb_ary_store(buf, SORT_BY_BUFSIZE*2-1, Qnil);
     memo = MEMO_NEW(0, 0, 0);
-    OBJ_INFECT(memo, obj);
     data = (struct sort_by_data *)&memo->v1;
     RB_OBJ_WRITE(memo, &data->ary, ary);
     RB_OBJ_WRITE(memo, &data->buf, buf);
@@ -1226,7 +1362,6 @@ enum_sort_by(VALUE obj)
     }
     rb_ary_resize(ary, RARRAY_LEN(ary)/2);
     RBASIC_SET_CLASS_RAW(ary, rb_cArray);
-    OBJ_INFECT(ary, memo);
 
     return ary;
 }
@@ -1491,7 +1626,7 @@ nmin_filter(struct nmin_data *data)
 }
 
 static VALUE
-nmin_i(VALUE i, VALUE *_data, int argc, VALUE *argv)
+nmin_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, _data))
 {
     struct nmin_data *data = (struct nmin_data *)_data;
     VALUE cmpv;
@@ -1551,7 +1686,7 @@ rb_nmin_run(VALUE obj, VALUE num, int by, int rev, int ary)
 	for (i = 0; i < RARRAY_LEN(obj); i++) {
 	    VALUE args[1];
 	    args[0] = RARRAY_AREF(obj, i);
-	    nmin_i(obj, (VALUE*)&data, 1, args);
+            nmin_i(obj, (VALUE)&data, 1, args, Qundef);
 	}
     }
     else {
@@ -1716,7 +1851,7 @@ min_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
  *     enum.min(n) { |a, b| block } -> array
  *
  *  Returns the object in _enum_ with the minimum value. The
- *  first form assumes all objects implement <code>Comparable</code>;
+ *  first form assumes all objects implement <code><=></code>;
  *  the second uses the block to return <em>a <=> b</em>.
  *
  *     a = %w(albatross dog horse)
@@ -1808,7 +1943,7 @@ max_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
  *     enum.max(n) { |a, b| block } -> array
  *
  *  Returns the object in _enum_ with the maximum value. The
- *  first form assumes all objects implement <code>Comparable</code>;
+ *  first form assumes all objects implement <code><=></code>;
  *  the second uses the block to return <em>a <=> b</em>.
  *
  *     a = %w(albatross dog horse)
@@ -1967,7 +2102,7 @@ minmax_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, _memo))
  *
  *  Returns a two element array which contains the minimum and the
  *  maximum value in the enumerable.  The first form assumes all
- *  objects implement <code>Comparable</code>; the second uses the
+ *  objects implement <code><=></code>; the second uses the
  *  block to return <em>a <=> b</em>.
  *
  *     a = %w(albatross dog horse)
@@ -2299,10 +2434,10 @@ member_i(RB_BLOCK_CALL_FUNC_ARGLIST(iter, args))
  *  Returns <code>true</code> if any member of <i>enum</i> equals
  *  <i>obj</i>. Equality is tested using <code>==</code>.
  *
- *     IO.constants.include? :SEEK_SET          #=> true
- *     IO.constants.include? :SEEK_NO_FURTHER   #=> false
- *     IO.constants.member? :SEEK_SET          #=> true
- *     IO.constants.member? :SEEK_NO_FURTHER   #=> false
+ *     (1..10).include? 5  #=> true
+ *     (1..10).include? 15 #=> false
+ *     (1..10).member? 5   #=> true
+ *     (1..10).member? 15  #=> false
  *
  */
 
@@ -2379,14 +2514,20 @@ static VALUE
 enum_reverse_each(int argc, VALUE *argv, VALUE obj)
 {
     VALUE ary;
-    long i;
+    long len;
 
     RETURN_SIZED_ENUMERATOR(obj, argc, argv, enum_size);
 
     ary = enum_to_a(argc, argv, obj);
 
-    for (i = RARRAY_LEN(ary); --i >= 0; ) {
-	rb_yield(RARRAY_AREF(ary, i));
+    len = RARRAY_LEN(ary);
+    while (len--) {
+        long nlen;
+        rb_yield(RARRAY_AREF(ary, len));
+        nlen = RARRAY_LEN(ary);
+        if (nlen < len) {
+            len = nlen;
+        }
     }
 
     return obj;
@@ -2486,10 +2627,15 @@ enum_each_slice_size(VALUE obj, VALUE args, VALUE eobj)
 {
     VALUE n, size;
     long slice_size = NUM2LONG(RARRAY_AREF(args, 0));
+    ID infinite_p;
+    CONST_ID(infinite_p, "infinite?");
     if (slice_size <= 0) rb_raise(rb_eArgError, "invalid slice size");
 
     size = enum_size(obj, 0, 0);
     if (size == Qnil) return Qnil;
+    if (RB_FLOAT_TYPE_P(size) && RTEST(rb_funcall(size, infinite_p, 0))) {
+        return size;
+    }
 
     n = add_int(size, slice_size-1);
     return div_int(n, slice_size);
@@ -2674,14 +2820,16 @@ zip_ary(RB_BLOCK_CALL_FUNC_ARGLIST(val, memoval))
 }
 
 static VALUE
-call_next(VALUE *v)
+call_next(VALUE w)
 {
+    VALUE *v = (VALUE *)w;
     return v[0] = rb_funcallv(v[1], id_next, 0, 0);
 }
 
 static VALUE
-call_stop(VALUE *v)
+call_stop(VALUE w, VALUE _)
 {
+    VALUE *v = (VALUE *)w;
     return v[0] = Qundef;
 }
 
@@ -3048,8 +3196,8 @@ chunk_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, _argp))
 {
     struct chunk_arg *argp = MEMO_FOR(struct chunk_arg, _argp);
     VALUE v, s;
-    VALUE alone = ID2SYM(rb_intern("_alone"));
-    VALUE separator = ID2SYM(rb_intern("_separator"));
+    VALUE alone = ID2SYM(id__alone);
+    VALUE separator = ID2SYM(id__separator);
 
     ENUM_WANT_SVALUE();
 
@@ -3101,8 +3249,8 @@ chunk_i(RB_BLOCK_CALL_FUNC_ARGLIST(yielder, enumerator))
     VALUE arg;
     struct chunk_arg *memo = NEW_MEMO_FOR(struct chunk_arg, arg);
 
-    enumerable = rb_ivar_get(enumerator, rb_intern("chunk_enumerable"));
-    memo->categorize = rb_ivar_get(enumerator, rb_intern("chunk_categorize"));
+    enumerable = rb_ivar_get(enumerator, id_chunk_enumerable);
+    memo->categorize = rb_ivar_get(enumerator, id_chunk_categorize);
     memo->prev_value = Qnil;
     memo->prev_elts = Qnil;
     memo->yielder = yielder;
@@ -3143,7 +3291,7 @@ chunk_i(RB_BLOCK_CALL_FUNC_ARGLIST(yielder, enumerator))
  *  The following example counts words for each initial letter.
  *
  *    open("/usr/share/dict/words", "r:iso-8859-1") { |f|
- *      f.chunk { |line| line.ord }.each { |ch, lines| p [ch.chr, lines.length] }
+ *      f.chunk { |line| line.upcase.ord }.each { |ch, lines| p [ch.chr, lines.length] }
  *    }
  *    #=> ["\n", 1]
  *    #   ["A", 1327]
@@ -3212,8 +3360,8 @@ enum_chunk(VALUE enumerable)
     RETURN_SIZED_ENUMERATOR(enumerable, 0, 0, enum_size);
 
     enumerator = rb_obj_alloc(rb_cEnumerator);
-    rb_ivar_set(enumerator, rb_intern("chunk_enumerable"), enumerable);
-    rb_ivar_set(enumerator, rb_intern("chunk_categorize"), rb_block_proc());
+    rb_ivar_set(enumerator, id_chunk_enumerable, enumerable);
+    rb_ivar_set(enumerator, id_chunk_categorize, rb_block_proc());
     rb_block_call(enumerator, idInitialize, 0, 0, chunk_i, enumerator);
     return enumerator;
 }
@@ -3260,9 +3408,9 @@ slicebefore_i(RB_BLOCK_CALL_FUNC_ARGLIST(yielder, enumerator))
     VALUE arg;
     struct slicebefore_arg *memo = NEW_MEMO_FOR(struct slicebefore_arg, arg);
 
-    enumerable = rb_ivar_get(enumerator, rb_intern("slicebefore_enumerable"));
-    memo->sep_pred = rb_attr_get(enumerator, rb_intern("slicebefore_sep_pred"));
-    memo->sep_pat = NIL_P(memo->sep_pred) ? rb_ivar_get(enumerator, rb_intern("slicebefore_sep_pat")) : Qnil;
+    enumerable = rb_ivar_get(enumerator, id_slicebefore_enumerable);
+    memo->sep_pred = rb_attr_get(enumerator, id_slicebefore_sep_pred);
+    memo->sep_pat = NIL_P(memo->sep_pred) ? rb_ivar_get(enumerator, id_slicebefore_sep_pat) : Qnil;
     memo->prev_elts = Qnil;
     memo->yielder = yielder;
 
@@ -3426,15 +3574,15 @@ enum_slice_before(int argc, VALUE *argv, VALUE enumerable)
         if (argc != 0)
             rb_error_arity(argc, 0, 0);
         enumerator = rb_obj_alloc(rb_cEnumerator);
-        rb_ivar_set(enumerator, rb_intern("slicebefore_sep_pred"), rb_block_proc());
+        rb_ivar_set(enumerator, id_slicebefore_sep_pred, rb_block_proc());
     }
     else {
         VALUE sep_pat;
         rb_scan_args(argc, argv, "1", &sep_pat);
         enumerator = rb_obj_alloc(rb_cEnumerator);
-        rb_ivar_set(enumerator, rb_intern("slicebefore_sep_pat"), sep_pat);
+        rb_ivar_set(enumerator, id_slicebefore_sep_pat, sep_pat);
     }
-    rb_ivar_set(enumerator, rb_intern("slicebefore_enumerable"), enumerable);
+    rb_ivar_set(enumerator, id_slicebefore_enumerable, enumerable);
     rb_block_call(enumerator, idInitialize, 0, 0, slicebefore_i, enumerator);
     return enumerator;
 }
@@ -3490,9 +3638,9 @@ sliceafter_i(RB_BLOCK_CALL_FUNC_ARGLIST(yielder, enumerator))
     VALUE arg;
     struct sliceafter_arg *memo = NEW_MEMO_FOR(struct sliceafter_arg, arg);
 
-    enumerable = rb_ivar_get(enumerator, rb_intern("sliceafter_enum"));
-    memo->pat = rb_ivar_get(enumerator, rb_intern("sliceafter_pat"));
-    memo->pred = rb_attr_get(enumerator, rb_intern("sliceafter_pred"));
+    enumerable = rb_ivar_get(enumerator, id_sliceafter_enum);
+    memo->pat = rb_ivar_get(enumerator, id_sliceafter_pat);
+    memo->pred = rb_attr_get(enumerator, id_sliceafter_pred);
     memo->prev_elts = Qnil;
     memo->yielder = yielder;
 
@@ -3555,9 +3703,9 @@ enum_slice_after(int argc, VALUE *argv, VALUE enumerable)
     }
 
     enumerator = rb_obj_alloc(rb_cEnumerator);
-    rb_ivar_set(enumerator, rb_intern("sliceafter_enum"), enumerable);
-    rb_ivar_set(enumerator, rb_intern("sliceafter_pat"), pat);
-    rb_ivar_set(enumerator, rb_intern("sliceafter_pred"), pred);
+    rb_ivar_set(enumerator, id_sliceafter_enum, enumerable);
+    rb_ivar_set(enumerator, id_sliceafter_pat, pat);
+    rb_ivar_set(enumerator, id_sliceafter_pred, pred);
 
     rb_block_call(enumerator, idInitialize, 0, 0, sliceafter_i, enumerator);
     return enumerator;
@@ -3620,12 +3768,12 @@ slicewhen_i(RB_BLOCK_CALL_FUNC_ARGLIST(yielder, enumerator))
     struct slicewhen_arg *memo =
 	NEW_PARTIAL_MEMO_FOR(struct slicewhen_arg, arg, inverted);
 
-    enumerable = rb_ivar_get(enumerator, rb_intern("slicewhen_enum"));
-    memo->pred = rb_attr_get(enumerator, rb_intern("slicewhen_pred"));
+    enumerable = rb_ivar_get(enumerator, id_slicewhen_enum);
+    memo->pred = rb_attr_get(enumerator, id_slicewhen_pred);
     memo->prev_elt = Qundef;
     memo->prev_elts = Qnil;
     memo->yielder = yielder;
-    memo->inverted = RTEST(rb_attr_get(enumerator, rb_intern("slicewhen_inverted")));
+    memo->inverted = RTEST(rb_attr_get(enumerator, id_slicewhen_inverted));
 
     rb_block_call(enumerable, id_each, 0, 0, slicewhen_ii, arg);
     memo = MEMO_FOR(struct slicewhen_arg, arg);
@@ -3641,7 +3789,7 @@ slicewhen_i(RB_BLOCK_CALL_FUNC_ARGLIST(yielder, enumerator))
  *  Creates an enumerator for each chunked elements.
  *  The beginnings of chunks are defined by the block.
  *
- *  This method split each chunk using adjacent elements,
+ *  This method splits each chunk using adjacent elements,
  *  _elt_before_ and _elt_after_,
  *  in the receiver enumerator.
  *  This method split chunks between _elt_before_ and _elt_after_ where
@@ -3705,9 +3853,9 @@ enum_slice_when(VALUE enumerable)
     pred = rb_block_proc();
 
     enumerator = rb_obj_alloc(rb_cEnumerator);
-    rb_ivar_set(enumerator, rb_intern("slicewhen_enum"), enumerable);
-    rb_ivar_set(enumerator, rb_intern("slicewhen_pred"), pred);
-    rb_ivar_set(enumerator, rb_intern("slicewhen_inverted"), Qfalse);
+    rb_ivar_set(enumerator, id_slicewhen_enum, enumerable);
+    rb_ivar_set(enumerator, id_slicewhen_pred, pred);
+    rb_ivar_set(enumerator, id_slicewhen_inverted, Qfalse);
 
     rb_block_call(enumerator, idInitialize, 0, 0, slicewhen_i, enumerator);
     return enumerator;
@@ -3720,7 +3868,7 @@ enum_slice_when(VALUE enumerable)
  *  Creates an enumerator for each chunked elements.
  *  The beginnings of chunks are defined by the block.
  *
- *  This method split each chunk using adjacent elements,
+ *  This method splits each chunk using adjacent elements,
  *  _elt_before_ and _elt_after_,
  *  in the receiver enumerator.
  *  This method split chunks between _elt_before_ and _elt_after_ where
@@ -3771,9 +3919,9 @@ enum_chunk_while(VALUE enumerable)
     pred = rb_block_proc();
 
     enumerator = rb_obj_alloc(rb_cEnumerator);
-    rb_ivar_set(enumerator, rb_intern("slicewhen_enum"), enumerable);
-    rb_ivar_set(enumerator, rb_intern("slicewhen_pred"), pred);
-    rb_ivar_set(enumerator, rb_intern("slicewhen_inverted"), Qtrue);
+    rb_ivar_set(enumerator, id_slicewhen_enum, enumerable);
+    rb_ivar_set(enumerator, id_slicewhen_pred, pred);
+    rb_ivar_set(enumerator, id_slicewhen_inverted, Qtrue);
 
     rb_block_call(enumerator, idInitialize, 0, 0, slicewhen_i, enumerator);
     return enumerator;
@@ -3788,122 +3936,141 @@ struct enum_sum_memo {
 };
 
 static void
-sum_iter(VALUE i, struct enum_sum_memo *memo)
+sum_iter_normalize_memo(struct enum_sum_memo *memo)
 {
-    const int unused = (assert(memo != NULL), 0);
+    assert(FIXABLE(memo->n));
+    memo->v = rb_fix_plus(LONG2FIX(memo->n), memo->v);
+    memo->n = 0;
 
-    long n = memo->n;
-    VALUE v = memo->v;
-    VALUE r = memo->r;
-    double f = memo->f;
-    double c = memo->c;
-
-    if (memo->block_given)
-        i = rb_yield(i);
-
-    if (memo->float_value)
-        goto float_value;
-
-    if (FIXNUM_P(v) || RB_TYPE_P(v, T_BIGNUM) || RB_TYPE_P(v, T_RATIONAL)) {
-        if (FIXNUM_P(i)) {
-            n += FIX2LONG(i); /* should not overflow long type */
-            if (!FIXABLE(n)) {
-                v = rb_big_plus(LONG2NUM(n), v);
-                n = 0;
-            }
-        }
-        else if (RB_TYPE_P(i, T_BIGNUM))
-            v = rb_big_plus(i, v);
-        else if (RB_TYPE_P(i, T_RATIONAL)) {
-            if (r == Qundef)
-                r = i;
-            else
-                r = rb_rational_plus(r, i);
-        }
-        else {
-            if (n != 0) {
-                v = rb_fix_plus(LONG2FIX(n), v);
-                n = 0;
-            }
-            if (r != Qundef) {
-                /* r can be an Integer when mathn is loaded */
-                if (FIXNUM_P(r))
-                    v = rb_fix_plus(r, v);
-                else if (RB_TYPE_P(r, T_BIGNUM))
-                    v = rb_big_plus(r, v);
-                else
-                    v = rb_rational_plus(r, v);
-                r = Qundef;
-            }
-            if (RB_FLOAT_TYPE_P(i)) {
-                f = NUM2DBL(v);
-                c = 0.0;
-                memo->float_value = 1;
-                goto float_value;
-            }
-            else
-                goto some_value;
-        }
+    switch (TYPE(memo->r)) {
+      case T_RATIONAL: memo->v = rb_rational_plus(memo->r, memo->v); break;
+      case T_UNDEF:    break;
+      default:         UNREACHABLE; /* or ...? */
     }
-    else if (RB_FLOAT_TYPE_P(v)) {
-        /*
-         * Kahan-Babuska balancing compensated summation algorithm
-         * See http://link.springer.com/article/10.1007/s00607-005-0139-x
-         */
-        double x, t;
+    memo->r = Qundef;
+}
 
-      float_value:
-        if (RB_FLOAT_TYPE_P(i))
-            x = RFLOAT_VALUE(i);
-        else if (FIXNUM_P(i))
-            x = FIX2LONG(i);
-        else if (RB_TYPE_P(i, T_BIGNUM))
-            x = rb_big2dbl(i);
-        else if (RB_TYPE_P(i, T_RATIONAL))
-            x = rb_num2dbl(i);
-        else {
-            v = DBL2NUM(f);
-            memo->float_value = 0;
-            goto some_value;
-        }
+static void
+sum_iter_fixnum(VALUE i, struct enum_sum_memo *memo)
+{
+    memo->n += FIX2LONG(i); /* should not overflow long type */
+    if (! FIXABLE(memo->n)) {
+        memo->v = rb_big_plus(LONG2NUM(memo->n), memo->v);
+        memo->n = 0;
+    }
+}
 
-        if (isnan(f)) return;
-        if (isnan(x)) {
-            memo->v = i;
-            memo->f = x;
-            return;
-        }
-        if (isinf(x)) {
-            if (isinf(f) && signbit(x) != signbit(f)) {
-                memo->f = NAN;
-                memo->v = DBL2NUM(f);
-            }
-            else {
-                memo->f = x;
-                memo->v = i;
-            }
-            return;
-        }
-        if (isinf(f)) return;
+static void
+sum_iter_bignum(VALUE i, struct enum_sum_memo *memo)
+{
+    memo->v = rb_big_plus(i, memo->v);
+}
 
-        t = f + x;
-        if (fabs(f) >= fabs(x))
-            c += ((f - t) + x);
-        else
-            c += ((x - t) + f);
-        f = t;
+static void
+sum_iter_rational(VALUE i, struct enum_sum_memo *memo)
+{
+    if (memo->r == Qundef) {
+        memo->r = i;
     }
     else {
-      some_value:
-        v = rb_funcallv(v, idPLUS, 1, &i);
+        memo->r = rb_rational_plus(memo->r, i);
+    }
+}
+
+static void
+sum_iter_some_value(VALUE i, struct enum_sum_memo *memo)
+{
+    memo->v = rb_funcallv(memo->v, idPLUS, 1, &i);
+}
+
+static void
+sum_iter_Kahan_Babuska(VALUE i, struct enum_sum_memo *memo)
+{
+    /*
+     * Kahan-Babuska balancing compensated summation algorithm
+     * See https://link.springer.com/article/10.1007/s00607-005-0139-x
+     */
+    double x;
+
+    switch (TYPE(i)) {
+      case T_FLOAT:    x = RFLOAT_VALUE(i); break;
+      case T_FIXNUM:   x = FIX2LONG(i);     break;
+      case T_BIGNUM:   x = rb_big2dbl(i);   break;
+      case T_RATIONAL: x = rb_num2dbl(i);   break;
+      default:
+        memo->v = DBL2NUM(memo->f);
+        memo->float_value = 0;
+        sum_iter_some_value(i, memo);
+        return;
     }
 
-    memo->v = v;
-    memo->n = n;
-    memo->r = r;
+    double f = memo->f;
+
+    if (isnan(f)) {
+        return;
+    }
+    else if (! isfinite(x)) {
+        if (isinf(x) && isinf(f) && signbit(x) != signbit(f)) {
+            i = DBL2NUM(f);
+            x = nan("");
+        }
+        memo->v = i;
+        memo->f = x;
+        return;
+    }
+    else if (isinf(f)) {
+        return;
+    }
+
+    double c = memo->c;
+    double t = f + x;
+
+    if (fabs(f) >= fabs(x)) {
+        c += ((f - t) + x);
+    }
+    else {
+        c += ((x - t) + f);
+    }
+    f = t;
+
     memo->f = f;
     memo->c = c;
-    (void)unused;
+}
+
+static void
+sum_iter(VALUE i, struct enum_sum_memo *memo)
+{
+    assert(memo != NULL);
+    if (memo->block_given) {
+        i = rb_yield(i);
+    }
+
+    if (memo->float_value) {
+        sum_iter_Kahan_Babuska(i, memo);
+    }
+    else switch (TYPE(memo->v)) {
+      default:      sum_iter_some_value(i, memo);    return;
+      case T_FLOAT: sum_iter_Kahan_Babuska(i, memo); return;
+      case T_FIXNUM:
+      case T_BIGNUM:
+      case T_RATIONAL:
+        switch (TYPE(i)) {
+          case T_FIXNUM:   sum_iter_fixnum(i, memo);   return;
+          case T_BIGNUM:   sum_iter_bignum(i, memo);   return;
+          case T_RATIONAL: sum_iter_rational(i, memo); return;
+          case T_FLOAT:
+            sum_iter_normalize_memo(memo);
+            memo->f = NUM2DBL(memo->v);
+            memo->c = 0.0;
+            memo->float_value = 1;
+            sum_iter_Kahan_Babuska(i, memo);
+            return;
+          default:
+            sum_iter_normalize_memo(memo);
+            sum_iter_some_value(i, memo);
+            return;
+        }
+    }
 }
 
 static VALUE
@@ -3968,7 +4135,7 @@ int_range_sum(VALUE beg, VALUE end, int excl, VALUE init)
  *   { 1 => 10, 2 => 20 }.sum {|k, v| k * v }  #=> 50
  *   (1..10).sum                               #=> 55
  *   (1..10).sum {|v| v * 2 }                  #=> 110
- *   [Object.new].each.sum                     #=> TypeError
+ *   ('a'..'z').sum                            #=> TypeError
  *
  * This method can be used for non-numeric objects by
  * explicit <i>init</i> argument.
@@ -3976,8 +4143,12 @@ int_range_sum(VALUE beg, VALUE end, int excl, VALUE init)
  *   { 1 => 10, 2 => 20 }.sum([])                   #=> [1, 10, 2, 20]
  *   "a\nb\nc".each_line.lazy.map(&:chomp).sum("")  #=> "abc"
  *
+ * If the method is applied to an Integer range without a block,
+ * the sum is not done by iteration, but instead using Gauss's summation
+ * formula.
+ *
  * Enumerable#sum method may not respect method redefinition of "+"
- * methods such as Integer#+.
+ * methods such as Integer#+, or "each" methods such as Range#each.
  */
 static VALUE
 enum_sum(int argc, VALUE* argv, VALUE obj)
@@ -3995,11 +4166,15 @@ enum_sum(int argc, VALUE* argv, VALUE obj)
         memo.f = RFLOAT_VALUE(memo.v);
         memo.c = 0.0;
     }
+    else {
+        memo.f = 0.0;
+        memo.c = 0.0;
+    }
 
     if (RTEST(rb_range_values(obj, &beg, &end, &excl))) {
         if (!memo.block_given && !memo.float_value &&
-                (FIXNUM_P(beg) || RB_TYPE_P(beg, T_BIGNUM)) &&
-                (FIXNUM_P(end) || RB_TYPE_P(end, T_BIGNUM))) {
+                (FIXNUM_P(beg) || RB_BIGNUM_TYPE_P(beg)) &&
+                (FIXNUM_P(end) || RB_BIGNUM_TYPE_P(end))) {
             return int_range_sum(beg, end, excl, memo.v);
         }
     }
@@ -4017,13 +4192,7 @@ enum_sum(int argc, VALUE* argv, VALUE obj)
         if (memo.n != 0)
             memo.v = rb_fix_plus(LONG2FIX(memo.n), memo.v);
         if (memo.r != Qundef) {
-            /* r can be an Integer when mathn is loaded */
-            if (FIXNUM_P(memo.r))
-                memo.v = rb_fix_plus(memo.r, memo.v);
-            else if (RB_TYPE_P(memo.r, T_BIGNUM))
-                memo.v = rb_big_plus(memo.r, memo.v);
-            else
-                memo.v = rb_rational_plus(memo.r, memo.v);
+            memo.v = rb_rational_plus(memo.r, memo.v);
         }
         return memo.v;
     }
@@ -4069,23 +4238,183 @@ enum_uniq(VALUE obj)
     return ret;
 }
 
+static VALUE
+compact_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, ary))
+{
+    ENUM_WANT_SVALUE();
+
+    if (!NIL_P(i)) {
+        rb_ary_push(ary, i);
+    }
+    return Qnil;
+}
+
 /*
- *  The <code>Enumerable</code> mixin provides collection classes with
- *  several traversal and searching methods, and with the ability to
- *  sort. The class must provide a method <code>each</code>, which
- *  yields successive members of the collection. If
- *  <code>Enumerable#max</code>, <code>#min</code>, or
- *  <code>#sort</code> is used, the objects in the collection must also
- *  implement a meaningful <code><=></code> operator, as these methods
- *  rely on an ordering between members of the collection.
+ *  call-seq:
+ *     enum.compact -> array
+ *
+ *  Returns an array of all non-+nil+ elements from enumeration.
+ *
+ *      def with_nils
+ *        yield 1
+ *        yield 2
+ *        yield nil
+ *        yield 3
+ *      end
+ *
+ *      to_enum(:with_nils).compact
+ *      # => [1, 2, 3]
+ *
+ *  See also Array#compact.
+ */
+
+static VALUE
+enum_compact(VALUE obj)
+{
+    VALUE ary;
+
+    ary = rb_ary_new();
+    rb_block_call(obj, id_each, 0, 0, compact_i, ary);
+
+    return ary;
+}
+
+
+/*
+ * == What's Here
+ *
+ * \Module \Enumerable provides methods that are useful to a collection class for:
+ * - {Querying}[#module-Enumerable-label-Methods+for+Querying]
+ * - {Fetching}[#module-Enumerable-label-Methods+for+Fetching]
+ * - {Searching}[#module-Enumerable-label-Methods+for+Searching]
+ * - {Sorting}[#module-Enumerable-label-Methods+for+Sorting]
+ * - {Iterating}[#module-Enumerable-label-Methods+for+Iterating]
+ * - {And more....}[#module-Enumerable-label-Other+Methods]
+ *
+ * === Methods for Querying
+ *
+ * These methods return information about the \Enumerable other than the elements themselves:
+ *
+ * #include?, #member?:: Returns +true+ if self == object, +false+ otherwise.
+ * #all?::               Returns +true+ if all elements meet a specified criterion; +false+ otherwise.
+ * #any?::               Returns +true+ if any element meets a specified criterion; +false+ otherwise.
+ * #none?::              Returns +true+ if no element meets a specified criterion; +false+ otherwise.
+ * #one?::               Returns +true+ if exactly one element meets a specified criterion; +false+ otherwise.
+ * #count::              Returns the count of elements,
+ *                       based on an argument or block criterion, if given.
+ * #tally::              Returns a new \Hash containing the counts of occurrences of each element.
+ *
+ * === Methods for Fetching
+ *
+ * These methods return entries from the \Enumerable, without modifying it:
+ *
+ * <i>Leading, trailing, or all elements</i>:
+ * #entries, #to_a:: Returns all elements.
+ * #first::          Returns the first element or leading elements.
+ * #take::           Returns a specified number of leading elements.
+ * #drop::           Returns a specified number of trailing elements.
+ * #take_while::     Returns leading elements as specified by the given block.
+ * #drop_while::     Returns trailing elements as specified by the given block.
+ *
+ * <i>Minimum and maximum value elements</i>:
+ * #min::            Returns the elements whose values are smallest among the elements,
+ *                   as determined by <tt><=></tt> or a given block.
+ * #max::            Returns the elements whose values are largest among the elements,
+ *                   as determined by <tt><=></tt> or a given block.
+ * #minmax::         Returns a 2-element \Array containing the smallest and largest elements.
+ * #min_by::         Returns the smallest element, as determined by the given block.
+ * #max_by::         Returns the largest element, as determined by the given block.
+ * #minmax_by::      Returns the smallest and largest elements, as determined by the given block.
+ *
+ * <i>Groups, slices, and partitions</i>:
+ * #group_by::       Returns a \Hash that partitions the elements into groups.
+ * #partition::      Returns elements partitioned into two new Arrays, as determined by the given block.
+ * #slice_after::    Returns a new \Enumerator whose entries are a partition of +self+,
+                     based either on a given +object+ or a given block.
+ * #slice_before::   Returns a new \Enumerator whose entries are a partition of +self+,
+                     based either on a given +object+ or a given block.
+ * #slice_when::     Returns a new \Enumerator whose entries are a partition of +self+
+                     based on the given block.
+ * #chunk::          Returns elements organized into chunks as specified by the given block.
+ * #chunk_while::    Returns elements organized into chunks as specified by the given block.
+ *
+ * === Methods for Searching and Filtering
+ *
+ * These methods return elements that meet a specified criterion.
+ *
+ * #find, #detect::              Returns an element selected by the block.
+ * #find_all, #filter, #select:: Returns elements selected by the block.
+ * #find_index::                 Returns the index of an element selected by a given object or block.
+ * #reject::                     Returns elements not rejected by the block.
+ * #uniq::                       Returns elements that are not duplicates.
+ *
+ * === Methods for Sorting
+ *
+ * These methods return elements in sorted order.
+ *
+ * #sort::    Returns the elements, sorted by <tt><=></tt> or the given block.
+ * #sort_by:: Returns the elements, sorted by the given block.
+ *
+ * === Methods for Iterating
+ *
+ * #each_entry::       Calls the block with each successive element
+ *                     (slightly different from #each).
+ * #each_with_index::  Calls the block with each successive element and its index.
+ * #each_with_object:: Calls the block with each successive element and a given object.
+ * #each_slice::       Calls the block with successive non-overlapping slices.
+ * #each_cons::        Calls the block with successive overlapping slices.
+ *                     (different from #each_slice).
+ * #reverse_each::     Calls the block with each successive element, in reverse order.
+ *
+ * === Other Methods
+ *
+ * #map, #collect::             Returns objects returned by the block.
+ * #filter_map::                Returns truthy objects returned by the block.
+ * #flat_map, #collect_concat:: Returns flattened objects returned by the block.
+ * #grep::                      Returns elements selected by a given object
+ *                              or objects returned by a given block.
+ * #grep_v::                    Returns elements selected by a given object
+ *                              or objects returned by a given block.
+ * #reduce, #inject::           Returns the object formed by combining all elements.
+ * #sum::                       Returns the sum of the elements, using method +++.
+ * #zip::                       Combines each element with elements from other enumerables;
+ *                              returns the n-tuples or calls the block with each.
+ * #cycle::                     Calls the block with each element, cycling repeatedly.
+ *
+ * == Usage
+ *
+ * To use module \Enumerable in a collection class:
+ * - Include it:
+ *     include Enumerable
+ * - Implement method <tt>#each</tt>
+ *   which must yield successive elements of the collection.
+ *   This method will be called by almost any \Enumerable method.
+ *
+ * == \Enumerable in Ruby Core Classes
+ * Some Ruby classes include \Enumerable:
+ * - Array
+ * - Dir
+ * - Hash
+ * - IO
+ * - Range
+ * - Set
+ * - Struct
+ * Virtually all methods in \Enumerable call method +#each+ in the including class:
+ * - <tt>Hash#each</tt> yields the next key-value pair as a 2-element \Array.
+ * - <tt>Struct#each</tt> yields the next name-value pair as a 2-element \Array.
+ * - For the other classes above, +#each+ yields the next object from the collection.
+ *
+ * == About the Examples
+ * The example code snippets for the \Enumerable methods:
+ * - Always show the use of one or more \Array-like classes (often \Array itself).
+ * - Sometimes show the use of a \Hash-like class.
+ *   For some methods, though, the usage would not make sense,
+ *   and so it is not shown.  Example: #tally would find exactly one of each \Hash entry.
  */
 
 void
 Init_Enumerable(void)
 {
-#undef rb_intern
-#define rb_intern(str) rb_intern_const(str)
-
     rb_mEnumerable = rb_define_module("Enumerable");
 
     rb_define_method(rb_mEnumerable, "to_a", enum_to_a, -1);
@@ -4103,6 +4432,7 @@ Init_Enumerable(void)
     rb_define_method(rb_mEnumerable, "find_all", enum_find_all, 0);
     rb_define_method(rb_mEnumerable, "select", enum_find_all, 0);
     rb_define_method(rb_mEnumerable, "filter", enum_find_all, 0);
+    rb_define_method(rb_mEnumerable, "filter_map", enum_filter_map, 0);
     rb_define_method(rb_mEnumerable, "reject", enum_reject, 0);
     rb_define_method(rb_mEnumerable, "collect", enum_collect, 0);
     rb_define_method(rb_mEnumerable, "map", enum_collect, 0);
@@ -4112,7 +4442,7 @@ Init_Enumerable(void)
     rb_define_method(rb_mEnumerable, "reduce", enum_inject, -1);
     rb_define_method(rb_mEnumerable, "partition", enum_partition, 0);
     rb_define_method(rb_mEnumerable, "group_by", enum_group_by, 0);
-    rb_define_method(rb_mEnumerable, "tally", enum_tally, 0);
+    rb_define_method(rb_mEnumerable, "tally", enum_tally, -1);
     rb_define_method(rb_mEnumerable, "first", enum_first, -1);
     rb_define_method(rb_mEnumerable, "all?", enum_all, -1);
     rb_define_method(rb_mEnumerable, "any?", enum_any, -1);
@@ -4145,7 +4475,20 @@ Init_Enumerable(void)
     rb_define_method(rb_mEnumerable, "chunk_while", enum_chunk_while, 0);
     rb_define_method(rb_mEnumerable, "sum", enum_sum, -1);
     rb_define_method(rb_mEnumerable, "uniq", enum_uniq, 0);
+    rb_define_method(rb_mEnumerable, "compact", enum_compact, 0);
 
-    id_next = rb_intern("next");
-    id_div = rb_intern("div");
+    id__alone = rb_intern_const("_alone");
+    id__separator = rb_intern_const("_separator");
+    id_chunk_categorize = rb_intern_const("chunk_categorize");
+    id_chunk_enumerable = rb_intern_const("chunk_enumerable");
+    id_next = rb_intern_const("next");
+    id_sliceafter_enum = rb_intern_const("sliceafter_enum");
+    id_sliceafter_pat = rb_intern_const("sliceafter_pat");
+    id_sliceafter_pred = rb_intern_const("sliceafter_pred");
+    id_slicebefore_enumerable = rb_intern_const("slicebefore_enumerable");
+    id_slicebefore_sep_pat = rb_intern_const("slicebefore_sep_pat");
+    id_slicebefore_sep_pred = rb_intern_const("slicebefore_sep_pred");
+    id_slicewhen_enum = rb_intern_const("slicewhen_enum");
+    id_slicewhen_inverted = rb_intern_const("slicewhen_inverted");
+    id_slicewhen_pred = rb_intern_const("slicewhen_pred");
 }

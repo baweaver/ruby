@@ -32,7 +32,7 @@ class Object
   CROSS_COMPILING = RUBY_PLATFORM
   constants.grep(/^RUBY_/) {|n| remove_const n}
 % arg['versions'].each {|n, v|
-  <%=n%> = <%if n=='RUBY_DESCRIPTION' %>RubyVM.const_defined?(:MJIT) && RubyVM::MJIT.enabled? ?
+  <%=n%> = <%if n=='RUBY_DESCRIPTION' %>RubyVM.const_defined?(:JIT) && RubyVM::JIT.enabled? ?
     <%=arg['RUBY_DESCRIPTION_WITH_JIT'].inspect%> :
     <%end%><%=v.inspect%>
 % }
@@ -45,6 +45,6 @@ eval(File.binread(fake), nil, fake)
 ropt = "-r#{__FILE__}"
 ["RUBYOPT"].each do |flag|
   opt = ENV[flag]
-  opt = opt ? ([ropt] | opt.b.split).join(" ") : ropt
+  opt = opt ? ([ropt] | opt.b.split(/\s+/)).join(" ") : ropt
   ENV[flag] = opt
 end

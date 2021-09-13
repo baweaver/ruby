@@ -11,6 +11,19 @@ describe "String#rpartition with String" do
     "hello".rpartition("hello").should == ["", "hello", ""]
   end
 
+  it "returns original string if regexp doesn't match" do
+    "hello".rpartition("/x/").should == ["", "", "hello"]
+  end
+
+  it "returns new object if doesn't match" do
+    str = "hello"
+    str.rpartition("/no_match/").last.should_not.equal?(str)
+  end
+
+  it "handles multibyte string correctly" do
+    "ユーザ@ドメイン".rpartition(/@/).should == ["ユーザ", "@", "ドメイン"]
+  end
+
   it "accepts regexp" do
     "hello!".rpartition(/l./).should == ["hel", "lo", "!"]
   end
@@ -27,7 +40,7 @@ describe "String#rpartition with String" do
   end
 
   it "raises an error if not convertible to string" do
-    lambda{ "hello".rpartition(5) }.should raise_error(TypeError)
-    lambda{ "hello".rpartition(nil) }.should raise_error(TypeError)
+    ->{ "hello".rpartition(5) }.should raise_error(TypeError)
+    ->{ "hello".rpartition(nil) }.should raise_error(TypeError)
   end
 end

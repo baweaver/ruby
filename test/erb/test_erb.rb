@@ -663,29 +663,37 @@ EOS
 
   # [deprecated] These interfaces will be removed later
   def test_deprecated_interface_warnings
-    [nil, 0].each do |safe|
-      assert_warning(/2nd argument of ERB.new is deprecated/) do
-        ERB.new('', safe)
-      end
-    end
-
-    [1, 2].each do |safe|
+    [nil, 0, 1, 2].each do |safe|
       assert_warn(/2nd argument of ERB.new is deprecated/) do
         ERB.new('', safe)
       end
     end
 
     [nil, '', '%', '%<>'].each do |trim|
-      assert_warning(/3rd argument of ERB.new is deprecated/) do
+      assert_warn(/3rd argument of ERB.new is deprecated/) do
         ERB.new('', nil, trim)
       end
     end
 
     [nil, '_erbout', '_hamlout'].each do |eoutvar|
-      assert_warning(/4th argument of ERB.new is deprecated/) do
+      assert_warn(/4th argument of ERB.new is deprecated/) do
         ERB.new('', nil, nil, eoutvar)
       end
     end
+  end
+
+  def test_prohibited_marshal_dump
+    erb = ERB.new("")
+    assert_raise(TypeError) {Marshal.dump(erb)}
+  end
+
+  def test_prohibited_marshal_load
+    erb = ERB.allocate
+    erb.instance_variable_set(:@src, "")
+    erb.instance_variable_set(:@lineno, 1)
+    erb.instance_variable_set(:@_init, true)
+    erb = Marshal.load(Marshal.dump(erb))
+    assert_raise(ArgumentError) {erb.result}
   end
 end
 

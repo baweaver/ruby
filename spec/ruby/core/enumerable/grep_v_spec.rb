@@ -9,6 +9,38 @@ describe "Enumerable#grep_v" do
     end
   end
 
+  it "sets $~ in the block" do
+    "z" =~ /z/ # Reset $~
+    ["abc", "def"].grep_v(/e/) { |e|
+      e.should == "abc"
+      $~.should == nil
+    }
+
+    # Set by the match of "def"
+    $&.should == "e"
+  end
+
+  ruby_version_is ""..."3.0.0" do
+    it "sets $~ to the last match when given no block" do
+      "z" =~ /z/ # Reset $~
+      ["abc", "def"].grep_v(/e/).should == ["abc"]
+
+      # Set by the match of "def"
+      $&.should == "e"
+
+      ["abc", "def"].grep_v(/b/)
+      $&.should == nil
+    end
+  end
+
+  ruby_version_is "3.0.0" do
+    it "does not set $~ when given no block" do
+      "z" =~ /z/ # Reset $~
+      ["abc", "def"].grep_v(/e/).should == ["abc"]
+      $&.should == "z"
+    end
+  end
+
   describe "without block" do
     it "returns an Array of matched elements" do
       @numerous.grep_v(@odd_matcher).should == [0, 2, 4, 6, 8]

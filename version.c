@@ -32,7 +32,11 @@ const int ruby_api_version[] = {
     STRINGIZE(RUBY_VERSION_MAJOR) "." \
     STRINGIZE(RUBY_VERSION_MINOR) "." \
     STRINGIZE(RUBY_VERSION_TEENY) ""
+#ifndef RUBY_FULL_REVISION
+# define RUBY_FULL_REVISION RUBY_REVISION
+#endif
 const char ruby_version[] = RUBY_VERSION;
+const char ruby_revision[] = RUBY_FULL_REVISION;
 const char ruby_release_date[] = RUBY_RELEASE_DATE;
 const char ruby_platform[] = RUBY_PLATFORM;
 const int ruby_patchlevel = RUBY_PATCHLEVEL;
@@ -46,7 +50,6 @@ void
 Init_version(void)
 {
     enum {ruby_patchlevel = RUBY_PATCHLEVEL};
-    enum {ruby_revision = RUBY_REVISION};
     VALUE version;
     VALUE ruby_engine_name;
     /*
@@ -67,9 +70,9 @@ Init_version(void)
      */
     rb_define_global_const("RUBY_PATCHLEVEL", MKINT(patchlevel));
     /*
-     * The SVN revision for this ruby.
+     * The GIT commit hash for this ruby.
      */
-    rb_define_global_const("RUBY_REVISION", MKINT(revision));
+    rb_define_global_const("RUBY_REVISION", MKSTR(revision));
     /*
      * The copyright string for ruby
      */
@@ -83,6 +86,8 @@ Init_version(void)
      * The version of the engine or interpreter this ruby uses.
      */
     rb_define_global_const("RUBY_ENGINE_VERSION", (1 ? version : MKSTR(version)));
+
+    rb_provide("ruby2_keywords.rb");
 }
 
 #if USE_MJIT
@@ -109,7 +114,6 @@ Init_ruby_description(void)
     rb_define_global_const("RUBY_DESCRIPTION", /* MKSTR(description) */ description);
 }
 
-/*! Prints the version information of the CRuby interpreter to stdout. */
 void
 ruby_show_version(void)
 {
@@ -128,7 +132,6 @@ ruby_show_version(void)
     fflush(stdout);
 }
 
-/*! Prints the copyright notice of the CRuby interpreter to stdout. */
 void
 ruby_show_copyright(void)
 {

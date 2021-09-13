@@ -1,5 +1,6 @@
 require_relative '../../../../spec_helper'
 require 'net/http'
+require 'stringio'
 
 describe "Net::HTTPResponse#read_body" do
   before :each do
@@ -40,7 +41,7 @@ describe "Net::HTTPResponse#read_body" do
     it "raises an IOError if called a second time" do
       @res.reading_body(@socket, true) do
         @res.read_body("")
-        lambda { @res.read_body("") }.should raise_error(IOError)
+        -> { @res.read_body("") }.should raise_error(IOError)
       end
     end
   end
@@ -70,7 +71,7 @@ describe "Net::HTTPResponse#read_body" do
     it "raises an IOError if called a second time" do
       @res.reading_body(@socket, true) do
         @res.read_body {}
-        lambda { @res.read_body {} }.should raise_error(IOError)
+        -> { @res.read_body {} }.should raise_error(IOError)
       end
     end
   end
@@ -78,7 +79,7 @@ describe "Net::HTTPResponse#read_body" do
   describe "when passed buffer and block" do
     it "raises an ArgumentError" do
       @res.reading_body(@socket, true) do
-        lambda { @res.read_body("") {} }.should raise_error(ArgumentError)
+        -> { @res.read_body("") {} }.should raise_error(ArgumentError)
       end
     end
   end

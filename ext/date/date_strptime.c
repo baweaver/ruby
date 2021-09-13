@@ -581,6 +581,7 @@ date__strptime_internal(const char *str, size_t slen,
 		    if (NIL_P(pat)) {
 			pat = rb_reg_new(pat_source, sizeof pat_source - 1,
 					 ONIG_OPTION_IGNORECASE);
+			rb_obj_freeze(pat);
 			rb_gc_register_mark_object(pat);
 		    }
 
@@ -669,7 +670,7 @@ date__strptime(const char *str, size_t slen,
     if (fail_p())
 	return Qnil;
 
-    cent = ref_hash("_cent");
+    cent = del_hash("_cent");
     if (!NIL_P(cent)) {
 	VALUE year;
 
@@ -679,10 +680,9 @@ date__strptime(const char *str, size_t slen,
 	year = ref_hash("year");
 	if (!NIL_P(year))
 	    set_hash("year", f_add(year, f_mul(cent, INT2FIX(100))));
-	del_hash("_cent");
     }
 
-    merid = ref_hash("_merid");
+    merid = del_hash("_merid");
     if (!NIL_P(merid)) {
 	VALUE hour;
 
@@ -691,7 +691,6 @@ date__strptime(const char *str, size_t slen,
 	    hour = f_mod(hour, INT2FIX(12));
 	    set_hash("hour", f_add(hour, merid));
 	}
-	del_hash("_merid");
     }
 
     return hash;

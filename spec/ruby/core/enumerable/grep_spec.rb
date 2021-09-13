@@ -29,6 +29,38 @@ describe "Enumerable#grep" do
     ary.grep(/a(b)a/) { $1 }.should == ["b", "b"]
   end
 
+  it "sets $~ in the block" do
+    "z" =~ /z/ # Reset $~
+    ["abc", "def"].grep(/b/) { |e|
+      e.should == "abc"
+      $&.should == "b"
+    }
+
+    # Set by the failed match of "def"
+    $~.should == nil
+  end
+
+  ruby_version_is ""..."3.0.0" do
+    it "sets $~ to the last match when given no block" do
+      "z" =~ /z/ # Reset $~
+      ["abc", "def"].grep(/b/).should == ["abc"]
+
+      # Set by the failed match of "def"
+      $~.should == nil
+
+      ["abc", "def"].grep(/e/)
+      $&.should == "e"
+    end
+  end
+
+  ruby_version_is "3.0.0" do
+    it "does not set $~ when given no block" do
+      "z" =~ /z/ # Reset $~
+      ["abc", "def"].grep(/b/).should == ["abc"]
+      $&.should == "z"
+    end
+  end
+
   describe "with a block" do
     before :each do
       @numerous = EnumerableSpecs::Numerous.new(*(0..9).to_a)
