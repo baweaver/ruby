@@ -89,7 +89,7 @@ RSpec.describe "bundler/inline#gemfile" do
 
     expect(out).to include("Installing activesupport")
     err_lines = err.split("\n")
-    err_lines.reject!{|line| line =~ /\.rb:\d+: warning: / } unless RUBY_VERSION < "2.7"
+    err_lines.reject! {|line| line =~ /\.rb:\d+: warning: / } unless RUBY_VERSION < "2.7"
     expect(err_lines).to be_empty
   end
 
@@ -239,6 +239,40 @@ RSpec.describe "bundler/inline#gemfile" do
     expect(err).to be_empty
   end
 
+  it "does not leak Gemfile.lock versions to the installation output" do
+    gemfile <<-G
+      source "https://notaserver.com"
+      gem "rake"
+    G
+
+    lockfile <<-G
+      GEM
+        remote: https://rubygems.org/
+        specs:
+          rake (11.3.0)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        rake
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    G
+
+    script <<-RUBY
+      gemfile(true) do
+        source "#{file_uri_for(gem_repo1)}"
+        gem "rake", "~> 13.0"
+      end
+    RUBY
+
+    expect(out).to include("Installing rake 13.0")
+    expect(out).not_to include("was 11.3.0")
+    expect(err).to be_empty
+  end
+
   it "installs inline gems when frozen is set" do
     script <<-RUBY, :env => { "BUNDLE_FROZEN" => "true" }
       gemfile do
@@ -309,7 +343,7 @@ RSpec.describe "bundler/inline#gemfile" do
   end
 
   it "skips platform warnings" do
-    simulate_platform "ruby"
+    bundle "config set --local force_ruby_platform true"
 
     script <<-RUBY
       gemfile(true) do
@@ -390,7 +424,7 @@ RSpec.describe "bundler/inline#gemfile" do
     dependency_installer_loads_fileutils = ruby "require 'rubygems/dependency_installer'; puts $LOADED_FEATURES.grep(/fileutils/)", :raise_on_error => false
     skip "does not work if rubygems/dependency_installer loads fileutils, which happens until rubygems 3.2.0" unless dependency_installer_loads_fileutils.empty?
 
-    skip "does not work on ruby 3.0 because it changes the path to look for default gems, tsort is a default gem there, and we can't install it either like we do with fiddle because it doesn't yet exist" unless RUBY_VERSION < "3.0.0"
+    skip "pathname does not install cleanly on this ruby" if RUBY_VERSION < "2.7.0"
 
     Dir.mkdir tmp("path_without_gemfile")
 
@@ -398,6 +432,8 @@ RSpec.describe "bundler/inline#gemfile" do
     skip "fileutils isn't a default gem" if default_fileutils_version.empty?
 
     realworld_system_gems "fileutils --version 1.4.1"
+
+    realworld_system_gems "pathname --version 0.2.0"
 
     realworld_system_gems "fiddle" # not sure why, but this is needed on Windows to boot rubygems successfully
 

@@ -81,6 +81,7 @@ module TestIRB
         InputMethod:\sAbstract\sInputMethod\n
         \.irbrc\spath:\s.+\n
         RUBY_PLATFORM:\s.+\n
+        East\sAsian\sAmbiguous\sWidth:\s\d\n
         #{@is_win ? 'Code\spage:\s\d+\n' : ''}
       }x
       assert_match expected, irb.context.main.irb_info.to_s
@@ -107,6 +108,7 @@ module TestIRB
         InputMethod:\sAbstract\sInputMethod\n
         \.irbrc\spath:\s.+\n
         RUBY_PLATFORM:\s.+\n
+        East\sAsian\sAmbiguous\sWidth:\s\d\n
         #{@is_win ? 'Code\spage:\s\d+\n' : ''}
       }x
       assert_match expected, irb.context.main.irb_info.to_s
@@ -135,6 +137,7 @@ module TestIRB
         IRB\sversion:\sirb\s.+\n
         InputMethod:\sAbstract\sInputMethod\n
         RUBY_PLATFORM:\s.+\n
+        East\sAsian\sAmbiguous\sWidth:\s\d\n
         #{@is_win ? 'Code\spage:\s\d+\n' : ''}
         \z
       }x
@@ -167,6 +170,7 @@ module TestIRB
         IRB\sversion:\sirb\s.+\n
         InputMethod:\sAbstract\sInputMethod\n
         RUBY_PLATFORM:\s.+\n
+        East\sAsian\sAmbiguous\sWidth:\s\d\n
         #{@is_win ? 'Code\spage:\s\d+\n' : ''}
         \z
       }x
@@ -200,7 +204,8 @@ module TestIRB
         \.irbrc\spath: .+\n
         RUBY_PLATFORM: .+\n
         LANG\senv:\sja_JP\.UTF-8\n
-        LC_ALL\s env:\sen_US\.UTF-8\n
+        LC_ALL\senv:\sen_US\.UTF-8\n
+        East\sAsian\sAmbiguous\sWidth:\s\d\n
       }x
       assert_match expected, irb.context.main.irb_info.to_s
     ensure
@@ -507,6 +512,30 @@ module TestIRB
       end
       assert_empty err
       assert_match(%r[/irb\.rb], out)
+    end
+
+    def test_show_source_end_finder
+      pend if RUBY_ENGINE == 'truffleruby'
+      eval(code = <<-EOS, binding, __FILE__, __LINE__ + 1)
+        def show_source_test_method
+          unless true
+          end
+        end
+      EOS
+      input = TestInputMethod.new([
+        "show_source 'TestIRB::ExtendCommand#show_source_test_method'\n",
+      ])
+      IRB.init_config(nil)
+      workspace = IRB::WorkSpace.new(self)
+      IRB.conf[:VERBOSE] = false
+      irb = IRB::Irb.new(workspace, input)
+      IRB.conf[:MAIN_CONTEXT] = irb.context
+      irb.context.return_format = "=> %s\n"
+      out, err = capture_output do
+        irb.eval_input
+      end
+      assert_empty err
+      assert_include(out, code)
     end
 
     def test_whereami

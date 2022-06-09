@@ -19,21 +19,21 @@ module Bundler
     #   collection of gemspecs is returned. Otherwise, nil is returned.
     def self.resolve(requirements, source_requirements = {}, base = [], gem_version_promoter = GemVersionPromoter.new, additional_base_requirements = [], platforms = nil)
       base = SpecSet.new(base) unless base.is_a?(SpecSet)
-      resolver = new(source_requirements, base, gem_version_promoter, additional_base_requirements, platforms)
+      metadata_requirements, regular_requirements = requirements.partition {|dep| dep.name.end_with?("\0") }
+      resolver = new(source_requirements, base, gem_version_promoter, additional_base_requirements, platforms, metadata_requirements)
       result = resolver.start(requirements)
-      SpecSet.new(SpecSet.new(result).for(requirements.reject{|dep| dep.name.end_with?("\0") }))
+      SpecSet.new(SpecSet.new(result).for(regular_requirements))
     end
 
-    def initialize(source_requirements, base, gem_version_promoter, additional_base_requirements, platforms)
+    def initialize(source_requirements, base, gem_version_promoter, additional_base_requirements, platforms, metadata_requirements)
       @source_requirements = source_requirements
+      @metadata_requirements = metadata_requirements
       @base = base
       @resolver = Molinillo::Resolver.new(self, self)
       @search_for = {}
       @base_dg = Molinillo::DependencyGraph.new
-      aggregate_global_source = @source_requirements[:default].is_a?(Source::RubygemsAggregate)
       @base.each do |ls|
         dep = Dependency.new(ls.name, ls.version)
-        ls.source = source_for(ls.name) unless aggregate_global_source
         @base_dg.add_vertex(ls.name, DepProxy.get_proxy(dep, ls.platform), true)
       end
       additional_base_requirements.each {|d| @base_dg.add_vertex(d.name, d) }
@@ -136,6 +136,7 @@ module Bundler
           end
           nested.reduce([]) do |groups, (version, specs)|
             next groups if locked_requirement && !locked_requirement.satisfied_by?(version)
+            next groups unless specs.any? {|spec| spec.match_platform(platform) }
 
             specs_by_platform = Hash.new do |current_specs, current_platform|
               current_specs[current_platform] = select_best_platform_match(specs, current_platform)
@@ -147,7 +148,7 @@ module Bundler
             next groups if @resolving_only_for_ruby
 
             spec_group = SpecGroup.create_for(specs_by_platform, @platforms, platform)
-            groups << spec_group if spec_group
+            groups << spec_group
 
             groups
           end
@@ -250,10 +251,11 @@ module Bundler
     end
 
     def verify_gemfile_dependencies_are_found!(requirements)
-      requirements.each do |requirement|
+      requirements.map! do |requirement|
         name = requirement.name
-        next if name == "bundler"
-        next unless search_for(requirement).empty?
+        next requirement if name == "bundler"
+        next requirement unless search_for(requirement).empty?
+        next unless requirement.current_platform?
 
         if (base = @base[name]) && !base.empty?
           version = base.first.version
@@ -264,30 +266,37 @@ module Bundler
             "If you are updating multiple gems in your Gemfile at once,\n" \
             "try passing them all to `bundle update`"
         else
-          source = source_for(name)
-          specs = source.specs.search(name)
-          versions_with_platforms = specs.map {|s| [s.version, s.platform] }
-          cache_message = begin
-                              " or in gems cached in #{Bundler.settings.app_cache_path}" if Bundler.app_cache.exist?
-                            rescue GemfileNotFound
-                              nil
-                            end
-          message = String.new("Could not find gem '#{SharedHelpers.pretty_dependency(requirement)}' in #{source.to_err}#{cache_message}.\n")
-          message << "The source contains the following versions of '#{name}': #{formatted_versions_with_platforms(versions_with_platforms)}" if versions_with_platforms.any?
+          message = gem_not_found_message(name, requirement, source_for(name))
         end
         raise GemNotFound, message
-      end
+      end.compact!
     end
 
-    def formatted_versions_with_platforms(versions_with_platforms)
-      version_platform_strs = versions_with_platforms.map do |vwp|
-        version = vwp.first
-        platform = vwp.last
-        version_platform_str = String.new(version.to_s)
-        version_platform_str << " #{platform}" unless platform.nil? || platform == Gem::Platform::RUBY
-        version_platform_str
+    def gem_not_found_message(name, requirement, source, extra_message = "")
+      specs = source.specs.search(name)
+      matching_part = name
+      requirement_label = SharedHelpers.pretty_dependency(requirement)
+      cache_message = begin
+                          " or in gems cached in #{Bundler.settings.app_cache_path}" if Bundler.app_cache.exist?
+                        rescue GemfileNotFound
+                          nil
+                        end
+      specs_matching_requirement = specs.select {| spec| requirement.matches_spec?(spec) }
+
+      if specs_matching_requirement.any?
+        specs = specs_matching_requirement
+        matching_part = requirement_label
+        requirement_label = "#{requirement_label} #{requirement.__platform}"
       end
-      version_platform_strs.join(", ")
+
+      message = String.new("Could not find gem '#{requirement_label}'#{extra_message} in #{source}#{cache_message}.\n")
+
+      if specs.any?
+        message << "\nThe source contains the following gems matching '#{matching_part}':\n"
+        message << specs.map {|s| "  * #{s.full_name}" }.join("\n")
+      end
+
+      message
     end
 
     def version_conflict_message(e)
@@ -305,29 +314,63 @@ module Bundler
 
       e = Molinillo::VersionConflict.new(conflicts, e.specification_provider) unless conflicts.empty?
 
-      solver_name = "Bundler"
-      possibility_type = "gem"
       e.message_with_trees(
-        :solver_name => solver_name,
-        :possibility_type => possibility_type,
-        :reduce_trees => lambda do |trees|
+        :full_message_for_conflict => lambda do |name, conflict|
+          o = if name.end_with?("\0")
+            String.new("Bundler found conflicting requirements for the #{name} version:")
+          else
+            String.new("Bundler could not find compatible versions for gem \"#{name}\":")
+          end
+          o << %(\n)
+          if conflict.locked_requirement
+            o << %(  In snapshot (#{name_for_locking_dependency_source}):\n)
+            o << %(    #{SharedHelpers.pretty_dependency(conflict.locked_requirement)}\n)
+            o << %(\n)
+          end
+          o << %(  In #{name_for_explicit_dependency_source}:\n)
+          trees = conflict.requirement_trees
+
           # called first, because we want to reduce the amount of work required to find maximal empty sets
           trees = trees.uniq {|t| t.flatten.map {|dep| [dep.name, dep.requirement] } }
 
           # bail out if tree size is too big for Array#combination to make any sense
-          return trees if trees.size > 15
-          maximal = 1.upto(trees.size).map do |size|
-            trees.map(&:last).flatten(1).combination(size).to_a
-          end.flatten(1).select do |deps|
-            Bundler::VersionRanges.empty?(*Bundler::VersionRanges.for_many(deps.map(&:requirement)))
-          end.min_by(&:size)
+          if trees.size <= 15
+            maximal = 1.upto(trees.size).map do |size|
+              trees.map(&:last).flatten(1).combination(size).to_a
+            end.flatten(1).select do |deps|
+              Bundler::VersionRanges.empty?(*Bundler::VersionRanges.for_many(deps.map(&:requirement)))
+            end.min_by(&:size)
 
-          trees.reject! {|t| !maximal.include?(t.last) } if maximal
+            trees.reject! {|t| !maximal.include?(t.last) } if maximal
 
-          trees.sort_by {|t| t.reverse.map(&:name) }
-        end,
-        :printable_requirement => lambda {|req| SharedHelpers.pretty_dependency(req) },
-        :additional_message_for_conflict => lambda do |o, name, conflict|
+            trees.sort_by! {|t| t.reverse.map(&:name) }
+          end
+
+          o << trees.map do |tree|
+            t = "".dup
+            depth = 2
+
+            base_tree = tree.first
+            base_tree_name = base_tree.name
+
+            if base_tree_name.end_with?("\0")
+              t = nil
+            else
+              tree.each do |req|
+                t << "  " * depth << SharedHelpers.pretty_dependency(req)
+                unless tree.last == req
+                  if spec = conflict.activated_by_name[req.name]
+                    t << %( was resolved to #{spec.version}, which)
+                  end
+                  t << %( depends on)
+                end
+                t << %(\n)
+                depth += 1
+              end
+            end
+            t
+          end.compact.join("\n")
+
           if name == "bundler"
             o << %(\n  Current Bundler version:\n    bundler (#{Bundler::VERSION}))
 
@@ -348,40 +391,27 @@ module Bundler
                 o << "Your bundle requires a different version of Bundler than the one you're running, and that version could not be found.\n"
               end
             end
+          elsif name.end_with?("\0")
+            o << %(\n  Current #{name} version:\n    #{SharedHelpers.pretty_dependency(@metadata_requirements.find {|req| req.name == name })}\n\n)
           elsif conflict.locked_requirement
             o << "\n"
-            o << %(Running `bundle update` will rebuild your snapshot from scratch, using only\n)
+            o << %(Deleting your #{name_for_locking_dependency_source} file and running `bundle install` will rebuild your snapshot from scratch, using only\n)
             o << %(the gems in your Gemfile, which may resolve the conflict.\n)
           elsif !conflict.existing
             o << "\n"
 
             relevant_source = conflict.requirement.source || source_for(name)
 
-            metadata_requirement = name.end_with?("\0")
-
-            o << "Could not find gem '" unless metadata_requirement
-            o << SharedHelpers.pretty_dependency(conflict.requirement)
-            o << "'" unless metadata_requirement
-            if conflict.requirement_trees.first.size > 1
-              o << ", which is required by "
-              o << "gem '#{SharedHelpers.pretty_dependency(conflict.requirement_trees.first[-2])}',"
-            end
-            o << " "
-
-            o << if metadata_requirement
-              "is not available in #{relevant_source}"
+            extra_message = if conflict.requirement_trees.first.size > 1
+              ", which is required by gem '#{SharedHelpers.pretty_dependency(conflict.requirement_trees.first[-2])}',"
             else
-              "in #{relevant_source.to_err}.\n"
+              ""
             end
+
+            o << gem_not_found_message(name, conflict.requirement, relevant_source, extra_message)
           end
-        end,
-        :version_for_spec => lambda {|spec| spec.version },
-        :incompatible_version_message_for_conflict => lambda do |name, _conflict|
-          if name.end_with?("\0")
-            %(#{solver_name} found conflicting requirements for the #{name} version:)
-          else
-            %(#{solver_name} could not find compatible versions for #{possibility_type} "#{name}":)
-          end
+
+          o
         end
       )
     end

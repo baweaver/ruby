@@ -10,8 +10,10 @@ from __future__ import print_function
 import lldb
 import os
 import shlex
+import platform
 
-HEAP_PAGE_ALIGN_LOG = 14
+HEAP_PAGE_ALIGN_LOG = 16
+
 HEAP_PAGE_ALIGN_MASK = (~(~0 << HEAP_PAGE_ALIGN_LOG))
 HEAP_PAGE_ALIGN = (1 << HEAP_PAGE_ALIGN_LOG)
 HEAP_PAGE_SIZE = HEAP_PAGE_ALIGN
@@ -190,8 +192,8 @@ def string2cstr(rstring):
         cptr = int(rstring.GetValueForExpressionPath(".as.heap.ptr").value, 0)
         clen = int(rstring.GetValueForExpressionPath(".as.heap.len").value, 0)
     else:
-        cptr = int(rstring.GetValueForExpressionPath(".as.ary").location, 0)
-        clen = (flags & RSTRING_EMBED_LEN_MASK) >> RSTRING_EMBED_LEN_SHIFT
+        cptr = int(rstring.GetValueForExpressionPath(".as.embed.ary").location, 0)
+        clen = int(rstring.GetValueForExpressionPath(".as.embed.len").value, 0)
     return cptr, clen
 
 def output_string(debugger, result, rstring):
@@ -285,8 +287,17 @@ def lldb_inspect(debugger, target, result, val):
         elif flType == RUBY_T_CLASS or flType == RUBY_T_MODULE or flType == RUBY_T_ICLASS:
             result.write('T_%s: %s' % ('CLASS' if flType == RUBY_T_CLASS else 'MODULE' if flType == RUBY_T_MODULE else 'ICLASS', flaginfo))
             append_command_output(debugger, "print *(struct RClass*)%0#x" % val.GetValueAsUnsigned(), result)
+            tRClass = target.FindFirstType("struct RClass")
+            if not val.Cast(tRClass).GetChildMemberWithName("ptr").IsValid():
+                append_command_output(debugger, "print *(struct rb_classext_struct*)%0#x" % (val.GetValueAsUnsigned() + tRClass.GetByteSize()), result)
         elif flType == RUBY_T_STRING:
             result.write('T_STRING: %s' % flaginfo)
+            encidx = ((flags & RUBY_ENCODING_MASK)>>RUBY_ENCODING_SHIFT)
+            encname = target.FindFirstType("enum ruby_preserved_encindex").GetEnumMembers().GetTypeEnumMemberAtIndex(encidx).GetName()
+            if encname is not None:
+                result.write('[%s] ' % encname[14:])
+            else:
+                result.write('[enc=%d] ' % encidx)
             tRString = target.FindFirstType("struct RString").GetPointerType()
             ptr, len = string2cstr(val.Cast(tRString))
             if len == 0:
@@ -309,7 +320,6 @@ def lldb_inspect(debugger, target, result, val):
             else:
                 len = val.GetValueForExpressionPath("->as.heap.len").GetValueAsSigned()
                 ptr = val.GetValueForExpressionPath("->as.heap.ptr")
-                #print(val.GetValueForExpressionPath("->as.heap"), file=result)
             result.write("T_ARRAY: %slen=%d" % (flaginfo, len))
             if flags & RUBY_FL_USER1:
                 result.write(" (embed)")
@@ -589,9 +599,13 @@ def dump_page_internal(page, target, process, thread, frame, result, debugger, h
                 try:
                     flidx = "%3d" % freelist.index(obj_addr)
                 except ValueError:
-                    flidx = '   '
+                    flidx = ' -1'
 
-            result_str = "%s idx: [%3d] freelist_idx: {%s} Addr: %0#x (flags: %0#x)" % (rb_type(flags, ruby_type_map), page_index, flidx, obj_addr, flags)
+            if flType == RUBY_T_NONE:
+                klass = obj.GetChildMemberWithName('klass').GetValueAsUnsigned()
+                result_str = "%s idx: [%3d] freelist_idx: {%s} Addr: %0#x (flags: %0#x, next: %0#x)" % (rb_type(flags, ruby_type_map), page_index, flidx, obj_addr, flags, klass)
+            else:
+                result_str = "%s idx: [%3d] freelist_idx: {%s} Addr: %0#x (flags: %0#x)" % (rb_type(flags, ruby_type_map), page_index, flidx, obj_addr, flags)
 
             if highlight == obj_addr:
                 result_str = ' '.join([result_str, "<<<<<"])

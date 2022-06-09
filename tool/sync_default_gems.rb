@@ -1,3 +1,4 @@
+#!/usr/bin/env ruby
 # sync upstream github repositories to ruby repository
 
 require 'fileutils'
@@ -73,8 +74,16 @@ REPOSITORIES = {
   digest: "ruby/digest",
   error_highlight: "ruby/error_highlight",
   un: "ruby/un",
+  win32ole: "ruby/win32ole",
 }
 
+def pipe_readlines(args, rs: "\0", chomp: true)
+  IO.popen(args) do |f|
+    f.readlines(rs, chomp: chomp)
+  end
+end
+
+# We usually don't use this. Please consider using #sync_default_gems_with_commits instead.
 def sync_default_gems(gem)
   repo = REPOSITORIES[gem.to_sym]
   puts "Sync #{repo}"
@@ -98,10 +107,24 @@ def sync_default_gems(gem)
     File.write("lib/bundler/bundler.gemspec", gemspec_content)
 
     cp_r("#{upstream}/bundler/spec", "spec/bundler")
+    cp_r(Dir.glob("#{upstream}/bundler/tool/bundler/dev_gems*"), "tool/bundler")
     cp_r(Dir.glob("#{upstream}/bundler/tool/bundler/test_gems*"), "tool/bundler")
     cp_r(Dir.glob("#{upstream}/bundler/tool/bundler/rubocop_gems*"), "tool/bundler")
     cp_r(Dir.glob("#{upstream}/bundler/tool/bundler/standard_gems*"), "tool/bundler")
     rm_rf(%w[spec/bundler/support/artifice/vcr_cassettes])
+    license_files = %w[
+      lib/bundler/vendor/thor/LICENSE.md
+      lib/rubygems/resolver/molinillo/LICENSE
+      lib/bundler/vendor/molinillo/LICENSE
+      lib/bundler/vendor/connection_pool/LICENSE
+      lib/bundler/vendor/net-http-persistent/README.rdoc
+      lib/bundler/vendor/fileutils/LICENSE.txt
+      lib/bundler/vendor/tsort/LICENSE.txt
+      lib/bundler/vendor/uri/LICENSE.txt
+      lib/rubygems/optparse/COPYING
+      lib/rubygems/tsort/LICENSE.txt
+    ]
+    rm_rf license_files
   when "rdoc"
     rm_rf(%w[lib/rdoc lib/rdoc.rb test/rdoc libexec/rdoc libexec/ri])
     cp_r(Dir.glob("#{upstream}/lib/rdoc*"), "lib")
@@ -128,6 +151,7 @@ def sync_default_gems(gem)
       cp_r("#{upstream}/#{dst}", dst)
     end
     `git checkout lib/rdoc/.document`
+    rm_rf(%w[lib/rdoc/Gemfile lib/rdoc/Rakefile])
   when "reline"
     rm_rf(%w[lib/reline lib/reline.rb test/reline])
     cp_r(Dir.glob("#{upstream}/lib/reline*"), "lib")
@@ -315,8 +339,12 @@ def sync_default_gems(gem)
   when "digest"
     rm_rf(%w[ext/digest test/digest])
     cp_r("#{upstream}/ext/digest", "ext")
-    mkdir_p("ext/digest/lib")
+    mkdir_p("ext/digest/lib/digest")
     cp_r("#{upstream}/lib/digest.rb", "ext/digest/lib/")
+    cp_r("#{upstream}/lib/digest/version.rb", "ext/digest/lib/digest/")
+    mkdir_p("ext/digest/sha2/lib")
+    cp_r("#{upstream}/lib/digest/sha2.rb", "ext/digest/sha2/lib")
+    move("ext/digest/lib/digest/sha2", "ext/digest/sha2/lib")
     cp_r("#{upstream}/test/digest", "test")
     cp_r("#{upstream}/digest.gemspec", "ext/digest")
     `git checkout ext/digest/depend ext/digest/*/depend`
@@ -333,6 +361,15 @@ def sync_default_gems(gem)
     cp_r(Dir.glob("#{upstream}/lib/error_highlight*"), "lib")
     cp_r("#{upstream}/error_highlight.gemspec", "lib/error_highlight")
     cp_r("#{upstream}/test", "test/error_highlight")
+  when "win32ole"
+    sync_lib gem, upstream
+    rm_rf(%w[ext/win32ole/lib])
+    Dir.mkdir(*%w[ext/win32ole/lib])
+    move("lib/win32ole/win32ole.gemspec", "ext/win32ole")
+    move(Dir.glob("lib/win32ole*"), "ext/win32ole/lib")
+  when "open3"
+    sync_lib gem, upstream
+    rm_rf("lib/open3/jruby_windows.rb")
   else
     sync_lib gem, upstream
   end
@@ -344,20 +381,26 @@ IGNORE_FILE_PATTERN =
   |\.git.*
   |[A-Z]\w+file
   |COPYING
-  |rakelib\/
-  )\z/x
+  |rakelib\/.*
+  )\z/mx
 
 def message_filter(repo, sha)
   log = STDIN.read
   log.delete!("\r")
   url = "https://github.com/#{repo}"
-  print "[#{repo}] ", log.gsub(/fix +#\d+|\(#\d+\)/i) {
-    $&.sub(/#/) {"#{url}/pull/"}
+  print "[#{repo}] ", log.gsub(/\b(?i:fix) +\K#(?=\d+\b)|\(\K#(?=\d+\))|\bGH-(?=\d+\b)/) {
+    "#{url}/pull/"
+  }.gsub(%r{(?<![-\[\](){}\w@/])(?:(\w+(?:-\w+)*/\w+(?:-\w+)*)@)?(\h{10,40})\b}) {|c|
+    "https://github.com/#{$1 || repo}/commit/#{$2[0,12]}"
   }.sub(/\s*(?=(?i:\nCo-authored-by:.*)*\Z)/) {
     "\n\n" "#{url}/commit/#{sha[0,10]}\n"
   }
 end
 
+# NOTE: This method is also used by ruby-commit-hook/bin/update-default-gem.sh
+# @param gem [String] A gem name, also used as a git remote name. REPOSITORIES converts it to the appropriate GitHub repository.
+# @param ranges [Array<String>] "before..after". Note that it will NOT sync "before" (but commits after that).
+# @param edit [TrueClass] Set true if you want to resolve conflicts. Obviously, update-default-gem.sh doesn't use this.
 def sync_default_gems_with_commits(gem, ranges, edit: nil)
   repo = REPOSITORIES[gem.to_sym]
   puts "Sync #{repo} with commit history."
@@ -387,8 +430,8 @@ def sync_default_gems_with_commits(gem, ranges, edit: nil)
 
   # Ignore Merge commit and insufficiency commit for ruby core repository.
   commits.delete_if do |sha, subject|
-    files = IO.popen(%W"git diff-tree --no-commit-id --name-only -r #{sha}", &:readlines)
-    subject =~ /^Merge/ || subject =~ /^Auto Merge/ || files.all?{|file| file =~ IGNORE_FILE_PATTERN}
+    files = pipe_readlines(%W"git diff-tree -z --no-commit-id --name-only -r #{sha}")
+    subject.start_with?("Merge", "Auto Merge") or files.all?(IGNORE_FILE_PATTERN)
   end
 
   if commits.empty?
@@ -425,14 +468,14 @@ def sync_default_gems_with_commits(gem, ranges, edit: nil)
     if result.empty?
       skipped = true
     elsif /^CONFLICT/ =~ result
-      result = IO.popen(%W"git status --porcelain", &:readlines).each(&:chomp!)
+      result = pipe_readlines(%W"git status --porcelain -z")
       result.map! {|line| line[/^.U (.*)/, 1]}
       result.compact!
       ignore, conflict = result.partition {|name| IGNORE_FILE_PATTERN =~ name}
       unless ignore.empty?
         system(*%W"git reset HEAD --", *ignore)
         File.unlink(*ignore)
-        ignore = IO.popen(%W"git status --porcelain" + ignore, &:readlines).map! {|line| line[/^.. (.*)/, 1]}
+        ignore = pipe_readlines(%W"git status --porcelain -z" + ignore).map! {|line| line[/^.. (.*)/, 1]}
         system(*%W"git checkout HEAD --", *ignore) unless ignore.empty?
       end
       unless conflict.empty?
@@ -493,7 +536,7 @@ def sync_lib(repo, upstream = nil)
   cp_r("#{upstream}/#{repo}.gemspec", "#{gemspec}")
 end
 
-def update_default_gems(gem)
+def update_default_gems(gem, release: false)
 
   author, repository = REPOSITORIES[gem.to_sym].split('/')
 
@@ -515,9 +558,15 @@ def update_default_gems(gem)
     end
     `git checkout ruby-core`
     `git rebase ruby-core/master`
-    `git checkout master`
-    `git fetch origin master`
-    `git rebase origin/master`
+    `git fetch origin --tags`
+
+    if release
+      last_release = `git tag`.chomp.split.delete_if{|v| v =~ /pre|beta/ }.last
+      `git checkout #{last_release}`
+    else
+      `git checkout master`
+      `git rebase origin/master`
+    end
   end
 end
 
@@ -529,7 +578,14 @@ when "up"
     REPOSITORIES.keys.each{|gem| update_default_gems(gem.to_s)}
   end
 when "all"
-  REPOSITORIES.keys.each{|gem| sync_default_gems(gem.to_s)}
+  if ARGV[1] == "release"
+    REPOSITORIES.keys.each do |gem|
+      update_default_gems(gem.to_s, release: true)
+      sync_default_gems(gem.to_s)
+    end
+  else
+    REPOSITORIES.keys.each{|gem| sync_default_gems(gem.to_s)}
+  end
 when "list"
   ARGV.shift
   pattern = Regexp.new(ARGV.join('|'))

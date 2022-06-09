@@ -15,8 +15,14 @@
 #include <ieeefp.h>
 #endif
 
+#if !defined(USE_GMP)
 #if defined(HAVE_LIBGMP) && defined(HAVE_GMP_H)
-#define USE_GMP
+# define USE_GMP 1
+#else
+# define USE_GMP 0
+#endif
+#endif
+#if USE_GMP
 #include <gmp.h>
 #endif
 
@@ -247,7 +253,7 @@ k_rational_p(VALUE x)
 #define k_exact_zero_p(x) (k_exact_p(x) && f_zero_p(x))
 #define k_exact_one_p(x) (k_exact_p(x) && f_one_p(x))
 
-#ifdef USE_GMP
+#if USE_GMP
 VALUE
 rb_gcd_gmp(VALUE x, VALUE y)
 {
@@ -364,7 +370,7 @@ rb_gcd_normal(VALUE x, VALUE y)
 inline static VALUE
 f_gcd(VALUE x, VALUE y)
 {
-#ifdef USE_GMP
+#if USE_GMP
     if (RB_BIGNUM_TYPE_P(x) && RB_BIGNUM_TYPE_P(y)) {
         size_t xn = BIGNUM_LEN(x);
         size_t yn = BIGNUM_LEN(y);
@@ -2715,13 +2721,19 @@ nurat_s_convert(int argc, VALUE *argv, VALUE klass)
  * a/b (b>0), where a is the numerator and b is the denominator.
  * Integer a equals rational a/1 mathematically.
  *
- * In Ruby, you can create rational objects with the Kernel#Rational,
- * to_r, or rationalize methods or by suffixing +r+ to a literal.
- * The return values will be irreducible fractions.
+ * You can create a \Rational object explicitly with:
+ *
+ * - A {rational literal}[rdoc-ref:syntax/literals.rdoc@Rational+Literals].
+ *
+ * You can convert certain objects to Rationals with:
+ *
+ * - \Method #Rational.
+ *
+ * Examples
  *
  *    Rational(1)      #=> (1/1)
  *    Rational(2, 3)   #=> (2/3)
- *    Rational(4, -6)  #=> (-2/3)
+ *    Rational(4, -6)  #=> (-2/3) # Reduced.
  *    3.to_r           #=> (3/1)
  *    2/3r             #=> (2/3)
  *

@@ -66,6 +66,100 @@ class TestSyntax < Test::Unit::TestCase
     f&.close!
   end
 
+  def test_anonymous_block_forwarding
+    assert_syntax_error("def b; c(&); end", /no anonymous block parameter/)
+    assert_separately([], "#{<<-"begin;"}\n#{<<-'end;'}")
+    begin;
+        def b(&); c(&) end
+        def c(&); yield 1 end
+        a = nil
+        b{|c| a = c}
+        assert_equal(1, a)
+
+        def inner
+          yield
+        end
+
+        def block_only(&)
+          inner(&)
+        end
+        assert_equal(1, block_only{1})
+
+        def pos(arg1, &)
+          inner(&)
+        end
+        assert_equal(2, pos(nil){2})
+
+        def pos_kwrest(arg1, **kw, &)
+          inner(&)
+        end
+        assert_equal(3, pos_kwrest(nil){3})
+
+        def no_kw(arg1, **nil, &)
+          inner(&)
+        end
+        assert_equal(4, no_kw(nil){4})
+
+        def rest_kw(*a, kwarg: 1, &)
+          inner(&)
+        end
+        assert_equal(5, rest_kw{5})
+
+        def kw(kwarg:1, &)
+          inner(&)
+        end
+        assert_equal(6, kw{6})
+
+        def pos_kw_kwrest(arg1, kwarg:1, **kw, &)
+          inner(&)
+        end
+        assert_equal(7, pos_kw_kwrest(nil){7})
+
+        def pos_rkw(arg1, kwarg1:, &)
+          inner(&)
+        end
+        assert_equal(8, pos_rkw(nil, kwarg1: nil){8})
+
+        def all(arg1, arg2, *rest, post1, post2, kw1: 1, kw2: 2, okw1:, okw2:, &)
+          inner(&)
+        end
+        assert_equal(9, all(nil, nil, nil, nil, okw1: nil, okw2: nil){9})
+
+        def all_kwrest(arg1, arg2, *rest, post1, post2, kw1: 1, kw2: 2, okw1:, okw2:, **kw, &)
+          inner(&)
+        end
+        assert_equal(10, all_kwrest(nil, nil, nil, nil, okw1: nil, okw2: nil){10})
+    end;
+  end
+
+  def test_anonymous_rest_forwarding
+    assert_syntax_error("def b; c(*); end", /no anonymous rest parameter/)
+    assert_syntax_error("def b; c(1, *); end", /no anonymous rest parameter/)
+    assert_separately([], "#{<<-"begin;"}\n#{<<-'end;'}")
+    begin;
+        def b(*); c(*) end
+        def c(*a); a end
+        def d(*); b(*, *) end
+        assert_equal([1, 2], b(1, 2))
+        assert_equal([1, 2, 1, 2], d(1, 2))
+    end;
+  end
+
+  def test_anonymous_keyword_rest_forwarding
+    assert_syntax_error("def b; c(**); end", /no anonymous keyword rest parameter/)
+    assert_syntax_error("def b; c(k: 1, **); end", /no anonymous keyword rest parameter/)
+    assert_separately([], "#{<<-"begin;"}\n#{<<-'end;'}")
+    begin;
+        def b(**); c(**) end
+        def c(**kw); kw end
+        def d(**); b(k: 1, **) end
+        def e(**); b(**, k: 1) end
+        assert_equal({a: 1, k: 3}, b(a: 1, k: 3))
+        assert_equal({a: 1, k: 3}, d(a: 1, k: 3))
+        assert_equal({a: 1, k: 1}, e(a: 1, k: 3))
+    end;
+  end
+
   def test_newline_in_block_parameters
     bug = '[ruby-dev:45292]'
     ["", "a", "a, b"].product(["", ";x", [";", "x"]]) do |params|
@@ -200,17 +294,29 @@ class TestSyntax < Test::Unit::TestCase
     bug10315 = '[ruby-core:65625] [Bug #10315]'
     a = []
     def a.add(x) push(x); x; end
-    def a.f(k:) k; end
+    b = a.clone
+    def a.f(k:, **) k; end
+    def b.f(k:) k; end
     a.clear
     r = nil
-    assert_warn(/duplicated/) {r = eval("a.f(k: a.add(1), k: a.add(2))")}
+    assert_warn(/duplicated/) {r = eval("b.f(k: b.add(1), k: b.add(2))")}
     assert_equal(2, r)
-    assert_equal([1, 2], a, bug10315)
+    assert_equal([1, 2], b, bug10315)
+    b.clear
+    r = nil
+    assert_warn(/duplicated/) {r = eval("a.f(k: a.add(1), j: a.add(2), k: a.add(3), k: a.add(4))")}
+    assert_equal(4, r)
+    assert_equal([1, 2, 3, 4], a)
     a.clear
     r = nil
-    assert_warn(/duplicated/) {r = eval("a.f(**{k: a.add(1), k: a.add(2)})")}
+    assert_warn(/duplicated/) {r = eval("b.f(**{k: b.add(1), k: b.add(2)})")}
     assert_equal(2, r)
-    assert_equal([1, 2], a, bug10315)
+    assert_equal([1, 2], b, bug10315)
+    b.clear
+    r = nil
+    assert_warn(/duplicated/) {r = eval("a.f(**{k: a.add(1), j: a.add(2), k: a.add(3), k: a.add(4)})")}
+    assert_equal(4, r)
+    assert_equal([1, 2, 3, 4], a)
   end
 
   def test_keyword_empty_splat
@@ -1061,19 +1167,19 @@ eom
   end
 
   def test_warning_literal_in_condition
-    assert_warn(/literal in condition/) do
+    assert_warn(/string literal in condition/) do
       eval('1 if ""')
     end
-    assert_warn(/literal in condition/) do
+    assert_warn(/regex literal in condition/) do
       eval('1 if //')
     end
     assert_warning(/literal in condition/) do
       eval('1 if 1')
     end
-    assert_warning(/literal in condition/) do
+    assert_warning(/symbol literal in condition/) do
       eval('1 if :foo')
     end
-    assert_warning(/literal in condition/) do
+    assert_warning(/symbol literal in condition/) do
       eval('1 if :"#{"foo".upcase}"')
     end
 
@@ -1563,6 +1669,15 @@ eom
   def test_argument_forwarding
     assert_valid_syntax('def foo(...) bar(...) end')
     assert_valid_syntax('def foo(...) end')
+    assert_valid_syntax('def foo(a, ...) bar(...) end')
+    assert_valid_syntax("def foo ...\n  bar(...)\nend")
+    assert_valid_syntax("def foo a, ...\n  bar(...)\nend")
+    assert_valid_syntax("def foo b = 1, ...\n  bar(...)\nend")
+    assert_valid_syntax("def foo ...; bar(...); end")
+    assert_valid_syntax("def foo a, ...; bar(...); end")
+    assert_valid_syntax("def foo b = 1, ...; bar(...); end")
+    assert_valid_syntax("(def foo ...\n  bar(...)\nend)")
+    assert_valid_syntax("(def foo ...; bar(...); end)")
     assert_valid_syntax('def ==(...) end')
     assert_valid_syntax('def [](...) end')
     assert_valid_syntax('def nil(...) end')
@@ -1592,7 +1707,11 @@ eom
         [args, kws]
       end
     end
+    obj4 = obj1.clone
+    obj5 = obj1.clone
     obj1.instance_eval('def foo(...) bar(...) end', __FILE__, __LINE__)
+    obj4.instance_eval("def foo ...\n  bar(...)\n""end", __FILE__, __LINE__)
+    obj5.instance_eval("def foo ...; bar(...); end", __FILE__, __LINE__)
 
     klass = Class.new {
       def foo(*args, **kws, &block)
@@ -1621,7 +1740,7 @@ eom
     end
     obj3.instance_eval('def foo(...) bar(...) end', __FILE__, __LINE__)
 
-    [obj1, obj2, obj3].each do |obj|
+    [obj1, obj2, obj3, obj4, obj5].each do |obj|
       assert_warning('') {
         assert_equal([[1, 2, 3], {k1: 4, k2: 5}], obj.foo(1, 2, 3, k1: 4, k2: 5) {|*x| x})
       }
@@ -1754,6 +1873,29 @@ eom
     assert_equal [[4, 1, 5, 2], {a: 1}], obj.foo(4, 5, 2, a: 1)
     assert_equal [[4, 1, 5, 2, 3], {a: 1}], obj.foo(4, 5, 2, 3, a: 1)
     assert_equal [[4, 1, 5, 2, 3], {a: 1}], obj.foo(4, 5, 2, 3, a: 1){|args, kws| [args, kws]}
+
+    obj.singleton_class.send(:remove_method, :foo)
+    obj.instance_eval("def foo a, ...\n bar(a, ...)\n"" end", __FILE__, __LINE__)
+    assert_equal [[4], {}], obj.foo(4)
+    assert_equal [[4, 2], {}], obj.foo(4, 2)
+    assert_equal [[4, 2, 3], {}], obj.foo(4, 2, 3)
+    assert_equal [[4], {a: 1}], obj.foo(4, a: 1)
+    assert_equal [[4, 2], {a: 1}], obj.foo(4, 2, a: 1)
+    assert_equal [[4, 2, 3], {a: 1}], obj.foo(4, 2, 3, a: 1)
+    assert_equal [[4, 2, 3], {a: 1}], obj.foo(4, 2, 3, a: 1){|args, kws| [args, kws]}
+
+    obj.singleton_class.send(:remove_method, :foo)
+    obj.instance_eval("def foo a, ...; bar(a, ...); end", __FILE__, __LINE__)
+    assert_equal [[4], {}], obj.foo(4)
+    assert_equal [[4, 2], {}], obj.foo(4, 2)
+    assert_equal [[4, 2, 3], {}], obj.foo(4, 2, 3)
+    assert_equal [[4], {a: 1}], obj.foo(4, a: 1)
+    assert_equal [[4, 2], {a: 1}], obj.foo(4, 2, a: 1)
+    assert_equal [[4, 2, 3], {a: 1}], obj.foo(4, 2, 3, a: 1)
+    assert_equal [[4, 2, 3], {a: 1}], obj.foo(4, 2, 3, a: 1){|args, kws| [args, kws]}
+
+    exp = eval("-> (a: nil) {a...1}")
+    assert_equal 0...1, exp.call(a: 0)
   end
 
   def test_cdhash

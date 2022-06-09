@@ -1,12 +1,12 @@
 # frozen_string_literal: true
-$LOAD_PATH.unshift "#{File.dirname(__FILE__)}/../.."
-require 'test/unit'
+$LOAD_PATH.unshift "#{__dir__}/../.."
+require_relative '../../test/unit'
 
-require "profile_test_all" if ENV.key?('RUBY_TEST_ALL_PROFILE')
-require "tracepointchecker"
-require "zombie_hunter"
-require "iseq_loader_checker"
-require "gc_checker"
+require_relative '../../profile_test_all' if ENV.key?('RUBY_TEST_ALL_PROFILE')
+require_relative '../../tracepointchecker'
+require_relative '../../zombie_hunter'
+require_relative '../../iseq_loader_checker'
+require_relative '../../gc_checker'
 
 module Test
   module Unit
@@ -29,6 +29,10 @@ module Test
         suites.map do |suite|
           _run_suite(suite, type)
         end
+      end
+
+      def _start_method(inst)
+        _report "start", Marshal.dump([inst.class.name, inst.__name__])
       end
 
       def _run_suite(suite, type) # :nodoc:
@@ -107,7 +111,7 @@ module Test
             case buf.chomp
             when /^loadpath (.+?)$/
               @old_loadpath = $:.dup
-              $:.push(*Marshal.load($1.unpack("m")[0].force_encoding("ASCII-8BIT"))).uniq!
+              $:.push(*Marshal.load($1.unpack1("m").force_encoding("ASCII-8BIT"))).uniq!
             when /^run (.+?) (.+?)$/
               _report "okay"
 

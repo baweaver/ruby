@@ -256,7 +256,7 @@ Init_<%=init_name%><%=%>(void)
 % if @have_sublib
     struct prelude_env memo;
     ID name = rb_intern("TMP_RUBY_PREFIX");
-    VALUE prelude = Data_Wrap_Struct(rb_cData, 0, 0, &memo);
+    VALUE prelude = Data_Wrap_Struct(rb_cObject, 0, 0, &memo);
 
     memo.prefix_path = rb_const_remove(rb_cObject, name);
     rb_const_set(rb_cObject, name, prelude);
@@ -269,9 +269,6 @@ Init_<%=init_name%><%=%>(void)
 % preludes.each do |i, prelude, lines, sub, start_line|
 %   next if sub
     prelude_eval(PRELUDE_CODE(<%=i%><%=%>), PRELUDE_NAME(<%=i%><%=%>), <%=start_line%>);
-% end
-% if @have_sublib
-    rb_gc_force_recycle(prelude);
 % end
 
 #if 0

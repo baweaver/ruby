@@ -61,6 +61,8 @@ module Bundler
         Bundler.reset_settings_and_root!
       end
 
+      Bundler.self_manager.restart_with_locked_bundler_if_needed
+
       Bundler.settings.set_command_option_if_given :retry, options[:retry]
 
       current_cmd = args.last[:current_command].name
@@ -184,6 +186,7 @@ module Bundler
     method_option "install", :type => :boolean, :banner =>
       "Runs 'bundle install' after removing the gems from the Gemfile"
     def remove(*gems)
+      SharedHelpers.major_deprecation(2, "The `--install` flag has been deprecated. `bundle install` is triggered by default.") if ARGV.include?("--install")
       require_relative "cli/remove"
       Remove.new(gems, options).run
     end
@@ -330,6 +333,7 @@ module Bundler
 
     desc "info GEM [OPTIONS]", "Show information for the given gem"
     method_option "path", :type => :boolean, :banner => "Print full path to gem"
+    method_option "version", :type => :boolean, :banner => "Print gem version"
     def info(gem_name)
       require_relative "cli/info"
       Info.new(options, gem_name).run
@@ -365,8 +369,11 @@ module Bundler
     method_option "version", :aliases => "-v", :type => :string
     method_option "group", :aliases => "-g", :type => :string
     method_option "source", :aliases => "-s", :type => :string
+    method_option "require", :aliases => "-r", :type => :string, :banner => "Adds require path to gem. Provide false, or a path as a string."
     method_option "git", :type => :string
+    method_option "github", :type => :string
     method_option "branch", :type => :string
+    method_option "ref", :type => :string
     method_option "skip-install", :type => :boolean, :banner =>
       "Adds gem to the Gemfile but does not install it"
     method_option "optimistic", :type => :boolean, :banner => "Adds optimistic declaration of version to gem"
@@ -384,7 +391,7 @@ module Bundler
       are up to date, Bundler will exit with a status of 0. Otherwise, it will exit 1.
 
       For more information on patch level options (--major, --minor, --patch,
-      --update-strict) see documentation on the same options on the update command.
+      --strict) see documentation on the same options on the update command.
     D
     method_option "group", :type => :string, :banner => "List gems from a specific group"
     method_option "groups", :type => :boolean, :banner => "List gems organized by groups"
@@ -392,10 +399,9 @@ module Bundler
       "Do not attempt to fetch gems remotely and use the gem cache instead"
     method_option "pre", :type => :boolean, :banner => "Check for newer pre-release gems"
     method_option "source", :type => :array, :banner => "Check against a specific source"
-    strict_is_update = Bundler.feature_flag.forget_cli_options?
-    method_option "filter-strict", :type => :boolean, :aliases => strict_is_update ? [] : %w[--strict], :banner =>
+    method_option "filter-strict", :type => :boolean, :banner =>
       "Only list newer versions allowed by your Gemfile requirements"
-    method_option "update-strict", :type => :boolean, :aliases => strict_is_update ? %w[--strict] : [], :banner =>
+    method_option "strict", :type => :boolean, :aliases => "--update-strict", :banner =>
       "Strict conservative resolution, do not allow any gem to be updated past latest --patch | --minor | --major"
     method_option "minor", :type => :boolean, :banner => "Prefer updating only to next minor version"
     method_option "major", :type => :boolean, :banner => "Prefer updating to next major version (default)"
@@ -551,7 +557,7 @@ module Bundler
       method_option :version, :type => :boolean, :default => false, :aliases => "-v", :desc => "Set to show each gem version."
       method_option :without, :type => :array, :default => [], :aliases => "-W", :banner => "GROUP[ GROUP...]", :desc => "Exclude gems that are part of the specified named group."
       def viz
-        SharedHelpers.major_deprecation 2, "The `viz` command has been moved to the `bundle-viz` gem, see https://github.com/bundler/bundler-viz"
+        SharedHelpers.major_deprecation 2, "The `viz` command has been renamed to `graph` and moved to a plugin. See https://github.com/rubygems/bundler-graph"
         require_relative "cli/viz"
         Viz.new(options.dup).run
       end
@@ -604,7 +610,7 @@ module Bundler
     private :gem
 
     def self.source_root
-      File.expand_path(File.join(File.dirname(__FILE__), "templates"))
+      File.expand_path("templates", __dir__)
     end
 
     desc "clean [OPTIONS]", "Cleans up unused gems in your bundler directory", :hide => true
@@ -802,17 +808,10 @@ module Bundler
 
       current = Gem::Version.new(VERSION)
       return if current >= latest
-      latest_installed = Bundler.rubygems.find_name("bundler").map(&:version).max
 
-      installation = "To install the latest version, run `gem install bundler#{" --pre" if latest.prerelease?}`"
-      if latest_installed && latest_installed > current
-        suggestion = "To update to the most recent installed version (#{latest_installed}), run `bundle update --bundler`"
-        suggestion = "#{installation}\n#{suggestion}" if latest_installed < latest
-      else
-        suggestion = installation
-      end
-
-      Bundler.ui.warn "The latest bundler is #{latest}, but you are currently running #{current}.\n#{suggestion}"
+      Bundler.ui.warn \
+        "The latest bundler is #{latest}, but you are currently running #{current}.\n" \
+        "To update to the most recent version, run `bundle update --bundler`"
     rescue RuntimeError
       nil
     end

@@ -14,19 +14,19 @@ require_relative '../rubygems'
 module Gem::LocalRemoteOptions
 
   ##
-  # Allows OptionParser to handle HTTP URIs.
+  # Allows Gem::OptionParser to handle HTTP URIs.
 
   def accept_uri_http
-    OptionParser.accept URI::HTTP do |value|
+    Gem::OptionParser.accept URI::HTTP do |value|
       begin
         uri = URI.parse value
       rescue URI::InvalidURIError
-        raise OptionParser::InvalidArgument, value
+        raise Gem::OptionParser::InvalidArgument, value
       end
 
       valid_uri_schemes = ["http", "https", "file", "s3"]
       unless valid_uri_schemes.include?(uri.scheme)
-        msg = "Invalid uri scheme for #{value}\nPreface URLs with one of #{valid_uri_schemes.map{|s| "#{s}://" }}"
+        msg = "Invalid uri scheme for #{value}\nPreface URLs with one of #{valid_uri_schemes.map {|s| "#{s}://" }}"
         raise ArgumentError, msg
       end
 

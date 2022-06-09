@@ -19,7 +19,7 @@ require_relative "bundler/build_metadata"
 #
 # Since Ruby 2.6, Bundler is a part of Ruby's standard library.
 #
-# Bunder is used by creating _gemfiles_ listing all the project dependencies
+# Bundler is used by creating _gemfiles_ listing all the project dependencies
 # and (optionally) their versions and then using
 #
 #   require 'bundler/setup'
@@ -43,6 +43,7 @@ module Bundler
   autoload :Dependency,             File.expand_path("bundler/dependency", __dir__)
   autoload :DepProxy,               File.expand_path("bundler/dep_proxy", __dir__)
   autoload :Deprecate,              File.expand_path("bundler/deprecate", __dir__)
+  autoload :Digest,                 File.expand_path("bundler/digest", __dir__)
   autoload :Dsl,                    File.expand_path("bundler/dsl", __dir__)
   autoload :EndpointSpecification,  File.expand_path("bundler/endpoint_specification", __dir__)
   autoload :Env,                    File.expand_path("bundler/env", __dir__)
@@ -65,6 +66,7 @@ module Bundler
   autoload :RubyDsl,                File.expand_path("bundler/ruby_dsl", __dir__)
   autoload :RubyVersion,            File.expand_path("bundler/ruby_version", __dir__)
   autoload :Runtime,                File.expand_path("bundler/runtime", __dir__)
+  autoload :SelfManager,            File.expand_path("bundler/self_manager", __dir__)
   autoload :Settings,               File.expand_path("bundler/settings", __dir__)
   autoload :SharedHelpers,          File.expand_path("bundler/shared_helpers", __dir__)
   autoload :Source,                 File.expand_path("bundler/source", __dir__)
@@ -93,6 +95,17 @@ module Bundler
     # Returns absolute path of where gems are installed on the filesystem.
     def bundle_path
       @bundle_path ||= Pathname.new(configured_bundle_path.path).expand_path(root)
+    end
+
+    def create_bundle_path
+      SharedHelpers.filesystem_access(bundle_path.to_s) do |p|
+        mkdir_p(p)
+      end unless bundle_path.exist?
+
+      @bundle_path = bundle_path.realpath
+    rescue Errno::EEXIST
+      raise PathError, "Could not install to path `#{bundle_path}` " \
+        "because a file already exists at that path. Either remove or rename the file so the directory can be created."
     end
 
     def configured_bundle_path
@@ -368,7 +381,7 @@ EOF
 
       if env.key?("RUBYLIB")
         rubylib = env["RUBYLIB"].split(File::PATH_SEPARATOR)
-        rubylib.delete(File.expand_path("..", __FILE__))
+        rubylib.delete(__dir__)
         env["RUBYLIB"] = rubylib.join(File::PATH_SEPARATOR)
       end
 
@@ -559,7 +572,7 @@ EOF
 
     def load_marshal(data)
       Marshal.load(data)
-    rescue StandardError => e
+    rescue TypeError => e
       raise MarshalError, "#{e.class}: #{e.message}"
     end
 
@@ -642,10 +655,17 @@ EOF
       Bundler.rubygems.clear_paths
     end
 
+    def self_manager
+      @self_manager ||= begin
+                          require_relative "bundler/self_manager"
+                          Bundler::SelfManager.new
+                        end
+    end
+
     private
 
     def eval_yaml_gemspec(path, contents)
-      require_relative "bundler/psyched_yaml"
+      Kernel.require "psych"
 
       Gem::Specification.from_yaml(contents)
     rescue ::Psych::SyntaxError, ArgumentError, Gem::EndOfYAMLException, Gem::Exception

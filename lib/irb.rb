@@ -62,8 +62,15 @@ require_relative "irb/easter-egg"
 #     -W[level=2]       Same as `ruby -W`
 #     --context-mode n  Set n[0-4] to method to create Binding Object,
 #                       when new workspace was created
-#     --echo            Show result(default)
+#     --extra-doc-dir   Add an extra doc dir for the doc dialog
+#     --echo            Show result (default)
 #     --noecho          Don't show result
+#     --echo-on-assignment
+#                       Show result on assignment
+#     --noecho-on-assignment
+#                       Don't show result on assignment
+#     --truncate-echo-on-assignment
+#                       Show truncated result on assignment (default)
 #     --inspect         Use `inspect' for output
 #     --noinspect       Don't use inspect for output
 #     --multiline       Use multiline editor module
@@ -95,10 +102,13 @@ require_relative "irb/easter-egg"
 #
 # == Configuration
 #
-# IRB reads from <code>~/.irbrc</code> when it's invoked.
+# IRB reads a personal initialization file when it's invoked.
+# IRB searches a file in the following order and loads the first one found.
 #
-# If <code>~/.irbrc</code> doesn't exist, +irb+ will try to read in the following order:
-#
+# * +$IRBRC+ (if +$IRBRC+ is set)
+# * +$XDG_CONFIG_HOME/irb/irbrc+ (if +$XDG_CONFIG_HOME+ is set)
+# * +~/.irbrc+
+# * +.config/irb/irbrc+
 # * +.irbrc+
 # * +irb.rc+
 # * +_irbrc+
@@ -607,7 +617,7 @@ module IRB
         ret = conv.primitive_convert(str, dst)
         case ret
         when :invalid_byte_sequence
-          conv.insert_output(conf.primitive_errinfo[3].dump[1..-2])
+          conv.insert_output(conv.primitive_errinfo[3].dump[1..-2])
           redo
         when :undefined_conversion
           c = conv.primitive_errinfo[3].dup.force_encoding(conv.primitive_errinfo[1])
@@ -817,17 +827,20 @@ module IRB
           diff_size = output_width - Reline::Unicode.calculate_width(first_line, true)
           if diff_size.positive? and output_width > winwidth
             lines, _ = Reline::Unicode.split_by_width(first_line, winwidth - diff_size - 3)
-            str = "%s...\e[0m" % lines.first
+            str = "%s..." % lines.first
+            str += "\e[0m" if @context.use_colorize
             multiline_p = false
           else
             str = str.gsub(/(\A.*?\n).*/m, "\\1...")
+            str += "\e[0m" if @context.use_colorize
           end
         else
           output_width = Reline::Unicode.calculate_width(@context.return_format % str, true)
           diff_size = output_width - Reline::Unicode.calculate_width(str, true)
           if diff_size.positive? and output_width > winwidth
             lines, _ = Reline::Unicode.split_by_width(str, winwidth - diff_size - 3)
-            str = "%s...\e[0m" % lines.first
+            str = "%s..." % lines.first
+            str += "\e[0m" if @context.use_colorize
           end
         end
       end
@@ -861,7 +874,7 @@ module IRB
 
       # If the expression is invalid, Ripper.sexp should return nil which will
       # result in false being returned. Any valid expression should return an
-      # s-expression where the second selement of the top level array is an
+      # s-expression where the second element of the top level array is an
       # array of parsed expressions. The first element of each expression is the
       # expression's type.
       verbose, $VERBOSE = $VERBOSE, nil

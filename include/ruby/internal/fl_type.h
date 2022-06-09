@@ -183,7 +183,7 @@ RB_GNUC_EXTENSION
  * @note  About the `FL_USER` terminology: the "user" here does not necessarily
  *        mean only  you.  For  instance struct  ::RString instances  use these
  *        bits to cache their encodings  etc.  Devs discussed about this topic,
- *        reached their  concensus that  ::RUBY_T_DATA is  the only  valid data
+ *        reached their  consensus that  ::RUBY_T_DATA is  the only  valid data
  *        structure that  can use these  bits; other data  structures including
  *        ::RUBY_T_OBJECT  use these  bits  for their  own  purpose.  See  also
  *        https://bugs.ruby-lang.org/issues/18059
@@ -450,12 +450,6 @@ enum {
 #undef RBIMPL_HAVE_ENUM_ATTRIBUTE
 
 RBIMPL_SYMBOL_EXPORT_BEGIN()
-/**
- * @deprecated  Does nothing.  This method is deprecated and will be removed in
- *              Ruby 3.2.
- */
-void rb_obj_infect(VALUE victim, VALUE carrier);
-
 /**
  * This is an  implementation detail of #RB_OBJ_FREEZE().  People  don't use it
  * directly.

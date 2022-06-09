@@ -39,7 +39,7 @@ class Gem::Request
   def cert_files; @connection_pool.cert_files; end
 
   def self.get_cert_files
-    pattern = File.expand_path("./ssl_certs/*/*.pem", File.dirname(__FILE__))
+    pattern = File.expand_path("./ssl_certs/*/*.pem", __dir__)
     Dir.glob(pattern)
   end
 
@@ -96,8 +96,10 @@ class Gem::Request
     return unless cert
     case error_number
     when OpenSSL::X509::V_ERR_CERT_HAS_EXPIRED then
+      require 'time'
       "Certificate #{cert.subject} expired at #{cert.not_after.iso8601}"
     when OpenSSL::X509::V_ERR_CERT_NOT_YET_VALID then
+      require 'time'
       "Certificate #{cert.subject} not valid until #{cert.not_before.iso8601}"
     when OpenSSL::X509::V_ERR_CERT_REJECTED then
       "Certificate #{cert.subject} is rejected"

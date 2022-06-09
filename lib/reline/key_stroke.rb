@@ -1,12 +1,10 @@
 class Reline::KeyStroke
-  using Module.new {
-  }
-
   def initialize(config)
     @config = config
   end
 
   def compress_meta_key(ary)
+    return ary unless @config.convert_meta
     ary.inject([]) { |result, key|
       if result.size > 0 and result.last == "\e".ord
         result[result.size - 1] = Reline::Key.new(key, key | 0b10000000, true)

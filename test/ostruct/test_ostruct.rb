@@ -280,6 +280,7 @@ class TC_OpenStruct < Test::Unit::TestCase
     os = OpenStruct.new(method: :foo, hash: 42)
     assert_equal(os.object_id, os.method!(:object_id).call)
     assert_not_equal(42, os.hash!)
+    refute os.methods.include?(:"!~!")
   end
 
   def test_override_subclass
@@ -368,6 +369,18 @@ class TC_OpenStruct < Test::Unit::TestCase
     RUBY
   end if defined?(Ractor)
 
+  def test_access_methods_from_different_ractor
+    assert_ractor(<<~RUBY, require: 'ostruct')
+      os = OpenStruct.new
+      os.value = 100
+      r = Ractor.new(os) do |x|
+        v = x.value
+        Ractor.yield v
+      end
+      assert 100 == r.take
+    RUBY
+  end if defined?(Ractor)
+
   def test_legacy_yaml
     s = "--- !ruby/object:OpenStruct\ntable:\n  :foo: 42\n"
     o = YAML.safe_load(s, permitted_classes: [Symbol, OpenStruct])
@@ -392,5 +405,11 @@ class TC_OpenStruct < Test::Unit::TestCase
     o = OpenStruct.new(name: "John Smith", age: 70, pension: 300.42)
     o2 = Marshal.load(Marshal.dump(o))
     assert_equal o, o2
+  end
+
+  def test_class
+    os = OpenStruct.new(class: 'my-class', method: 'post')
+    assert_equal('my-class', os.class)
+    assert_equal(OpenStruct, os.class!)
   end
 end

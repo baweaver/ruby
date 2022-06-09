@@ -93,14 +93,19 @@
 #
 # == What's Here
 #
-# \Class \Time provides methods that are useful for:
+# First, what's elsewhere. \Class \Time:
 #
-# - {Creating \Time objects}[#class-Time-label-Methods+for+Creating].
-# - {Fetching \Time values}[#class-Time-label-Methods+for+Fetching].
-# - {Querying a \Time object}[#class-Time-label-Methods+for+Querying].
-# - {Comparing \Time objects}[#class-Time-label-Methods+for+Comparing].
-# - {Converting a \Time object}[#class-Time-label-Methods+for+Converting].
-# - {Rounding a \Time}[#class-Time-label-Methods+for+Rounding].
+# - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
+# - Includes {module Comparable}[rdoc-ref:Comparable@What-27s+Here].
+#
+# Here, class \Time provides methods that are useful for:
+#
+# - {Creating \Time objects}[rdoc-ref:Time@Methods+for+Creating].
+# - {Fetching \Time values}[rdoc-ref:Time@Methods+for+Fetching].
+# - {Querying a \Time object}[rdoc-ref:Time@Methods+for+Querying].
+# - {Comparing \Time objects}[rdoc-ref:Time@Methods+for+Comparing].
+# - {Converting a \Time object}[rdoc-ref:Time@Methods+for+Converting].
+# - {Rounding a \Time}[rdoc-ref:Time@Methods+for+Rounding].
 #
 # === Methods for Creating
 #
@@ -112,8 +117,7 @@
 # - ::at: Returns a new time based on seconds since epoch.
 # - ::now: Returns a new time based on the current system time.
 # - #+ (plus): Returns a new time increased by the given number of seconds.
-# - {-}[#method-i-2D] (minus): Returns a new time
-#                              decreased by the given number of seconds.
+# - #- (minus): Returns a new time decreased by the given number of seconds.
 #
 # === Methods for Fetching
 #
@@ -153,7 +157,7 @@
 #
 # === Methods for Comparing
 #
-# - {#<=>}[#method-i-3C-3D-3E]: Compares +self+ to another time.
+# - #<=>: Compares +self+ to another time.
 # - #eql?: Returns whether the time is equal to another time.
 #
 # === Methods for Converting
@@ -216,7 +220,7 @@ class Time
   # Parameter:
   # :include: doc/time/in.rdoc
   def self.now(in: nil)
-    new(in: __builtin.arg!(:in))
+    Primitive.time_s_now(Primitive.arg!(:in))
   end
 
   # _Time_
@@ -262,11 +266,15 @@ class Time
   # :include: doc/time/nsec.rdoc
   # :include: doc/time/in.rdoc
   #
-  def self.at(time, subsec = (nosubsec = true), unit = (nounit = true), in: nil)
-    __builtin.time_s_at(time, subsec, unit, __builtin.arg!(:in), nosubsec, nounit)
+  def self.at(time, subsec = false, unit = :microsecond, in: nil)
+    if Primitive.mandatory_only?
+      Primitive.time_s_at1(time)
+    else
+      Primitive.time_s_at(time, subsec, unit, Primitive.arg!(:in))
+    end
   end
 
-  # Returns a new \Time object based the on given arguments.
+  # Returns a new \Time object based on the given arguments.
   #
   # With no positional arguments, returns the value of Time.now:
   #
@@ -287,17 +295,17 @@ class Time
   #
   def initialize(year = (now = true), mon = nil, mday = nil, hour = nil, min = nil, sec = nil, zone = nil, in: nil)
     if zone
-      if __builtin.arg!(:in)
+      if Primitive.arg!(:in)
         raise ArgumentError, "timezone argument given as positional and keyword arguments"
       end
     else
-      zone = __builtin.arg!(:in)
+      zone = Primitive.arg!(:in)
     end
 
     if now
-      return __builtin.time_init_now(zone)
+      return Primitive.time_init_now(zone)
     end
 
-    __builtin.time_init_args(year, mon, mday, hour, min, sec, zone)
+    Primitive.time_init_args(year, mon, mday, hour, min, sec, zone)
   end
 end

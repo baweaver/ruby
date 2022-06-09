@@ -35,7 +35,11 @@
 #    undef revents
 #  endif
 #  define RB_WAITFD_IN  POLLIN
-#  define RB_WAITFD_PRI POLLPRI
+#  if defined(POLLPRI)
+#    define RB_WAITFD_PRI POLLPRI
+#  else
+#    define RB_WAITFD_PRI 0
+#  endif
 #  define RB_WAITFD_OUT POLLOUT
 #else
 #  define RB_WAITFD_IN  0x001
@@ -470,7 +474,7 @@ int rb_io_modestr_fmode(const char *modestr);
 
 /**
  * Identical  to rb_io_modestr_fmode(),  except it  returns a  mixture of  `O_`
- * flags.  This for instnce returns `O_WRONLY | O_TRUNC | O_CREAT | O_EXCL` for
+ * flags.  This for instance returns `O_WRONLY | O_TRUNC | O_CREAT | O_EXCL` for
  * `"wx"`.
  *
  * @param[in]  modestr       File mode, in C's string.
@@ -648,10 +652,23 @@ VALUE rb_io_get_write_io(VALUE io);
 VALUE rb_io_set_write_io(VALUE io, VALUE w);
 
 /**
- * Sets an IO to a "nonblock mode".  This amends the way an IO operates so that
- * instead of waiting for rooms for  read/write, it returns errors.  In case of
- * multiplexed IO  situations it can be  vital for IO operations  not to block.
- * This is the key API to achieve that property.
+ * Instructs the OS to put its internal file structure into "nonblocking mode".
+ * This is  an in-Kernel concept.   Reading from/writing  to that file  using C
+ * function calls would return  -1 with errno set.  However when  it comes to a
+ * ruby program,  we hide that error  behind our `IO#read` method.   Ruby level
+ * `IO#read` blocks  regardless of this flag.   If you want to  avoid blocking,
+ * you should consider using methods like `IO#readpartial`.
+ *
+ * ```ruby
+ * require 'io/nonblock'
+ * STDIN.nonblock = true
+ * STDIN.gets # blocks.
+ * ```
+ *
+ * As of  writing there is  a room  of this API  in Fiber schedulers.   A Fiber
+ * scheduler could be written in a  way its behaviour depends on this property.
+ * You  need an  in-depth  understanding  of how  schedulers  work to  properly
+ * leverage this, though.
  *
  * @note  Note   however  that   nonblocking-ness  propagates   across  process
  *        boundaries.  You must  really carefully watch your  step when turning
@@ -669,6 +686,15 @@ VALUE rb_io_set_write_io(VALUE io, VALUE w);
  * create a nonblocking file descriptor using our API.
  */
 void rb_io_set_nonblock(rb_io_t *fptr);
+
+/**
+ * Returns an integer representing the numeric file descriptor for
+ * <em>io</em>.
+ *
+ * @param[in]   io         An IO.
+ * @retval      int        A file descriptor.
+ */
+int rb_io_descriptor(VALUE io);
 
 /**
  * This function  breaks down the  option hash that `IO#initialize`  takes into
@@ -735,8 +761,8 @@ int rb_io_extract_encoding_option(VALUE opt, rb_encoding **enc_p, rb_encoding **
  * class File
  *   def initialize: (
  *     (String | int)      path,
- *     ?(Strig | int)      fmode,
- *     ?(Strig | int)      perm,
+ *     ?(String | int)      fmode,
+ *     ?(String | int)      perm,
  *     ?mode:              (String | int),
  *     ?flags:             int,
  *     ?external_encoding: (Encoding | String),

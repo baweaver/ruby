@@ -283,6 +283,7 @@ module Bundler
         def to_s
           "plugin source for #{@type} with uri #{@uri}"
         end
+        alias_method :identifier, :to_s
 
         # Note: Do not override if you don't know what you are doing.
         def include?(other)
@@ -305,12 +306,6 @@ module Bundler
         # Note: Do not override if you don't know what you are doing.
         def root
           Bundler.root
-        end
-
-        # @private
-        # Returns true
-        def bundler_plugin_api_source?
-          true
         end
 
         # @private

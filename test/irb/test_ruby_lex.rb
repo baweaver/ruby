@@ -109,8 +109,8 @@ module TestIRB
         Row.new(%q(    ]), 4, 4),
         Row.new(%q(  ]), 2, 2),
         Row.new(%q(]), 0, 0),
-        Row.new(%q([<<FOO]), nil, 0),
-        Row.new(%q(hello), nil, 0),
+        Row.new(%q([<<FOO]), 0, 0),
+        Row.new(%q(hello), 0, 0),
         Row.new(%q(FOO), nil, 0),
       ]
 
@@ -399,6 +399,23 @@ module TestIRB
       end
     end
 
+    def test_corresponding_syntax_to_keyword_in
+      input_with_correct_indents = [
+        Row.new(%q(module E), nil, 2, 1),
+        Row.new(%q(end), 0, 0, 0),
+        Row.new(%q(class A), nil, 2, 1),
+        Row.new(%q(  in), nil, 4, 1)
+      ]
+
+      lines = []
+      input_with_correct_indents.each do |row|
+        lines << row.content
+        assert_indenting(lines, row.current_line_spaces, false)
+        assert_indenting(lines, row.new_line_spaces, true)
+        assert_nesting_level(lines, row.nesting_level)
+      end
+    end
+
     def test_bracket_corresponding_to_times
       input_with_correct_indents = [
         Row.new(%q(3.times { |i|), nil, 2, 1),
@@ -465,10 +482,10 @@ module TestIRB
 
     def test_heredoc_with_indent
       input_with_correct_indents = [
-        Row.new(%q(<<~Q), nil, 0, 0),
-        Row.new(%q({), nil, 0, 0),
-        Row.new(%q(  #), nil, 0, 0),
-        Row.new(%q(}), nil, 0, 0),
+        Row.new(%q(<<~Q), 0, 0, 0),
+        Row.new(%q({), 0, 0, 0),
+        Row.new(%q(  #), 2, 0, 0),
+        Row.new(%q(}), 0, 0, 0)
       ]
 
       lines = []
@@ -503,8 +520,8 @@ module TestIRB
       end
       input_with_correct_indents = [
         Row.new(%q(def foo), nil, 2, 1),
-        Row.new(%q(  <<~Q), nil, 2, 1),
-        Row.new(%q(  Qend), nil, 2, 1),
+        Row.new(%q(  <<~Q), 2, 2, 1),
+        Row.new(%q(  Qend), 2, 2, 1),
       ]
 
       lines = []
@@ -581,8 +598,8 @@ module TestIRB
       tokens = RubyLex.ripper_lex_without_warning('%wwww')
       pos_to_index = {}
       tokens.each_with_index { |t, i|
-        assert_nil(pos_to_index[t[0]], "There is already another token in the position of #{t.inspect}.")
-        pos_to_index[t[0]] = i
+        assert_nil(pos_to_index[t.pos], "There is already another token in the position of #{t.inspect}.")
+        pos_to_index[t.pos] = i
       }
     end
 
@@ -598,8 +615,8 @@ module TestIRB
       EOC
       pos_to_index = {}
       tokens.each_with_index { |t, i|
-        assert_nil(pos_to_index[t[0]], "There is already another token in the position of #{t.inspect}.")
-        pos_to_index[t[0]] = i
+        assert_nil(pos_to_index[t.pos], "There is already another token in the position of #{t.inspect}.")
+        pos_to_index[t.pos] = i
       }
     end
   end

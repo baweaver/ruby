@@ -431,9 +431,72 @@ RSpec.describe "bundle check" do
     end
   end
 
+  context "with gemspec directive and scoped sources" do
+    before do
+      build_repo4 do
+        build_gem "awesome_print"
+      end
+
+      build_repo2 do
+        build_gem "dex-dispatch-engine"
+      end
+
+      build_lib("bundle-check-issue", :path => tmp.join("bundle-check-issue")) do |s|
+        s.write "Gemfile", <<-G
+          source "https://localgemserver.test"
+
+          gemspec
+
+          source "https://localgemserver.test/extra" do
+            gem "dex-dispatch-engine"
+          end
+        G
+
+        s.add_dependency "awesome_print"
+      end
+
+      bundle "install", :artifice => "compact_index_extra", :env => { "BUNDLER_SPEC_GEM_REPO" => gem_repo4.to_s }, :dir => tmp.join("bundle-check-issue")
+    end
+
+    it "does not corrupt lockfile when changing version" do
+      version_file = tmp.join("bundle-check-issue/bundle-check-issue.gemspec")
+      File.write(version_file, File.read(version_file).gsub(/s\.version = .+/, "s.version = '9999'"))
+
+      bundle "check --verbose", :dir => tmp.join("bundle-check-issue")
+
+      expect(File.read(tmp.join("bundle-check-issue/Gemfile.lock"))).to eq <<~L
+        PATH
+          remote: .
+          specs:
+            bundle-check-issue (9999)
+              awesome_print
+
+        GEM
+          remote: https://localgemserver.test/
+          specs:
+            awesome_print (1.0)
+
+        GEM
+          remote: https://localgemserver.test/extra/
+          specs:
+            dex-dispatch-engine (1.0)
+
+        PLATFORMS
+          #{lockfile_platforms}
+
+        DEPENDENCIES
+          bundle-check-issue!
+          dex-dispatch-engine!
+
+        BUNDLED WITH
+           #{Bundler::VERSION}
+      L
+    end
+  end
+
   describe "BUNDLED WITH" do
     def lock_with(bundler_version = nil)
-      lock = <<-L
+      lock = <<~L
         GEM
           remote: #{file_uri_for(gem_repo1)}/
           specs:
@@ -447,7 +510,7 @@ RSpec.describe "bundle check" do
       L
 
       if bundler_version
-        lock += "\n        BUNDLED WITH\n           #{bundler_version}\n"
+        lock += "\nBUNDLED WITH\n   #{bundler_version}\n"
       end
 
       lock
@@ -466,16 +529,16 @@ RSpec.describe "bundle check" do
       it "does not change the lock" do
         lockfile lock_with(nil)
         bundle :check
-        lockfile_should_be lock_with(nil)
+        expect(lockfile).to eq lock_with(nil)
       end
     end
 
     context "is newer" do
-      it "does not change the lock but warns" do
+      it "does not change the lock and does not warn" do
         lockfile lock_with(Bundler::VERSION.succ)
         bundle :check
-        expect(err).to include("the running version of Bundler (#{Bundler::VERSION}) is older than the version that created the lockfile (#{Bundler::VERSION.succ})")
-        lockfile_should_be lock_with(Bundler::VERSION.succ)
+        expect(err).to be_empty
+        expect(lockfile).to eq lock_with(Bundler::VERSION.succ)
       end
     end
 
@@ -484,7 +547,7 @@ RSpec.describe "bundle check" do
         system_gems "bundler-1.18.0"
         lockfile lock_with("1.18.0")
         bundle :check
-        lockfile_should_be lock_with("1.18.0")
+        expect(lockfile).to eq lock_with("1.18.0")
       end
     end
   end

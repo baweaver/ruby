@@ -930,6 +930,10 @@ x = __ENCODING__
     assert_no_warning(/shadowing outer local variable/) {eval("a=1; tap {|a|}")}
   end
 
+  def test_shadowing_private_local_variable
+    assert_equal 1, eval("_ = 1; [[2]].each{ |(_)| }; _")
+  end
+
   def test_unused_variable
     o = Object.new
     assert_warning(/assigned but unused variable/) {o.instance_eval("def foo; a=1; nil; end")}
@@ -1044,7 +1048,7 @@ x = __ENCODING__
     end;
 
     assert_syntax_error("def\nf(000)end", /^  \^~~/)
-    assert_syntax_error("def\nf(&)end", /^   \^/)
+    assert_syntax_error("def\nf(&0)end", /^   \^/)
   end
 
   def test_method_location_in_rescue
@@ -1162,6 +1166,10 @@ x = __ENCODING__
     assert_syntax_error("def m\n\C-z""end", /unexpected/)
   end
 
+  def test_unexpected_eof
+    assert_syntax_error('unless', /^      \^\Z/)
+  end
+
   def test_location_of_invalid_token
     assert_syntax_error('class xxx end', /^      \^~~\Z/)
   end
@@ -1227,10 +1235,12 @@ x = __ENCODING__
     assert_valid_syntax('let () { m(a) do; end }')
   end
 
-  def test_void_value_in_command_rhs
+  def test_void_value_in_rhs
     w = "void value expression"
-    ex = assert_syntax_error("x = return 1", w)
-    assert_equal(1, ex.message.scan(w).size, "same #{w.inspect} warning should be just once")
+    ["x = return 1", "x = return, 1", "x = 1, return", "x, y = return"].each do |code|
+      ex = assert_syntax_error(code, w)
+      assert_equal(1, ex.message.scan(w).size, ->{"same #{w.inspect} warning should be just once\n#{w.message}"})
+    end
   end
 
   def eval_separately(code)

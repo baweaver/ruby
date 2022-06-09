@@ -354,6 +354,67 @@ RSpec.describe "bundle update" do
 
       expect(the_bundle).to include_gems("a 1.0", "b 1.0")
     end
+
+    it "should still downgrade if forced by the Gemfile, when transitive dependencies also need downgrade" do
+      build_repo4 do
+        build_gem "activesupport", "6.1.4.1" do |s|
+          s.add_dependency "tzinfo", "~> 2.0"
+        end
+
+        build_gem "activesupport", "6.0.4.1" do |s|
+          s.add_dependency "tzinfo", "~> 1.1"
+        end
+
+        build_gem "tzinfo", "2.0.4"
+        build_gem "tzinfo", "1.2.9"
+      end
+
+      install_gemfile <<-G
+        source "#{file_uri_for(gem_repo4)}"
+        gem "activesupport", "~> 6.1.0"
+      G
+
+      expect(the_bundle).to include_gems("activesupport 6.1.4.1", "tzinfo 2.0.4")
+
+      gemfile <<-G
+        source "#{file_uri_for(gem_repo4)}"
+        gem "activesupport", "~> 6.0.0"
+      G
+
+      original_lockfile = lockfile
+
+      expected_lockfile = <<~L
+        GEM
+          remote: #{file_uri_for(gem_repo4)}/
+          specs:
+            activesupport (6.0.4.1)
+              tzinfo (~> 1.1)
+            tzinfo (1.2.9)
+
+        PLATFORMS
+          #{lockfile_platforms}
+
+        DEPENDENCIES
+          activesupport (~> 6.0.0)
+
+        BUNDLED WITH
+           #{Bundler::VERSION}
+      L
+
+      bundle "update activesupport"
+      expect(the_bundle).to include_gems("activesupport 6.0.4.1", "tzinfo 1.2.9")
+      expect(lockfile).to eq(expected_lockfile)
+
+      lockfile original_lockfile
+      bundle "update"
+      expect(the_bundle).to include_gems("activesupport 6.0.4.1", "tzinfo 1.2.9")
+      expect(lockfile).to eq(expected_lockfile)
+
+      lockfile original_lockfile
+      bundle "lock --update"
+      expect(the_bundle).to include_gems("activesupport 6.0.4.1", "tzinfo 1.2.9")
+      expect(lockfile).to eq(expected_lockfile)
+    end
   end
 
   describe "with --local option" do
@@ -919,27 +980,21 @@ RSpec.describe "bundle update when a gem depends on a newer version of bundler" 
 end
 
 RSpec.describe "bundle update --ruby" do
-  before do
-    install_gemfile <<-G
-        ::RUBY_VERSION = '2.1.3'
-        ::RUBY_PATCHLEVEL = 100
-        ruby '~> 2.1.0'
-        source "#{file_uri_for(gem_repo1)}"
-    G
-  end
-
   context "when the Gemfile removes the ruby" do
     before do
+      install_gemfile <<-G
+        ruby '~> #{RUBY_VERSION}'
+        source "#{file_uri_for(gem_repo1)}"
+      G
+
       gemfile <<-G
-          ::RUBY_VERSION = '2.1.4'
-          ::RUBY_PATCHLEVEL = 222
           source "#{file_uri_for(gem_repo1)}"
       G
     end
     it "removes the Ruby from the Gemfile.lock" do
       bundle "update --ruby"
 
-      lockfile_should_be <<-L
+      expect(lockfile).to eq <<~L
        GEM
          remote: #{file_uri_for(gem_repo1)}/
          specs:
@@ -957,17 +1012,60 @@ RSpec.describe "bundle update --ruby" do
 
   context "when the Gemfile specified an updated Ruby version" do
     before do
+      install_gemfile <<-G
+        ruby '~> #{RUBY_VERSION}'
+        source "#{file_uri_for(gem_repo1)}"
+      G
+
       gemfile <<-G
-          ::RUBY_VERSION = '2.1.4'
-          ::RUBY_PATCHLEVEL = 222
-          ruby '~> 2.1.0'
+          ruby '~> #{RUBY_VERSION[0..2]}'
           source "#{file_uri_for(gem_repo1)}"
       G
     end
     it "updates the Gemfile.lock with the latest version" do
       bundle "update --ruby"
 
-      lockfile_should_be <<-L
+      expect(lockfile).to eq <<~L
+       GEM
+         remote: #{file_uri_for(gem_repo1)}/
+         specs:
+
+       PLATFORMS
+         #{lockfile_platforms}
+
+       DEPENDENCIES
+
+       RUBY VERSION
+          #{Bundler::RubyVersion.system}
+
+       BUNDLED WITH
+          #{Bundler::VERSION}
+      L
+    end
+  end
+
+  context "when a different Ruby is being used than has been versioned" do
+    before do
+      install_gemfile <<-G
+        ruby '~> #{RUBY_VERSION}'
+        source "#{file_uri_for(gem_repo1)}"
+      G
+
+      gemfile <<-G
+          ruby '~> 2.1.0'
+          source "#{file_uri_for(gem_repo1)}"
+      G
+    end
+    it "shows a helpful error message" do
+      bundle "update --ruby", :raise_on_error => false
+
+      expect(err).to include("Your Ruby version is #{Bundler::RubyVersion.system.gem_version}, but your Gemfile specified ~> 2.1.0")
+    end
+  end
+
+  context "when updating Ruby version and Gemfile `ruby`" do
+    before do
+      lockfile <<~L
        GEM
          remote: #{file_uri_for(gem_repo1)}/
          specs:
@@ -983,38 +1081,16 @@ RSpec.describe "bundle update --ruby" do
        BUNDLED WITH
           #{Bundler::VERSION}
       L
-    end
-  end
 
-  context "when a different Ruby is being used than has been versioned" do
-    before do
       gemfile <<-G
-          ::RUBY_VERSION = '2.2.2'
-          ::RUBY_PATCHLEVEL = 505
-          ruby '~> 2.1.0'
-          source "#{file_uri_for(gem_repo1)}"
-      G
-    end
-    it "shows a helpful error message" do
-      bundle "update --ruby", :raise_on_error => false
-
-      expect(err).to include("Your Ruby version is 2.2.2, but your Gemfile specified ~> 2.1.0")
-    end
-  end
-
-  context "when updating Ruby version and Gemfile `ruby`" do
-    before do
-      gemfile <<-G
-          ::RUBY_VERSION = '1.8.3'
-          ::RUBY_PATCHLEVEL = 55
-          ruby '~> 1.8.0'
+          ruby '~> #{RUBY_VERSION}'
           source "#{file_uri_for(gem_repo1)}"
       G
     end
     it "updates the Gemfile.lock with the latest version" do
       bundle "update --ruby"
 
-      lockfile_should_be <<-L
+      expect(lockfile).to eq <<~L
        GEM
          remote: #{file_uri_for(gem_repo1)}/
          specs:
@@ -1025,7 +1101,7 @@ RSpec.describe "bundle update --ruby" do
        DEPENDENCIES
 
        RUBY VERSION
-          ruby 1.8.3p55
+          #{Bundler::RubyVersion.system}
 
        BUNDLED WITH
           #{Bundler::VERSION}
@@ -1044,15 +1120,212 @@ RSpec.describe "bundle update --bundler" do
       source "#{file_uri_for(gem_repo4)}"
       gem "rack"
     G
-    allow(Bundler::SharedHelpers).to receive(:find_gemfile).and_return(bundled_app_gemfile)
     lockfile lockfile.sub(/(^\s*)#{Bundler::VERSION}($)/, '\11.0.0\2')
 
     FileUtils.rm_r gem_repo4
 
-    bundle :update, :bundler => true, :verbose => true
-    expect(the_bundle).to include_gem "rack 1.0"
+    bundle :update, :bundler => true, :artifice => "compact_index", :verbose => true
+    expect(out).to include("Using bundler #{Bundler::VERSION}")
 
-    expect(the_bundle.locked_gems.bundler_version).to eq v(Bundler::VERSION)
+    expect(lockfile).to eq <<~L
+      GEM
+        remote: #{file_uri_for(gem_repo4)}/
+        specs:
+          rack (1.0)
+
+      PLATFORMS
+        #{lockfile_platforms}
+
+      DEPENDENCIES
+        rack
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    L
+
+    expect(the_bundle).to include_gem "rack 1.0"
+  end
+
+  it "updates the bundler version in the lockfile without re-resolving if the highest version is already installed" do
+    system_gems "bundler-2.3.9"
+
+    build_repo4 do
+      build_gem "rack", "1.0"
+    end
+
+    install_gemfile <<-G
+      source "#{file_uri_for(gem_repo4)}"
+      gem "rack"
+    G
+    lockfile lockfile.sub(/(^\s*)#{Bundler::VERSION}($)/, "2.3.9")
+
+    bundle :update, :bundler => true, :artifice => "compact_index", :verbose => true
+    expect(out).to include("Using bundler #{Bundler::VERSION}")
+
+    expect(lockfile).to eq <<~L
+      GEM
+        remote: #{file_uri_for(gem_repo4)}/
+        specs:
+          rack (1.0)
+
+      PLATFORMS
+        #{lockfile_platforms}
+
+      DEPENDENCIES
+        rack
+
+      BUNDLED WITH
+         #{Bundler::VERSION}
+    L
+
+    expect(the_bundle).to include_gem "rack 1.0"
+  end
+
+  it "updates the bundler version in the lockfile even if the latest version is not installed", :ruby_repo, :realworld do
+    skip "ruby-head has a default Bundler version too high for this spec to work" if RUBY_PATCHLEVEL == -1
+
+    pristine_system_gems "bundler-2.3.9"
+
+    build_repo4 do
+      build_gem "rack", "1.0"
+    end
+
+    install_gemfile <<-G
+      source "#{file_uri_for(gem_repo4)}"
+      gem "rack"
+    G
+    lockfile lockfile.sub(/(^\s*)#{Bundler::VERSION}($)/, "2.3.9")
+
+    bundle :update, :bundler => true, :artifice => "vcr", :verbose => true
+
+    # Only updates properly on modern RubyGems.
+
+    if Gem.rubygems_version >= Gem::Version.new("3.3.0.dev")
+      expect(out).to include("Updating bundler to 2.3.10")
+      expect(out).to include("Using bundler 2.3.10")
+      expect(out).not_to include("Installing Bundler 2.3.9 and restarting using that version.")
+
+      expect(lockfile).to eq <<~L
+        GEM
+          remote: #{file_uri_for(gem_repo4)}/
+          specs:
+            rack (1.0)
+
+        PLATFORMS
+          #{lockfile_platforms}
+
+        DEPENDENCIES
+          rack
+
+        BUNDLED WITH
+           2.3.10
+      L
+
+      expect(the_bundle).to include_gems "bundler 2.3.10"
+    end
+
+    expect(the_bundle).to include_gems "rack 1.0"
+  end
+
+  it "errors if the explicit target version does not exist", :realworld do
+    skip "ruby-head has a default Bundler version too high for this spec to work" if RUBY_PATCHLEVEL == -1
+
+    pristine_system_gems "bundler-2.3.9"
+
+    build_repo4 do
+      build_gem "rack", "1.0"
+    end
+
+    install_gemfile <<-G
+      source "#{file_uri_for(gem_repo4)}"
+      gem "rack"
+    G
+    lockfile lockfile.sub(/(^\s*)#{Bundler::VERSION}($)/, "2.3.9")
+
+    bundle :update, :bundler => "999.999.999", :artifice => "vcr", :raise_on_error => false
+
+    # Only gives a meaningful error message on modern RubyGems.
+
+    if Gem.rubygems_version >= Gem::Version.new("3.3.0.dev")
+      expect(last_command).to be_failure
+      expect(err).to include("The `bundle update --bundler` target version (999.999.999) does not exist")
+    end
+  end
+
+  it "allows updating to development versions if already installed locally" do
+    system_gems "bundler-2.3.0.dev"
+
+    build_repo4 do
+      build_gem "rack", "1.0"
+    end
+
+    install_gemfile <<-G
+      source "#{file_uri_for(gem_repo4)}"
+      gem "rack"
+    G
+
+    bundle :update, :bundler => "2.3.0.dev"
+
+    # Only updates properly on modern RubyGems.
+
+    if Gem.rubygems_version >= Gem::Version.new("3.3.0.dev")
+      expect(lockfile).to eq <<~L
+        GEM
+          remote: #{file_uri_for(gem_repo4)}/
+          specs:
+            rack (1.0)
+
+        PLATFORMS
+          #{lockfile_platforms}
+
+        DEPENDENCIES
+          rack
+
+        BUNDLED WITH
+           2.3.0.dev
+      L
+
+      expect(out).to include("Using bundler 2.3.0.dev")
+    end
+  end
+
+  it "does not touch the network if not necessary" do
+    system_gems "bundler-2.3.9"
+
+    build_repo4 do
+      build_gem "rack", "1.0"
+    end
+
+    install_gemfile <<-G
+      source "#{file_uri_for(gem_repo4)}"
+      gem "rack"
+    G
+
+    bundle :update, :bundler => "2.3.9", :raise_on_error => false
+
+    expect(out).not_to include("Fetching gem metadata from https://rubygems.org/")
+
+    # Only updates properly on modern RubyGems.
+
+    if Gem.rubygems_version >= Gem::Version.new("3.3.0.dev")
+      expect(lockfile).to eq <<~L
+        GEM
+          remote: #{file_uri_for(gem_repo4)}/
+          specs:
+            rack (1.0)
+
+        PLATFORMS
+          #{lockfile_platforms}
+
+        DEPENDENCIES
+          rack
+
+        BUNDLED WITH
+           2.3.9
+      L
+
+      expect(out).to include("Using bundler 2.3.9")
+    end
   end
 end
 

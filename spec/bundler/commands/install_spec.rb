@@ -94,6 +94,21 @@ RSpec.describe "bundle install with gem sources" do
       expect(the_bundle).to include_gems("rack 1.0.0")
     end
 
+    it "auto-heals missing gems" do
+      install_gemfile <<-G
+        source "#{file_uri_for(gem_repo1)}"
+        gem 'rack'
+      G
+
+      FileUtils.rm_rf(default_bundle_path("gems/rack-1.0.0"))
+
+      bundle "install --verbose"
+
+      expect(out).to include("Installing rack 1.0.0")
+      expect(default_bundle_path("gems/rack-1.0.0")).to exist
+      expect(the_bundle).to include_gems("rack 1.0.0")
+    end
+
     it "fetches gems when multiple versions are specified" do
       install_gemfile <<-G
         source "#{file_uri_for(gem_repo1)}"
@@ -349,7 +364,9 @@ RSpec.describe "bundle install with gem sources" do
     end
 
     it "throws a warning if a gem is added twice in Gemfile without version requirements" do
-      install_gemfile <<-G, :raise_on_error => false
+      build_repo2
+
+      install_gemfile <<-G
         source "#{file_uri_for(gem_repo2)}"
         gem "rack"
         gem "rack"
@@ -361,13 +378,31 @@ RSpec.describe "bundle install with gem sources" do
     end
 
     it "throws a warning if a gem is added twice in Gemfile with same versions" do
-      install_gemfile <<-G, :raise_on_error => false
+      build_repo2
+
+      install_gemfile <<-G
         source "#{file_uri_for(gem_repo2)}"
         gem "rack", "1.0"
         gem "rack", "1.0"
       G
 
       expect(err).to include("Your Gemfile lists the gem rack (= 1.0) more than once.")
+      expect(err).to include("Remove any duplicate entries and specify the gem only once.")
+      expect(err).to include("While it's not a problem now, it could cause errors if you change the version of one of them later.")
+    end
+
+    it "throws a warning if a gem is added twice under different platforms and does not crash when using the generated lockfile" do
+      build_repo2
+
+      install_gemfile <<-G
+        source "#{file_uri_for(gem_repo2)}"
+        gem "rack", :platform => :jruby
+        gem "rack"
+      G
+
+      bundle "install"
+
+      expect(err).to include("Your Gemfile lists the gem rack (>= 0) more than once.")
       expect(err).to include("Remove any duplicate entries and specify the gem only once.")
       expect(err).to include("While it's not a problem now, it could cause errors if you change the version of one of them later.")
     end
@@ -484,26 +519,23 @@ RSpec.describe "bundle install with gem sources" do
     context "and using an unsupported Ruby version" do
       it "prints an error" do
         install_gemfile <<-G, :raise_on_error => false
-          ::RUBY_VERSION = '2.0.1'
-          ruby '~> 2.2'
+          ruby '~> 1.2'
           source "#{file_uri_for(gem_repo1)}"
         G
-        expect(err).to include("Your Ruby version is 2.0.1, but your Gemfile specified ~> 2.2")
+        expect(err).to include("Your Ruby version is #{RUBY_VERSION}, but your Gemfile specified ~> 1.2")
       end
     end
 
     context "and using a supported Ruby version" do
       before do
         install_gemfile <<-G
-          ::RUBY_VERSION = '2.1.3'
-          ::RUBY_PATCHLEVEL = 100
-          ruby '~> 2.1.0'
+          ruby '~> #{RUBY_VERSION}'
           source "#{file_uri_for(gem_repo1)}"
         G
       end
 
       it "writes current Ruby version to Gemfile.lock" do
-        lockfile_should_be <<-L
+        expect(lockfile).to eq <<~L
          GEM
            remote: #{file_uri_for(gem_repo1)}/
            specs:
@@ -514,22 +546,20 @@ RSpec.describe "bundle install with gem sources" do
          DEPENDENCIES
 
          RUBY VERSION
-            ruby 2.1.3p100
+            #{Bundler::RubyVersion.system}
 
          BUNDLED WITH
             #{Bundler::VERSION}
         L
       end
 
-      it "updates Gemfile.lock with updated incompatible ruby version" do
+      it "updates Gemfile.lock with updated yet still compatible ruby version" do
         install_gemfile <<-G
-          ::RUBY_VERSION = '2.2.3'
-          ::RUBY_PATCHLEVEL = 100
-          ruby '~> 2.2.0'
+          ruby '~> #{RUBY_VERSION[0..2]}'
           source "#{file_uri_for(gem_repo1)}"
         G
 
-        lockfile_should_be <<-L
+        expect(lockfile).to eq <<~L
          GEM
            remote: #{file_uri_for(gem_repo1)}/
            specs:
@@ -540,7 +570,7 @@ RSpec.describe "bundle install with gem sources" do
          DEPENDENCIES
 
          RUBY VERSION
-            ruby 2.2.3p100
+            #{Bundler::RubyVersion.system}
 
          BUNDLED WITH
             #{Bundler::VERSION}
@@ -663,6 +693,73 @@ RSpec.describe "bundle install with gem sources" do
     end
   end
 
+  describe "when bundle gems path does not have write access", :permissions do
+    let(:gems_path) { bundled_app("vendor/#{Bundler.ruby_scope}/gems") }
+
+    before do
+      FileUtils.mkdir_p(gems_path)
+      gemfile <<-G
+        source "#{file_uri_for(gem_repo1)}"
+        gem 'rack'
+      G
+    end
+
+    it "should display a proper message to explain the problem" do
+      FileUtils.chmod("-x", gems_path)
+      bundle "config set --local path vendor"
+
+      begin
+        bundle :install, :raise_on_error => false
+      ensure
+        FileUtils.chmod("+x", gems_path)
+      end
+
+      expect(err).not_to include("ERROR REPORT TEMPLATE")
+
+      expect(err).to include(
+        "There was an error while trying to create `#{gems_path.join("rack-1.0.0")}`. " \
+        "It is likely that you need to grant executable permissions for all parent directories and write permissions for `#{gems_path}`."
+      )
+    end
+  end
+
+  describe "when the path of a specific gem is not writable", :permissions do
+    let(:gems_path) { bundled_app("vendor/#{Bundler.ruby_scope}/gems") }
+    let(:foo_path) { gems_path.join("foo-1.0.0") }
+
+    before do
+      build_repo4 do
+        build_gem "foo", "1.0.0" do |s|
+          s.write "CHANGELOG.md", "foo"
+        end
+      end
+
+      gemfile <<-G
+        source "#{file_uri_for(gem_repo4)}"
+        gem 'foo'
+      G
+    end
+
+    it "should display a proper message to explain the problem" do
+      bundle "config set --local path vendor"
+      bundle :install
+      expect(out).to include("Bundle complete!")
+      expect(err).to be_empty
+
+      FileUtils.chmod("-x", foo_path)
+
+      begin
+        bundle "install --redownload", :raise_on_error => false
+      ensure
+        FileUtils.chmod("+x", foo_path)
+      end
+
+      expect(err).not_to include("ERROR REPORT TEMPLATE")
+      expect(err).to include("Could not delete previous installation of `#{foo_path}`.")
+      expect(err).to include("The underlying error was Errno::EACCES")
+    end
+  end
+
   describe "when bundle cache path does not have write access", :permissions do
     let(:cache_path) { bundled_app("vendor/#{Bundler.ruby_scope}/cache") }
 
@@ -697,7 +794,7 @@ RSpec.describe "bundle install with gem sources" do
     it "includes the standalone path" do
       bundle "binstubs rack", :standalone => true
       standalone_line = File.read(bundled_app("bin/rackup")).each_line.find {|line| line.include? "$:.unshift" }.strip
-      expect(standalone_line).to eq %($:.unshift File.expand_path "../../bundle", path.realpath)
+      expect(standalone_line).to eq %($:.unshift File.expand_path "../bundle", __dir__)
     end
   end
 
@@ -755,8 +852,103 @@ RSpec.describe "bundle install with gem sources" do
 
       expect(err).to eq(
         "Your bundle only supports platforms [\"x86_64-darwin-19\"] but your local platform is x86_64-linux. " \
-        "Add the current platform to the lockfile with `bundle lock --add-platform x86_64-linux` and try again."
+        "Add the current platform to the lockfile with\n`bundle lock --add-platform x86_64-linux` and try again."
       )
+    end
+  end
+
+  context "with missing platform specific gems in lockfile" do
+    before do
+      build_repo4 do
+        build_gem "racc", "1.5.2"
+
+        build_gem "nokogiri", "1.12.4" do |s|
+          s.platform = "x86_64-darwin"
+          s.add_runtime_dependency "racc", "~> 1.4"
+        end
+
+        build_gem "nokogiri", "1.12.4" do |s|
+          s.platform = "x86_64-linux"
+          s.add_runtime_dependency "racc", "~> 1.4"
+        end
+
+        build_gem "crass", "1.0.6"
+
+        build_gem "loofah", "2.12.0" do |s|
+          s.add_runtime_dependency "crass", "~> 1.0.2"
+          s.add_runtime_dependency "nokogiri", ">= 1.5.9"
+        end
+      end
+
+      gemfile <<-G
+        source "https://gem.repo4"
+
+        ruby "#{RUBY_VERSION}"
+
+        gem "loofah", "~> 2.12.0"
+      G
+
+      lockfile <<-L
+        GEM
+          remote: https://gem.repo4/
+          specs:
+            crass (1.0.6)
+            loofah (2.12.0)
+              crass (~> 1.0.2)
+              nokogiri (>= 1.5.9)
+            nokogiri (1.12.4-x86_64-darwin)
+              racc (~> 1.4)
+            racc (1.5.2)
+
+        PLATFORMS
+          x86_64-darwin-20
+          x86_64-linux
+
+        DEPENDENCIES
+          loofah (~> 2.12.0)
+
+        RUBY VERSION
+           #{Bundler::RubyVersion.system}
+
+        BUNDLED WITH
+           #{Bundler::VERSION}
+      L
+    end
+
+    it "automatically fixes the lockfile" do
+      bundle "config set --local path vendor/bundle"
+
+      simulate_platform "x86_64-linux" do
+        bundle "install", :artifice => "compact_index"
+      end
+
+      expect(lockfile).to eq <<~L
+        GEM
+          remote: https://gem.repo4/
+          specs:
+            crass (1.0.6)
+            loofah (2.12.0)
+              crass (~> 1.0.2)
+              nokogiri (>= 1.5.9)
+            nokogiri (1.12.4-x86_64-darwin)
+              racc (~> 1.4)
+            nokogiri (1.12.4-x86_64-linux)
+              racc (~> 1.4)
+            racc (1.5.2)
+
+        PLATFORMS
+          x86_64-darwin-20
+          x86_64-linux
+
+        DEPENDENCIES
+          loofah (~> 2.12.0)
+
+        RUBY VERSION
+           #{Bundler::RubyVersion.system}
+
+        BUNDLED WITH
+           #{Bundler::VERSION}
+      L
     end
   end
 
@@ -775,6 +967,39 @@ RSpec.describe "bundle install with gem sources" do
       G
 
       expect(last_command).to be_success
+    end
+  end
+
+  context "with a symlinked configured as bundle path and a gem with symlinks" do
+    before do
+      symlinked_bundled_app = tmp("bundled_app-symlink")
+      File.symlink(bundled_app, symlinked_bundled_app)
+      bundle "config path #{File.join(symlinked_bundled_app, ".vendor")}"
+
+      binman_path = tmp("binman")
+      FileUtils.mkdir_p binman_path
+
+      readme_path = File.join(binman_path, "README.markdown")
+      FileUtils.touch(readme_path)
+
+      man_path = File.join(binman_path, "man", "man0")
+      FileUtils.mkdir_p man_path
+
+      File.symlink("../../README.markdown", File.join(man_path, "README.markdown"))
+
+      build_repo4 do
+        build_gem "binman", :path => gem_repo4("gems"), :lib_path => binman_path, :no_default => true do |s|
+          s.files = ["README.markdown", "man/man0/README.markdown"]
+        end
+      end
+    end
+
+    it "installs fine" do
+      install_gemfile <<~G
+        source "#{file_uri_for(gem_repo4)}"
+
+        gem "binman"
+      G
     end
   end
 end

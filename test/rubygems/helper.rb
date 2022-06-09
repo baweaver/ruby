@@ -3,7 +3,7 @@
 require 'rubygems'
 
 # If bundler gemspec exists, add to stubs
-bundler_gemspec = File.expand_path("../../../bundler/bundler.gemspec", __FILE__)
+bundler_gemspec = File.expand_path('../../bundler/bundler.gemspec', __dir__)
 if File.exist?(bundler_gemspec)
   Gem::Specification.dirs.unshift File.dirname(bundler_gemspec)
   Gem::Specification.class_variable_set :@@stubs, nil
@@ -14,16 +14,6 @@ end
 begin
   gem 'test-unit', '~> 3.0'
 rescue Gem::LoadError
-end
-
-begin
-  require 'simplecov'
-  SimpleCov.start do
-    add_filter "/test/"
-    add_filter "/bundler/"
-    add_filter "/lib/rubygems/resolver/molinillo"
-  end
-rescue LoadError
 end
 
 if File.exist?(bundler_gemspec)
@@ -255,16 +245,14 @@ class Gem::TestCase < Test::Unit::TestCase
     output.scan(/^#{Regexp.escape make_command}(?:[[:blank:]].*)?$/)
   end
 
-  def parse_make_command_line(line)
-    command, *args = line.shellsplit
+  def parse_make_command_line_targets(line)
+    args = line.sub(/^#{Regexp.escape make_command}/, "").shellsplit
 
     targets = []
-    macros = {}
 
     args.each do |arg|
       case arg
       when /\A(\w+)=/
-        macros[$1] = $'
       else
         targets << arg
       end
@@ -272,11 +260,7 @@ class Gem::TestCase < Test::Unit::TestCase
 
     targets << '' if targets.empty?
 
-    {
-      :command => command,
-      :targets => targets,
-      :macros => macros,
-    }
+    targets
   end
 
   def assert_contains_make_command(target, output, msg = nil)
@@ -289,7 +273,7 @@ class Gem::TestCase < Test::Unit::TestCase
       )
     else
       msg = build_message(msg,
-        'Expected make command "%s": %s' % [
+        'Expected make command "%s", but was "%s"' % [
           ('%s %s' % [make_command, target]).rstrip,
           output,
         ]
@@ -297,10 +281,9 @@ class Gem::TestCase < Test::Unit::TestCase
     end
 
     assert scan_make_command_lines(output).any? {|line|
-      make = parse_make_command_line(line)
+      targets = parse_make_command_line_targets(line)
 
-      if make[:targets].include?(target)
-        yield make, line if block_given?
+      if targets.include?(target)
         true
       else
         false
@@ -319,10 +302,14 @@ class Gem::TestCase < Test::Unit::TestCase
   # or <tt>i686-darwin8.10.1</tt> otherwise.
 
   def setup
+    @orig_hooks = {}
     @orig_env = ENV.to_hash
     @tmp = File.expand_path("tmp")
 
     FileUtils.mkdir_p @tmp
+
+    @tempdir = Dir.mktmpdir("test_rubygems_", @tmp)
+    @tempdir.tap(&Gem::UNTAINT)
 
     ENV['GEM_VENDOR'] = nil
     ENV['GEMRC'] = nil
@@ -341,9 +328,6 @@ class Gem::TestCase < Test::Unit::TestCase
     # capture output
     Gem::DefaultUserInteraction.ui = Gem::MockGemUi.new
 
-    @tempdir = Dir.mktmpdir("test_rubygems_", @tmp)
-    @tempdir.tap(&Gem::UNTAINT)
-
     ENV["TMPDIR"] = @tempdir
 
     @orig_SYSTEM_WIDE_CONFIG_FILE = Gem::ConfigFile::SYSTEM_WIDE_CONFIG_FILE
@@ -356,10 +340,10 @@ class Gem::TestCase < Test::Unit::TestCase
     ENV["GEM_SPEC_CACHE"] = File.join @tempdir, 'spec_cache'
 
     @orig_ruby = if ENV['RUBY']
-                   ruby = Gem.ruby
-                   Gem.ruby = ENV['RUBY']
-                   ruby
-                 end
+      ruby = Gem.ruby
+      Gem.ruby = ENV['RUBY']
+      ruby
+    end
 
     @git = ENV['GIT'] || (win_platform? ? 'git.exe' : 'git')
 
@@ -396,6 +380,7 @@ class Gem::TestCase < Test::Unit::TestCase
 
     ENV['GEM_PRIVATE_KEY_PASSPHRASE'] = PRIVATE_KEY_PASSPHRASE
 
+    Gem.instance_variable_set(:@default_specifications_dir, nil)
     if Gem.java_platform?
       @orig_default_gem_home = RbConfig::CONFIG['default_gem_home']
       RbConfig::CONFIG['default_gem_home'] = @gemhome
@@ -405,6 +390,14 @@ class Gem::TestCase < Test::Unit::TestCase
 
     @orig_bindir = RbConfig::CONFIG["bindir"]
     RbConfig::CONFIG["bindir"] = File.join @gemhome, "bin"
+
+    @orig_sitelibdir = RbConfig::CONFIG["sitelibdir"]
+    new_sitelibdir = @orig_sitelibdir.sub(RbConfig::CONFIG["prefix"], @gemhome)
+    $LOAD_PATH.insert(Gem.load_path_insert_index, new_sitelibdir)
+    RbConfig::CONFIG["sitelibdir"] = new_sitelibdir
+
+    @orig_mandir = RbConfig::CONFIG["mandir"]
+    RbConfig::CONFIG["mandir"] = File.join @gemhome, "share", "man"
 
     Gem::Specification.unresolved_deps.clear
     Gem.use_paths(@gemhome)
@@ -434,7 +427,6 @@ class Gem::TestCase < Test::Unit::TestCase
       util_set_arch 'i686-darwin8.10.1'
     end
 
-    @orig_hooks = {}
     %w[post_install_hooks done_installing_hooks post_uninstall_hooks pre_uninstall_hooks pre_install_hooks pre_reset_hooks post_reset_hooks post_build_hooks].each do |name|
       @orig_hooks[name] = Gem.send(name).dup
     end
@@ -477,15 +469,17 @@ class Gem::TestCase < Test::Unit::TestCase
 
     Gem.ruby = @orig_ruby if @orig_ruby
 
+    RbConfig::CONFIG['mandir'] = @orig_mandir
+    RbConfig::CONFIG['sitelibdir'] = @orig_sitelibdir
     RbConfig::CONFIG['bindir'] = @orig_bindir
 
+    Gem.instance_variable_set :@default_specifications_dir, nil
     if Gem.java_platform?
       RbConfig::CONFIG['default_gem_home'] = @orig_default_gem_home
     else
       Gem.instance_variable_set :@default_dir, nil
     end
 
-    Gem::Specification._clear_load_cache
     Gem::Specification.unresolved_deps.clear
     Gem::refresh
 
@@ -595,7 +589,7 @@ class Gem::TestCase < Test::Unit::TestCase
   def have_git?
     return if in_path? @git
 
-    skip 'cannot find git executable, use GIT environment variable to set'
+    pend 'cannot find git executable, use GIT environment variable to set'
   end
 
   def in_path?(executable) # :nodoc:
@@ -624,7 +618,7 @@ class Gem::TestCase < Test::Unit::TestCase
       gem = File.join(@tempdir, File.basename(gem)).tap(&Gem::UNTAINT)
     end
 
-    Gem::Installer.at(gem, options.merge({:wrappers => true})).install
+    Gem::Installer.at(gem, options.merge({ :wrappers => true })).install
   end
 
   ##
@@ -691,10 +685,10 @@ class Gem::TestCase < Test::Unit::TestCase
   # Load a YAML string, the psych 3 way
 
   def load_yaml(yaml)
-    if YAML.respond_to?(:unsafe_load)
-      YAML.unsafe_load(yaml)
+    if Psych.respond_to?(:unsafe_load)
+      Psych.unsafe_load(yaml)
     else
-      YAML.load(yaml)
+      Psych.load(yaml)
     end
   end
 
@@ -702,10 +696,10 @@ class Gem::TestCase < Test::Unit::TestCase
   # Load a YAML file, the psych 3 way
 
   def load_yaml_file(file)
-    if YAML.respond_to?(:unsafe_load_file)
-      YAML.unsafe_load_file(file)
+    if Psych.respond_to?(:unsafe_load_file)
+      Psych.unsafe_load_file(file)
     else
-      YAML.load_file(file)
+      Psych.load_file(file)
     end
   end
 
@@ -821,16 +815,6 @@ class Gem::TestCase < Test::Unit::TestCase
 
   def unresolved_names
     Gem::Specification.unresolved_deps.values.map(&:to_s).sort
-  end
-
-  def save_loaded_features
-    old_loaded_features = $LOADED_FEATURES.dup
-    yield
-  ensure
-    prefix = File.dirname(__FILE__) + "/"
-    new_features = ($LOADED_FEATURES - old_loaded_features)
-    old_loaded_features.concat(new_features.select {|f| f.rindex(prefix, 0) })
-    $LOADED_FEATURES.replace old_loaded_features
   end
 
   def new_default_spec(name, version, deps = nil, *files)
@@ -1090,17 +1074,21 @@ Also, a list:
       @fetcher.data["#{@gem_repo}latest_specs.#{v}.gz"]     = l_zip
       @fetcher.data["#{@gem_repo}prerelease_specs.#{v}.gz"] = p_zip
 
-      v = Gem.marshal_version
-
-      all_specs.each do |spec|
-        path = "#{@gem_repo}quick/Marshal.#{v}/#{spec.original_name}.gemspec.rz"
-        data = Marshal.dump spec
-        data_deflate = Zlib::Deflate.deflate data
-        @fetcher.data[path] = data_deflate
-      end
+      write_marshalled_gemspecs(*all_specs)
     end
 
     nil # force errors
+  end
+
+  def write_marshalled_gemspecs(*all_specs)
+    v = Gem.marshal_version
+
+    all_specs.each do |spec|
+      path = "#{@gem_repo}quick/Marshal.#{v}/#{spec.original_name}.gemspec.rz"
+      data = Marshal.dump spec
+      data_deflate = Zlib::Deflate.deflate data
+      @fetcher.data[path] = data_deflate
+    end
   end
 
   ##
@@ -1110,7 +1098,7 @@ Also, a list:
     Zlib::Deflate.deflate data
   end
 
-  def util_set_RUBY_VERSION(version, patchlevel = nil, revision = nil, description = nil, engine = "ruby", engine_version = nil)
+  def util_set_RUBY_VERSION(version, patchlevel, revision, description, engine = "ruby", engine_version = nil)
     if Gem.instance_variables.include? :@ruby_version
       Gem.send :remove_instance_variable, :@ruby_version
     end
@@ -1118,16 +1106,16 @@ Also, a list:
     @RUBY_VERSION        = RUBY_VERSION
     @RUBY_PATCHLEVEL     = RUBY_PATCHLEVEL     if defined?(RUBY_PATCHLEVEL)
     @RUBY_REVISION       = RUBY_REVISION       if defined?(RUBY_REVISION)
-    @RUBY_DESCRIPTION    = RUBY_DESCRIPTION    if defined?(RUBY_DESCRIPTION)
+    @RUBY_DESCRIPTION    = RUBY_DESCRIPTION
     @RUBY_ENGINE         = RUBY_ENGINE
     @RUBY_ENGINE_VERSION = RUBY_ENGINE_VERSION if defined?(RUBY_ENGINE_VERSION)
 
     util_clear_RUBY_VERSION
 
     Object.const_set :RUBY_VERSION,        version
-    Object.const_set :RUBY_PATCHLEVEL,     patchlevel     if patchlevel
-    Object.const_set :RUBY_REVISION,       revision       if revision
-    Object.const_set :RUBY_DESCRIPTION,    description    if description
+    Object.const_set :RUBY_PATCHLEVEL,     patchlevel
+    Object.const_set :RUBY_REVISION,       revision
+    Object.const_set :RUBY_DESCRIPTION,    description
     Object.const_set :RUBY_ENGINE,         engine
     Object.const_set :RUBY_ENGINE_VERSION, engine_version if engine_version
   end
@@ -1140,8 +1128,7 @@ Also, a list:
       defined?(@RUBY_PATCHLEVEL)
     Object.const_set :RUBY_REVISION,       @RUBY_REVISION    if
       defined?(@RUBY_REVISION)
-    Object.const_set :RUBY_DESCRIPTION,    @RUBY_DESCRIPTION if
-      defined?(@RUBY_DESCRIPTION)
+    Object.const_set :RUBY_DESCRIPTION,    @RUBY_DESCRIPTION
     Object.const_set :RUBY_ENGINE,         @RUBY_ENGINE
     Object.const_set :RUBY_ENGINE_VERSION, @RUBY_ENGINE_VERSION if
       defined?(@RUBY_ENGINE_VERSION)
@@ -1198,6 +1185,14 @@ Also, a list:
 
   def vc_windows?
     RUBY_PLATFORM.match('mswin')
+  end
+
+  ##
+  # Is this test being run on a ruby/ruby repository?
+  #
+
+  def testing_ruby_repo?
+    !ENV["GEM_COMMAND"].nil?
   end
 
   ##
@@ -1299,7 +1294,7 @@ Also, a list:
   end
 
   def rubygems_path
-    $LOAD_PATH.find{|p| p == File.dirname($LOADED_FEATURES.find{|f| f.end_with?("/rubygems.rb") }) }
+    $LOAD_PATH.find {|p| p == File.dirname($LOADED_FEATURES.find {|f| f.end_with?("/rubygems.rb") }) }
   end
 
   def with_clean_path_to_ruby
@@ -1310,6 +1305,22 @@ Also, a list:
     yield
   ensure
     Gem.instance_variable_set :@ruby, orig_ruby
+  end
+
+  def with_internal_encoding(encoding)
+    int_enc = Encoding.default_internal
+    silence_warnings { Encoding.default_internal = encoding }
+
+    yield
+  ensure
+    silence_warnings { Encoding.default_internal = int_enc }
+  end
+
+  def silence_warnings
+    old_verbose, $VERBOSE = $VERBOSE, false
+    yield
+  ensure
+    $VERBOSE = old_verbose
   end
 
   class << self
@@ -1527,14 +1538,14 @@ Also, a list:
   end
 
   ##
-  # Loads an RSA private key named +key_name+ with +passphrase+ in <tt>test/rubygems/</tt>
+  # Loads a private key named +key_name+ with +passphrase+ in <tt>test/rubygems/</tt>
 
   def self.load_key(key_name, passphrase = nil)
     key_file = key_path key_name
 
     key = File.read key_file
 
-    OpenSSL::PKey::RSA.new key, passphrase
+    OpenSSL::PKey.read key, passphrase
   end
 
   ##

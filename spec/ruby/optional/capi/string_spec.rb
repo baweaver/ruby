@@ -108,7 +108,7 @@ describe "C-API String function" do
 
     it "returns a string with the given capacity" do
       buf = @s.rb_str_buf_new(256, nil)
-      @s.rb_str_capacity(buf).should == 256
+      @s.rb_str_capacity(buf).should >= 256
     end
 
     it "returns a string that can be appended to" do
@@ -179,12 +179,6 @@ describe "C-API String function" do
 
     it "returns a new string object from a char buffer of len characters" do
       @s.rb_str_new("hello", 3).should == "hel"
-    end
-
-    ruby_version_is ''...'2.7' do
-      it "returns a non-tainted string" do
-        @s.rb_str_new("hello", 5).should_not.tainted?
-      end
     end
 
     it "returns an empty string if len is 0" do
@@ -335,24 +329,6 @@ describe "C-API String function" do
     end
   end
 
-  ruby_version_is ''...'2.7' do
-    describe "rb_tainted_str_new" do
-      it "creates a new tainted String" do
-        newstring = @s.rb_tainted_str_new("test", 4)
-        newstring.should == "test"
-        newstring.tainted?.should be_true
-      end
-    end
-
-    describe "rb_tainted_str_new2" do
-      it "creates a new tainted String" do
-        newstring = @s.rb_tainted_str_new2("test")
-        newstring.should == "test"
-        newstring.tainted?.should be_true
-      end
-    end
-  end
-
   describe "rb_str_append" do
     it "appends a string to another string" do
       @s.rb_str_append("Hello", " Goodbye").should == "Hello Goodbye"
@@ -376,6 +352,14 @@ describe "C-API String function" do
 
   describe "rb_str_times" do
     it_behaves_like :string_times, :rb_str_times, -> str, times { @s.rb_str_times(str, times) }
+  end
+
+  describe "rb_str_buf_append" do
+    it "concatenates a string to another string" do
+      str = "Your house "
+      @s.rb_str_buf_append(str, "is on fire?").should.equal?(str)
+      str.should == "Your house is on fire?"
+    end
   end
 
   describe "rb_str_buf_cat" do
@@ -603,7 +587,9 @@ describe "C-API String function" do
       filename = fixture(__FILE__, "read.txt")
       str = ""
       capacities = @s.RSTRING_PTR_read(str, filename)
-      capacities.should == [30, 53]
+      capacities[0].should >= 30
+      capacities[1].should >= 53
+      capacities[0].should < capacities[1]
       str.should == "fixture file contents to test read() with RSTRING_PTR"
     end
   end
@@ -655,22 +641,6 @@ describe "C-API String function" do
   end
 
   describe "SafeStringValue" do
-    ruby_version_is ''...'2.7' do
-      it "raises for tained string when $SAFE is 1" do
-        begin
-          Thread.new {
-            $SAFE = 1
-            -> {
-              @s.SafeStringValue("str".taint)
-            }.should raise_error(SecurityError)
-          }.join
-        ensure
-          $SAFE = 0
-        end
-      end
-
-      it_behaves_like :string_value_macro, :SafeStringValue
-    end
   end
 
   describe "rb_str_modify" do
@@ -682,27 +652,27 @@ describe "C-API String function" do
   describe "rb_str_modify_expand" do
     it "grows the capacity to bytesize + expand, not changing the bytesize" do
       str = @s.rb_str_buf_new(256, "abcd")
-      @s.rb_str_capacity(str).should == 256
+      @s.rb_str_capacity(str).should >= 256
 
       @s.rb_str_set_len(str, 3)
       str.bytesize.should == 3
       @s.RSTRING_LEN(str).should == 3
-      @s.rb_str_capacity(str).should == 256
+      @s.rb_str_capacity(str).should >= 256
 
       @s.rb_str_modify_expand(str, 4)
       str.bytesize.should == 3
       @s.RSTRING_LEN(str).should == 3
-      @s.rb_str_capacity(str).should == 7
+      @s.rb_str_capacity(str).should >= 7
 
       @s.rb_str_modify_expand(str, 1024)
       str.bytesize.should == 3
       @s.RSTRING_LEN(str).should == 3
-      @s.rb_str_capacity(str).should == 1027
+      @s.rb_str_capacity(str).should >= 1027
 
       @s.rb_str_modify_expand(str, 1)
       str.bytesize.should == 3
       @s.RSTRING_LEN(str).should == 3
-      @s.rb_str_capacity(str).should == 4
+      @s.rb_str_capacity(str).should >= 4
     end
 
     it "raises an error if the string is frozen" do
@@ -800,12 +770,6 @@ describe :rb_external_str_new, shared: true do
     x80 = [0x80].pack('C')
     @s.send(@method, "#{x80}abc").encoding.should == Encoding::BINARY
   end
-
-  ruby_version_is ''...'2.7' do
-    it "returns a tainted String" do
-      @s.send(@method, "abc").tainted?.should be_true
-    end
-  end
 end
 
 describe "C-API String function" do
@@ -884,13 +848,6 @@ describe "C-API String function" do
       x = [0xA4, 0xA2, 0xA4, 0xEC].pack('C4').force_encoding('euc-jp')
       s.should == x
       s.encoding.should equal(Encoding::EUC_JP)
-    end
-
-    ruby_version_is ''...'2.7' do
-      it "returns a tainted String" do
-        s = @s.rb_external_str_new_with_enc("abc", 3, Encoding::US_ASCII)
-        s.tainted?.should be_true
-      end
     end
   end
 
@@ -1055,6 +1012,51 @@ end
       s = 'Result: true.'
       @s.rb_sprintf4(true.class).should == s
     end
+
+    it "truncates a string to a supplied precision if that is shorter than the string" do
+      s = 'Result: Hel.'
+      @s.rb_sprintf5(0, 3, "Hello").should == s
+    end
+
+    it "does not truncates a string to a supplied precision if that is longer than the string" do
+      s = 'Result: Hello.'
+      @s.rb_sprintf5(0, 8, "Hello").should == s
+    end
+
+    it "pads a string to a supplied width if that is longer than the string" do
+      s = 'Result:    Hello.'
+      @s.rb_sprintf5(8, 5, "Hello").should == s
+    end
+
+    it "truncates a VALUE string to a supplied precision if that is shorter than the VALUE string" do
+      s = 'Result: Hel.'
+      @s.rb_sprintf6(0, 3, "Hello").should == s
+    end
+
+    it "does not truncates a VALUE string to a supplied precision if that is longer than the VALUE string" do
+      s = 'Result: Hello.'
+      @s.rb_sprintf6(0, 8, "Hello").should == s
+    end
+
+    it "pads a VALUE string to a supplied width if that is longer than the VALUE string" do
+      s = 'Result:    Hello.'
+      @s.rb_sprintf6(8, 5, "Hello").should == s
+    end
+
+    it "can format a nil VALUE as a pointer and gives the same output as sprintf in C" do
+      res = @s.rb_sprintf7("%p", nil);
+      res[0].should == res[1]
+    end
+
+    it "can format a string VALUE as a pointer and gives the same output as sprintf in C" do
+      res = @s.rb_sprintf7("%p", "Hello")
+      res[0].should == res[1]
+    end
+
+    it "can format a raw number a pointer and gives the same output as sprintf in C" do
+      res = @s.rb_sprintf7("%p", 0x223643);
+      res[0].should == res[1]
+    end
   end
 
   describe "rb_vsprintf" do
@@ -1162,6 +1164,33 @@ end
       str = "test "
       @s.rb_str_catf(str)
       str.should == "test fmt 41 6 number"
+    end
+  end
+
+  describe "rb_str_locktmp" do
+    it "raises an error when trying to lock an already locked string" do
+      str = "test"
+      @s.rb_str_locktmp(str).should == str
+      -> { @s.rb_str_locktmp(str) }.should raise_error(RuntimeError, 'temporal locking already locked string')
+    end
+
+    it "locks a string so that modifications would raise an error" do
+      str = "test"
+      @s.rb_str_locktmp(str).should == str
+      -> { str.upcase! }.should raise_error(RuntimeError, 'can\'t modify string; temporarily locked')
+    end
+  end
+
+  describe "rb_str_unlocktmp" do
+    it "unlocks a locked string" do
+      str = "test"
+      @s.rb_str_locktmp(str)
+      @s.rb_str_unlocktmp(str).should == str
+      str.upcase!.should == "TEST"
+    end
+
+    it "raises an error when trying to unlock an already unlocked string" do
+      -> { @s.rb_str_unlocktmp("test") }.should raise_error(RuntimeError, 'temporal unlocking already unlocked string')
     end
   end
 end

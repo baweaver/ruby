@@ -10,7 +10,7 @@ require 'rbconfig'
 class TestGem < Gem::TestCase
   PLUGINS_LOADED = [] # rubocop:disable Style/MutableConstant
 
-  PROJECT_DIR = File.expand_path('../../..', __FILE__).tap(&Gem::UNTAINT)
+  PROJECT_DIR = File.expand_path('../..', __dir__).tap(&Gem::UNTAINT)
 
   def setup
     super
@@ -25,72 +25,66 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_finish_resolve
-    save_loaded_features do
-      a1 = util_spec "a", "1", "b" => "> 0"
-      b1 = util_spec "b", "1", "c" => ">= 1"
-      b2 = util_spec "b", "2", "c" => ">= 2"
-      c1 = util_spec "c", "1"
-      c2 = util_spec "c", "2"
+    a1 = util_spec "a", "1", "b" => "> 0"
+    b1 = util_spec "b", "1", "c" => ">= 1"
+    b2 = util_spec "b", "2", "c" => ">= 2"
+    c1 = util_spec "c", "1"
+    c2 = util_spec "c", "2"
 
-      install_specs c1, c2, b1, b2, a1
+    install_specs c1, c2, b1, b2, a1
 
-      a1.activate
+    a1.activate
 
-      assert_equal %w[a-1], loaded_spec_names
-      assert_equal ["b (> 0)"], unresolved_names
+    assert_equal %w[a-1], loaded_spec_names
+    assert_equal ["b (> 0)"], unresolved_names
 
-      Gem.finish_resolve
+    Gem.finish_resolve
 
-      assert_equal %w[a-1 b-2 c-2], loaded_spec_names
-      assert_equal [], unresolved_names
-    end
+    assert_equal %w[a-1 b-2 c-2], loaded_spec_names
+    assert_equal [], unresolved_names
   end
 
   def test_self_finish_resolve_wtf
-    save_loaded_features do
-      a1 = util_spec "a", "1", "b" => "> 0", "d" => "> 0"    # this
-      b1 = util_spec "b", "1", { "c" => ">= 1" }, "lib/b.rb" # this
-      b2 = util_spec "b", "2", { "c" => ">= 2" }, "lib/b.rb"
-      c1 = util_spec "c", "1"                                # this
-      c2 = util_spec "c", "2"
-      d1 = util_spec "d", "1", { "c" => "< 2" },  "lib/d.rb"
-      d2 = util_spec "d", "2", { "c" => "< 2" },  "lib/d.rb" # this
+    a1 = util_spec "a", "1", "b" => "> 0", "d" => "> 0"    # this
+    b1 = util_spec "b", "1", { "c" => ">= 1" }, "lib/b.rb" # this
+    b2 = util_spec "b", "2", { "c" => ">= 2" }, "lib/b.rb"
+    c1 = util_spec "c", "1"                                # this
+    c2 = util_spec "c", "2"
+    d1 = util_spec "d", "1", { "c" => "< 2" },  "lib/d.rb"
+    d2 = util_spec "d", "2", { "c" => "< 2" },  "lib/d.rb" # this
 
-      install_specs c1, c2, b1, b2, d1, d2, a1
+    install_specs c1, c2, b1, b2, d1, d2, a1
 
-      a1.activate
+    a1.activate
 
-      assert_equal %w[a-1], loaded_spec_names
-      assert_equal ["b (> 0)", "d (> 0)"], unresolved_names
+    assert_equal %w[a-1], loaded_spec_names
+    assert_equal ["b (> 0)", "d (> 0)"], unresolved_names
 
-      Gem.finish_resolve
+    Gem.finish_resolve
 
-      assert_equal %w[a-1 b-1 c-1 d-2], loaded_spec_names
-      assert_equal [], unresolved_names
-    end
+    assert_equal %w[a-1 b-1 c-1 d-2], loaded_spec_names
+    assert_equal [], unresolved_names
   end
 
   def test_self_finish_resolve_respects_loaded_specs
-    save_loaded_features do
-      a1 = util_spec "a", "1", "b" => "> 0"
-      b1 = util_spec "b", "1", "c" => ">= 1"
-      b2 = util_spec "b", "2", "c" => ">= 2"
-      c1 = util_spec "c", "1"
-      c2 = util_spec "c", "2"
+    a1 = util_spec "a", "1", "b" => "> 0"
+    b1 = util_spec "b", "1", "c" => ">= 1"
+    b2 = util_spec "b", "2", "c" => ">= 2"
+    c1 = util_spec "c", "1"
+    c2 = util_spec "c", "2"
 
-      install_specs c1, c2, b1, b2, a1
+    install_specs c1, c2, b1, b2, a1
 
-      a1.activate
-      c1.activate
+    a1.activate
+    c1.activate
 
-      assert_equal %w[a-1 c-1], loaded_spec_names
-      assert_equal ["b (> 0)"], unresolved_names
+    assert_equal %w[a-1 c-1], loaded_spec_names
+    assert_equal ["b (> 0)"], unresolved_names
 
-      Gem.finish_resolve
+    Gem.finish_resolve
 
-      assert_equal %w[a-1 b-1 c-1], loaded_spec_names
-      assert_equal [], unresolved_names
-    end
+    assert_equal %w[a-1 b-1 c-1], loaded_spec_names
+    assert_equal [], unresolved_names
   end
 
   def test_self_install
@@ -210,25 +204,21 @@ class TestGem < Gem::TestCase
   end
 
   def test_require_missing
-    save_loaded_features do
-      assert_raise ::LoadError do
-        require "test_require_missing"
-      end
+    assert_raise ::LoadError do
+      require "test_require_missing"
     end
   end
 
   def test_require_does_not_glob
-    save_loaded_features do
-      a1 = util_spec "a", "1", nil, "lib/a1.rb"
+    a1 = util_spec "a", "1", nil, "lib/a1.rb"
 
-      install_specs a1
+    install_specs a1
 
-      assert_raise ::LoadError do
-        require "a*"
-      end
-
-      assert_equal [], loaded_spec_names
+    assert_raise ::LoadError do
+      require "a*"
     end
+
+    assert_equal [], loaded_spec_names
   end
 
   def test_self_bin_path_active
@@ -362,41 +352,6 @@ class TestGem < Gem::TestCase
     )
 
     assert status.success?, output
-  end
-
-  def test_activate_bin_path_gives_proper_error_for_bundler
-    bundler = util_spec 'bundler', '2' do |s|
-      s.executables = ['bundle']
-    end
-
-    install_specs bundler
-
-    File.open("Gemfile.lock", "w") do |f|
-      f.write <<-L.gsub(/ {8}/, "")
-        GEM
-          remote: https://rubygems.org/
-          specs:
-
-        PLATFORMS
-          ruby
-
-        DEPENDENCIES
-
-        BUNDLED WITH
-          9999
-      L
-    end
-
-    File.open("Gemfile", "w") {|f| f.puts('source "https://rubygems.org"') }
-
-    e = assert_raise Gem::GemNotFoundException do
-      load Gem.activate_bin_path("bundler", "bundle", ">= 0.a")
-    end
-
-    assert_includes e.message, "Could not find 'bundler' (9999) required by your #{File.expand_path("Gemfile.lock")}."
-    assert_includes e.message, "To update to the latest version installed on your system, run `bundle update --bundler`."
-    assert_includes e.message, "To install the missing version, run `gem install bundler:9999`"
-    refute_includes e.message, "can't find gem bundler (>= 0.a) with executable bundle"
   end
 
   def test_activate_bin_path_selects_exact_bundler_version_if_present
@@ -898,6 +853,27 @@ class TestGem < Gem::TestCase
     assert_equal gems['a-2'], spec
   end
 
+  def test_self_latest_spec_for_multiple_sources
+    uri = 'https://example.sample.com/'
+    source = Gem::Source.new(uri)
+    source_list = Gem::SourceList.new
+    source_list << Gem::Source.new(@uri)
+    source_list << source
+    Gem.sources.replace source_list
+
+    spec_fetcher(uri) do |fetcher|
+      fetcher.spec 'a', 1.1
+    end
+
+    gems = spec_fetcher do |fetcher|
+      fetcher.spec 'a', 1
+      fetcher.spec 'a', '3.a'
+      fetcher.spec 'a', 2
+    end
+    spec = Gem.latest_spec_for 'a'
+    assert_equal gems['a-2'], spec
+  end
+
   def test_self_latest_rubygems_version
     spec_fetcher do |fetcher|
       fetcher.spec 'rubygems-update', '1.8.23'
@@ -911,6 +887,29 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_latest_version_for
+    spec_fetcher do |fetcher|
+      fetcher.spec 'a', 1
+      fetcher.spec 'a', 2
+      fetcher.spec 'a', '3.a'
+    end
+
+    version = Gem.latest_version_for 'a'
+
+    assert_equal Gem::Version.new(2), version
+  end
+
+  def test_self_latest_version_for_multiple_sources
+    uri = 'https://example.sample.com/'
+    source = Gem::Source.new(uri)
+    source_list = Gem::SourceList.new
+    source_list << Gem::Source.new(@uri)
+    source_list << source
+    Gem.sources.replace source_list
+
+    spec_fetcher(uri) do |fetcher|
+      fetcher.spec 'a', 1.1
+    end
+
     spec_fetcher do |fetcher|
       fetcher.spec 'a', 1
       fetcher.spec 'a', 2
@@ -1062,7 +1061,7 @@ class TestGem < Gem::TestCase
 
     Gem.refresh
 
-    Gem::Specification.each{|spec| assert spec.activated? if spec == s }
+    Gem::Specification.each {|spec| assert spec.activated? if spec == s }
 
     Gem.loaded_specs.delete(s)
     Gem.refresh
@@ -1105,22 +1104,6 @@ class TestGem < Gem::TestCase
     assert_equal Gem::Requirement.create('1.2.3'), Gem.env_requirement('bAr')
     assert_raise(Gem::Requirement::BadRequirementError) { Gem.env_requirement('baz') }
     assert_equal Gem::Requirement.default, Gem.env_requirement('qux')
-  end
-
-  def test_self_ruby_version_with_patchlevel_less_ancient_rubies
-    util_set_RUBY_VERSION '1.8.5'
-
-    assert_equal Gem::Version.new('1.8.5'), Gem.ruby_version
-  ensure
-    util_restore_RUBY_VERSION
-  end
-
-  def test_self_ruby_version_with_release
-    util_set_RUBY_VERSION '1.8.6', 287
-
-    assert_equal Gem::Version.new('1.8.6.287'), Gem.ruby_version
-  ensure
-    util_restore_RUBY_VERSION
   end
 
   def test_self_ruby_version_with_non_mri_implementations
@@ -1444,24 +1427,22 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_needs_picks_up_unresolved_deps
-    save_loaded_features do
-      a = util_spec "a", "1"
-      b = util_spec "b", "1", "c" => nil
-      c = util_spec "c", "2"
-      d = util_spec "d", "1", {'e' => '= 1'}, "lib/d#{$$}.rb"
-      e = util_spec "e", "1"
+    a = util_spec "a", "1"
+    b = util_spec "b", "1", "c" => nil
+    c = util_spec "c", "2"
+    d = util_spec "d", "1", { 'e' => '= 1' }, "lib/d#{$$}.rb"
+    e = util_spec "e", "1"
 
-      install_specs a, c, b, e, d
+    install_specs a, c, b, e, d
 
-      Gem.needs do |r|
-        r.gem "a"
-        r.gem "b", "= 1"
+    Gem.needs do |r|
+      r.gem "a"
+      r.gem "b", "= 1"
 
-        require "d#{$$}"
-      end
-
-      assert_equal %w[a-1 b-1 c-2 d-1 e-1], loaded_spec_names
+      require "d#{$$}"
     end
+
+    assert_equal %w[a-1 b-1 c-2 d-1 e-1], loaded_spec_names
   end
 
   def test_self_gunzip
@@ -2024,6 +2005,8 @@ You may need to `bundle install` to install missing gems
   ensure
     ENV['SOURCE_DATE_EPOCH'] = old_epoch
   end
+
+  private
 
   def ruby_install_name(name)
     with_clean_path_to_ruby do

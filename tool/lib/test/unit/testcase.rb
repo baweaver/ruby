@@ -1,5 +1,5 @@
 # frozen_string_literal: true
-require 'test/unit/assertions'
+require_relative 'assertions'
 require_relative '../../core_assertions'
 
 module Test
@@ -159,7 +159,6 @@ module Test
         start_time = Time.now
 
         result = ""
-        srand(runner.options[:seed])
 
         begin
           @passed = nil
@@ -237,70 +236,27 @@ module Test
 
       reset
 
-      ##
-      # Make diffs for this TestCase use #pretty_inspect so that diff
-      # in assert_equal can be more details. NOTE: this is much slower
-      # than the regular inspect but much more usable for complex
-      # objects.
-
-      def self.make_my_diffs_pretty!
-        require 'pp'
-
-        define_method :mu_pp do |o|
-          o.pretty_inspect
-        end
-      end
-
       def self.inherited klass # :nodoc:
         @@test_suites[klass] = true
         super
       end
 
-      def self.test_order # :nodoc:
-        :sorted
+      @test_order = :sorted
+
+      class << self
+        attr_writer :test_order
+      end
+
+      def self.test_order
+        defined?(@test_order) ? @test_order : superclass.test_order
       end
 
       def self.test_suites # :nodoc:
-        suites = @@test_suites.keys
-
-        case self.test_order
-        when :random
-          # shuffle test suites based on CRC32 of their names
-          salt = "\n" + rand(1 << 32).to_s
-          crc_tbl = (0..255).map do |i|
-            (0..7).inject(i) {|c,| (c & 1 == 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1) }
-          end
-          suites = suites.sort_by do |suite|
-            crc32 = 0xffffffff
-            "#{suite.name}#{salt}".each_byte do |data|
-              crc32 = crc_tbl[(crc32 ^ data) & 0xff] ^ (crc32 >> 8)
-            end
-            crc32 ^ 0xffffffff
-          end
-        when :nosort
-          suites
-        else
-          suites.sort_by { |ts| ts.name.to_s }
-        end
+        @@test_suites.keys
       end
 
       def self.test_methods # :nodoc:
-        methods = public_instance_methods(true).grep(/^test/).map { |m| m.to_s }
-
-        case self.test_order
-        when :parallel
-          max = methods.size
-          ParallelEach.new methods.sort.sort_by { rand max }
-        when :random then
-          max = methods.size
-          methods.sort.sort_by { rand max }
-        when :alpha, :sorted then
-          methods.sort
-        when :nosort
-          methods
-        else
-          raise "Unknown test_order: #{self.test_order.inspect}"
-        end
+        public_instance_methods(true).grep(/^test/)
       end
 
       ##
@@ -331,21 +287,10 @@ module Test
         return unless name.to_s.start_with?("test_")
         @test_methods ||= {}
         if @test_methods[name]
-          warn "test/unit warning: method #{ self }##{ name } is redefined"
+          raise AssertionFailedError, "test/unit: method #{ self }##{ name } is redefined"
         end
         @test_methods[name] = true
       end
-
-      test_order = self.test_order
-      class << self
-        attr_writer :test_order
-        undef test_order
-      end
-      def self.test_order
-        defined?(@test_order) ? @test_order : superclass.test_order
-      end
-      self.test_order = test_order
-
     end
   end
 end

@@ -89,12 +89,10 @@ RSpec.describe "bundle install with git sources" do
         gem "foo", "1.1", :git => "#{lib_path("foo-1.0")}"
       G
 
-      expect(err).to include("The source contains the following versions of 'foo': 1.0")
+      expect(err).to include("The source contains the following gems matching 'foo':\n  * foo-1.0")
     end
 
-    it "complains with version and platform if pinned specs don't exist in the git repo" do
-      simulate_platform "java"
-
+    it "complains with version and platform if pinned specs don't exist in the git repo", :jruby do
       build_git "only_java" do |s|
         s.platform = "java"
       end
@@ -106,12 +104,10 @@ RSpec.describe "bundle install with git sources" do
         end
       G
 
-      expect(err).to include("The source contains the following versions of 'only_java': 1.0 java")
+      expect(err).to include("The source contains the following gems matching 'only_java':\n  * only_java-1.0-java")
     end
 
-    it "complains with multiple versions and platforms if pinned specs don't exist in the git repo" do
-      simulate_platform "java"
-
+    it "complains with multiple versions and platforms if pinned specs don't exist in the git repo", :jruby do
       build_git "only_java", "1.0" do |s|
         s.platform = "java"
       end
@@ -128,7 +124,7 @@ RSpec.describe "bundle install with git sources" do
         end
       G
 
-      expect(err).to include("The source contains the following versions of 'only_java': 1.0 java, 1.1 java")
+      expect(err).to include("The source contains the following gems matching 'only_java':\n  * only_java-1.0-java\n  * only_java-1.1-java")
     end
 
     it "still works after moving the application directory" do
@@ -232,7 +228,7 @@ RSpec.describe "bundle install with git sources" do
 
       # want to ensure we don't fallback to HEAD
       update_git "foo", :path => lib_path("foo-1.0"), :branch => "rando" do |s|
-        s.write("lib/foo.rb", "raise 'FAIL'")
+        s.write("lib/foo.rb", "raise 'FAIL_FROM_RANDO'")
       end
 
       install_gemfile <<-G
@@ -268,7 +264,7 @@ RSpec.describe "bundle install with git sources" do
 
       # want to ensure we don't fallback to HEAD
       update_git "foo", :path => lib_path("foo-1.0"), :branch => "rando" do |s|
-        s.write("lib/foo.rb", "raise 'FAIL'")
+        s.write("lib/foo.rb", "raise 'FAIL_FROM_RANDO'")
       end
 
       install_gemfile <<-G
@@ -418,9 +414,6 @@ RSpec.describe "bundle install with git sources" do
 
   describe "when specifying local override" do
     it "uses the local repository instead of checking a new one out" do
-      # We don't generate it because we actually don't need it
-      # build_git "rack", "0.8"
-
       build_git "rack", "0.8", :path => lib_path("local-rack") do |s|
         s.write "lib/rack.rb", "puts :LOCAL"
       end
@@ -1187,7 +1180,7 @@ RSpec.describe "bundle install with git sources" do
         s.extensions << "Rakefile"
         s.write "Rakefile", <<-RUBY
           task :default do
-            path = File.expand_path("../lib", __FILE__)
+            path = File.expand_path("lib", __dir__)
             FileUtils.mkdir_p(path)
             File.open("\#{path}/foo.rb", "w") do |f|
               f.puts "FOO = 'YES'"
@@ -1280,7 +1273,7 @@ In Gemfile:
         s.extensions << "Rakefile"
         s.write "Rakefile", <<-RUBY
           task :default do
-            path = File.expand_path("../lib", __FILE__)
+            path = File.expand_path("lib", __dir__)
             FileUtils.mkdir_p(path)
             cur_time = Time.now.to_f.to_s
             File.open("\#{path}/foo.rb", "w") do |f|
@@ -1321,7 +1314,7 @@ In Gemfile:
         s.extensions << "Rakefile"
         s.write "Rakefile", <<-RUBY
           task :default do
-            path = File.expand_path("../lib", __FILE__)
+            path = File.expand_path("lib", __dir__)
             FileUtils.mkdir_p(path)
             cur_time = Time.now.to_f.to_s
             File.open("\#{path}/foo.rb", "w") do |f|
@@ -1364,7 +1357,7 @@ In Gemfile:
         s.extensions << "Rakefile"
         s.write "Rakefile", <<-RUBY
           task :default do
-            path = File.expand_path("../lib", __FILE__)
+            path = File.expand_path("lib", __dir__)
             FileUtils.mkdir_p(path)
             cur_time = Time.now.to_f.to_s
             File.open("\#{path}/foo.rb", "w") do |f|
@@ -1436,7 +1429,44 @@ In Gemfile:
   end
 
   describe "without git installed" do
-    it "prints a better error message" do
+    it "prints a better error message when installing" do
+      build_git "foo"
+
+      gemfile <<-G
+        source "#{file_uri_for(gem_repo1)}"
+
+        gem "rake", git: "https://github.com/ruby/rake"
+      G
+
+      lockfile <<-L
+        GIT
+          remote: https://github.com/ruby/rake
+          revision: 5c60da8644a9e4f655e819252e3b6ca77f42b7af
+          specs:
+            rake (13.0.6)
+
+        GEM
+          remote: https://rubygems.org/
+          specs:
+
+        PLATFORMS
+          #{lockfile_platforms}
+
+        DEPENDENCIES
+          rake!
+
+        BUNDLED WITH
+           #{Bundler::VERSION}
+      L
+
+      with_path_as("") do
+        bundle "install", :raise_on_error => false
+      end
+      expect(err).
+        to include("You need to install git to be able to use gems from git repositories. For help installing git, please refer to GitHub's tutorial at https://help.github.com/articles/set-up-git")
+    end
+
+    it "prints a better error message when updating" do
       build_git "foo"
 
       install_gemfile <<-G

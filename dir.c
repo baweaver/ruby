@@ -112,6 +112,7 @@ char *strchr(char*,char);
 #include "internal/file.h"
 #include "internal/gc.h"
 #include "internal/io.h"
+#include "internal/object.h"
 #include "internal/vm.h"
 #include "ruby/encoding.h"
 #include "ruby/ruby.h"
@@ -186,12 +187,18 @@ has_nonascii(const char *ptr, size_t len)
 # define IF_NORMALIZE_UTF8PATH(something) /* nothing */
 #endif
 
-#ifndef IFTODT
+#if defined(IFTODT) && defined(DT_UNKNOWN)
+# define EMULATE_IFTODT 0
+#else
+# define EMULATE_IFTODT 1
+#endif
+
+#if EMULATE_IFTODT
 # define IFTODT(m)	(((m) & S_IFMT) / ((~S_IFMT & (S_IFMT-1)) + 1))
 #endif
 
 typedef enum {
-#ifdef DT_UNKNOWN
+#if !EMULATE_IFTODT
     path_exist     = DT_UNKNOWN,
     path_directory = DT_DIR,
     path_regular   = DT_REG,
@@ -989,7 +996,7 @@ chdir_yield(VALUE v)
     dir_chdir(args->new_path);
     args->done = TRUE;
     chdir_blocking++;
-    if (chdir_thread == Qnil)
+    if (NIL_P(chdir_thread))
 	chdir_thread = rb_thread_current();
     return rb_yield(args->new_path);
 }
@@ -1991,7 +1998,11 @@ rb_glob_error(const char *path, VALUE a, const void *enc, int error)
     struct glob_error_args args;
     VALUE (*errfunc)(VALUE) = glob_func_error;
 
-    if (error == EACCES) {
+    switch (error) {
+      case EACCES:
+#ifdef ENOTCAPABLE
+      case ENOTCAPABLE:
+#endif
 	errfunc = glob_func_warning;
     }
     args.path = path;
@@ -2137,7 +2148,7 @@ dirent_copy(const struct dirent *dp, rb_dirent_t *rdp)
         newrdp->d_altname = dp->d_altname;
 #endif
     }
-#ifdef DT_UNKNOWN
+#if !EMULATE_IFTODT
     newrdp->d_type = dp->d_type;
 #else
     newrdp->d_type = 0;
@@ -2459,7 +2470,7 @@ glob_helper(
 		break;
 	    }
 	    name = buf + pathlen + (dirsep != 0);
-#ifdef DT_UNKNOWN
+#if !EMULATE_IFTODT
 	    if (dp->d_type != DT_UNKNOWN) {
 		/* Got it. We need no more lstat. */
 		new_pathtype = dp->d_type;
@@ -2937,7 +2948,7 @@ dir_glob_option_base(VALUE base)
 static int
 dir_glob_option_sort(VALUE sort)
 {
-    return (sort ? 0 : FNM_GLOB_NOSORT);
+    return (rb_bool_expected(sort, "sort") ? 0 : FNM_GLOB_NOSORT);
 }
 
 static VALUE
@@ -3259,14 +3270,6 @@ rb_file_directory_p(void)
 }
 #endif
 
-/* :nodoc: */
-static VALUE
-rb_dir_exists_p(VALUE obj, VALUE fname)
-{
-    rb_warn_deprecated("Dir.exists?", "Dir.exist?");
-    return rb_file_directory_p(obj, fname);
-}
-
 static void *
 nogvl_dir_empty_p(void *ptr)
 {
@@ -3330,7 +3333,7 @@ rb_dir_s_empty_p(VALUE obj, VALUE dirname)
 	    al.dirattr = ATTR_DIR_ENTRYCOUNT;
 	    if (getattrlist(path, &al, attrbuf, sizeof(attrbuf), 0) == 0) {
 		if (attrbuf[0] >= 2 * sizeof(u_int32_t))
-		    return attrbuf[1] ? Qfalse : Qtrue;
+		    return RBOOL(attrbuf[1] == 0);
 		if (false_on_notdir) return Qfalse;
 	    }
 	    rb_sys_fail_path(orig);
@@ -3385,7 +3388,6 @@ Init_Dir(void)
     rb_define_singleton_method(rb_cDir,"home", dir_s_home, -1);
 
     rb_define_singleton_method(rb_cDir,"exist?", rb_file_directory_p, 1);
-    rb_define_singleton_method(rb_cDir,"exists?", rb_dir_exists_p, 1);
     rb_define_singleton_method(rb_cDir,"empty?", rb_dir_s_empty_p, 1);
 
     rb_define_singleton_method(rb_cFile,"fnmatch", file_s_fnmatch, -1);

@@ -342,7 +342,6 @@ always_finite_type_p(VALUE x)
     return (RB_INTEGER_TYPE_P(x) || RB_TYPE_P(x, T_RATIONAL));
 }
 
-VALUE rb_flo_is_finite_p(VALUE num);
 inline static int
 f_finite_p(VALUE x)
 {
@@ -355,7 +354,6 @@ f_finite_p(VALUE x)
     return RTEST(rb_funcallv(x, id_finite_p, 0, 0));
 }
 
-VALUE rb_flo_is_infinite_p(VALUE num);
 inline static int
 f_infinite_p(VALUE x)
 {
@@ -1451,10 +1449,7 @@ rb_complex_finite_p(VALUE self)
 {
     get_dat1(self);
 
-    if (f_finite_p(dat->real) && f_finite_p(dat->imag)) {
-	return Qtrue;
-    }
-    return Qfalse;
+    return RBOOL(f_finite_p(dat->real) && f_finite_p(dat->imag));
 }
 
 /*
@@ -2271,6 +2266,14 @@ float_arg(VALUE self)
  * imaginary unit; a+bi.  Where a is real part, b is imaginary part
  * and i is imaginary unit.  Real a equals complex a+0i
  * mathematically.
+ *
+ * You can create a \Complex object explicitly with:
+ *
+ * - A {complex literal}[rdoc-ref:syntax/literals.rdoc@Complex+Literals].
+ *
+ * You can convert certain objects to \Complex objects with:
+ *
+ * - \Method #Complex.
  *
  * Complex object can be created as literal, and also by using
  * Kernel#Complex, Complex::rect, Complex::polar or to_c method.

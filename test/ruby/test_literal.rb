@@ -26,7 +26,7 @@ class TestRubyLiteral < Test::Unit::TestCase
     assert_equal '5', 0b101.inspect
     assert_instance_of Integer, 0b101
     assert_raise(SyntaxError) { eval("0b") }
-    assert_equal '123456789012345678901234567890', 123456789012345678901234567890.inspect
+    assert_equal '123456789012345678901234567890', 123456789012345678901234567890.to_s
     assert_instance_of Integer, 123456789012345678901234567890
     assert_instance_of Float, 1.3
     assert_equal '2', eval("0x00+2").inspect
@@ -474,6 +474,17 @@ class TestRubyLiteral < Test::Unit::TestCase
     assert_nil(h['c'])
     assert_equal(nil, h.key('300'))
 
+    a = []
+    h = EnvUtil.suppress_warning do
+      eval <<~end
+        # This is a syntax that renders warning at very early stage.
+        # eval used to delay warning, to be suppressible by EnvUtil.
+        {"a" => a.push(100).last, "b" => a.push(200).last, "a" => a.push(300).last, "a" => a.push(400).last}
+      end
+    end
+    assert_equal({'a' => 400, 'b' => 200}, h)
+    assert_equal([100, 200, 300, 400], a)
+
     assert_all_assertions_foreach(
       "duplicated literal key",
       ':foo',
@@ -506,11 +517,19 @@ class TestRubyLiteral < Test::Unit::TestCase
     assert_equal(100, h['a'])
   end
 
+  FOO = "foo"
+
   def test_hash_value_omission
     x = 1
     y = 2
     assert_equal({x: 1, y: 2}, {x:, y:})
+    assert_equal({x: 1, y: 2, z: 3}, {x:, y:, z: 3})
     assert_equal({one: 1, two: 2}, {one:, two:})
+    b = binding
+    b.local_variable_set(:if, "if")
+    b.local_variable_set(:self, "self")
+    assert_equal({FOO: "foo", if: "if", self: "self"},
+                 eval('{FOO:, if:, self:}', b))
     assert_syntax_error('{"#{x}":}', /'\}'/)
   end
 

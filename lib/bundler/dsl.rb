@@ -18,6 +18,8 @@ module Bundler
     VALID_KEYS = %w[group groups git path glob name branch ref tag require submodules
                     platform platforms type source install_if gemfile].freeze
 
+    GITHUB_PULL_REQUEST_URL = %r{\Ahttps://github\.com/([A-Za-z0-9_\-\.]+/[A-Za-z0-9_\-\.]+)/pull/(\d+)\z}.freeze
+
     attr_reader :gemspecs
     attr_accessor :dependencies
 
@@ -44,7 +46,7 @@ module Bundler
       @gemfile = expanded_gemfile_path
       @gemfiles << expanded_gemfile_path
       contents ||= Bundler.read_file(@gemfile.to_s)
-      instance_eval(contents.dup.tap{|x| x.untaint if RUBY_VERSION < "2.7" }, gemfile.to_s, 1)
+      instance_eval(contents.dup.tap {|x| x.untaint if RUBY_VERSION < "2.7" }, gemfile.to_s, 1)
     rescue Exception => e # rubocop:disable Lint/RescueException
       message = "There was an error " \
         "#{e.is_a?(GemfileEvalError) ? "evaluating" : "parsing"} " \
@@ -122,18 +124,16 @@ module Bundler
             raise GemfileError, "You cannot specify the same gem twice with different version requirements.\n" \
                             "You specified: #{current.name} (#{current.requirement}) and #{dep.name} (#{dep.requirement})" \
                              "#{update_prompt}"
+          elsif current.source != dep.source
+            return if dep.type == :development
+            raise GemfileError, "You cannot specify the same gem twice coming from different sources.\n" \
+                            "You specified that #{dep.name} (#{dep.requirement}) should come from " \
+                            "#{current.source || "an unspecified source"} and #{dep.source}\n"
           else
             Bundler.ui.warn "Your Gemfile lists the gem #{current.name} (#{current.requirement}) more than once.\n" \
                             "You should probably keep only one of them.\n" \
                             "Remove any duplicate entries and specify the gem only once.\n" \
                             "While it's not a problem now, it could cause errors if you change the version of one of them later."
-          end
-
-          if current.source != dep.source
-            return if dep.type == :development
-            raise GemfileError, "You cannot specify the same gem twice coming from different sources.\n" \
-                            "You specified that #{dep.name} (#{dep.requirement}) should come from " \
-                            "#{current.source || "an unspecified source"} and #{dep.source}\n"
           end
         end
       end
@@ -275,26 +275,24 @@ module Bundler
 
     def add_git_sources
       git_source(:github) do |repo_name|
-        warn_deprecated_git_source(:github, <<-'RUBY'.strip, 'Change any "reponame" :github sources to "username/reponame".')
-"https://github.com/#{repo_name}.git"
-        RUBY
-        repo_name = "#{repo_name}/#{repo_name}" unless repo_name.include?("/")
-        "https://github.com/#{repo_name}.git"
+        if repo_name =~ GITHUB_PULL_REQUEST_URL
+          {
+            "git" => "https://github.com/#{$1}.git",
+            "branch" => "refs/pull/#{$2}/head",
+            "ref" => nil,
+            "tag" => nil,
+          }
+        else
+          repo_name = "#{repo_name}/#{repo_name}" unless repo_name.include?("/")
+          "https://github.com/#{repo_name}.git"
+        end
       end
 
       git_source(:gist) do |repo_name|
-        warn_deprecated_git_source(:gist, '"https://gist.github.com/#{repo_name}.git"')
-
         "https://gist.github.com/#{repo_name}.git"
       end
 
       git_source(:bitbucket) do |repo_name|
-        warn_deprecated_git_source(:bitbucket, <<-'RUBY'.strip)
-user_name, repo_name = repo_name.split("/")
-repo_name ||= user_name
-"https://#{user_name}@bitbucket.org/#{user_name}/#{repo_name}.git"
-        RUBY
-
         user_name, repo_name = repo_name.split("/")
         repo_name ||= user_name
         "https://#{user_name}@bitbucket.org/#{user_name}/#{repo_name}.git"
@@ -365,7 +363,11 @@ repo_name ||= user_name
 
       git_name = (git_names & opts.keys).last
       if @git_sources[git_name]
-        opts["git"] = @git_sources[git_name].call(opts[git_name])
+        git_opts = @git_sources[git_name].call(opts[git_name])
+        git_opts = { "git" => git_opts } if git_opts.is_a?(String)
+        opts.merge!(git_opts) do |key, _gemfile_value, _git_source_value|
+          raise GemfileError, %(The :#{key} option can't be used with `#{git_name}: #{opts[git_name].inspect}`)
+        end
       end
 
       %w[git path].each do |type|
@@ -473,22 +475,6 @@ repo_name ||= user_name
           "may result in installing unexpected gems. To resolve this warning, use " \
           "a block to indicate which gems should come from the secondary source."
       end
-    end
-
-    def warn_deprecated_git_source(name, replacement, additional_message = nil)
-      additional_message &&= " #{additional_message}"
-      replacement = if replacement.count("\n").zero?
-        "{|repo_name| #{replacement} }"
-      else
-        "do |repo_name|\n#{replacement.to_s.gsub(/^/, "      ")}\n    end"
-      end
-
-      Bundler::SharedHelpers.major_deprecation 3, <<-EOS
-The :#{name} git source is deprecated, and will be removed in the future.#{additional_message} Add this code to the top of your Gemfile to ensure it continues to work:
-
-    git_source(:#{name}) #{replacement}
-
-      EOS
     end
 
     class DSLError < GemfileError

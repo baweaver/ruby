@@ -14,6 +14,14 @@ rescue LoadError
 end
 
 class Scheduler
+  experimental = Warning[:experimental]
+  begin
+    Warning[:experimental] = false
+    IO::Buffer.new(0)
+  ensure
+    Warning[:experimental] = experimental
+  end
+
   def initialize
     @readable = {}
     @writable = {}
@@ -22,7 +30,7 @@ class Scheduler
     @closed = false
 
     @lock = Thread::Mutex.new
-    @blocking = 0
+    @blocking = Hash.new.compare_by_identity
     @ready = []
 
     @urgent = IO.pipe
@@ -49,7 +57,7 @@ class Scheduler
   def run
     # $stderr.puts [__method__, Fiber.current].inspect
 
-    while @readable.any? or @writable.any? or @waiting.any? or @blocking.positive?
+    while @readable.any? or @writable.any? or @waiting.any? or @blocking.any?
       # Can only handle file descriptors up to 1024...
       readable, writable = IO.select(@readable.keys + [@urgent.first], @writable.keys, [], next_timeout)
 
@@ -107,10 +115,22 @@ class Scheduler
     end
   end
 
-  def close
+  def scheduler_close
+    close(true)
+  end
+
+  def close(internal = false)
     # $stderr.puts [__method__, Fiber.current].inspect
 
-    raise "Scheduler already closed!" if @closed
+    unless internal
+      if Fiber.scheduler == self
+        return Fiber.set_scheduler(nil)
+      end
+    end
+
+    if @closed
+      raise "Scheduler already closed!"
+    end
 
     self.run
   ensure
@@ -119,7 +139,7 @@ class Scheduler
       @urgent = nil
     end
 
-    @closed = true
+    @closed ||= true
 
     # We freeze to detect any unintended modifications after the scheduler is closed:
     self.freeze
@@ -172,6 +192,9 @@ class Scheduler
     end
 
     Fiber.yield
+  ensure
+    @readable.delete(io)
+    @writable.delete(io)
   end
 
   # Used for Kernel#sleep and Thread::Mutex#sleep
@@ -188,20 +211,22 @@ class Scheduler
   def block(blocker, timeout = nil)
     # $stderr.puts [__method__, blocker, timeout].inspect
 
+    fiber = Fiber.current
+
     if timeout
-      @waiting[Fiber.current] = current_time + timeout
+      @waiting[fiber] = current_time + timeout
       begin
         Fiber.yield
       ensure
         # Remove from @waiting in the case #unblock was called before the timeout expired:
-        @waiting.delete(Fiber.current)
+        @waiting.delete(fiber)
       end
     else
-      @blocking += 1
+      @blocking[fiber] = true
       begin
         Fiber.yield
       ensure
-        @blocking -= 1
+        @blocking.delete(fiber)
       end
     end
   end
@@ -234,6 +259,85 @@ class Scheduler
     Thread.new do
       Addrinfo.getaddrinfo(hostname, nil).map(&:ip_address).uniq
     end.value
+  end
+end
+
+class IOBufferScheduler < Scheduler
+  EAGAIN = Errno::EAGAIN::Errno
+
+  def io_read(io, buffer, length)
+    offset = 0
+
+    while true
+      maximum_size = buffer.size - offset
+      result = blocking{io.read_nonblock(maximum_size, exception: false)}
+
+      # blocking{pp read: maximum_size, result: result, length: length}
+
+      case result
+      when :wait_readable
+        if length > 0
+          self.io_wait(io, IO::READABLE, nil)
+        else
+          return -EAGAIN
+        end
+      when :wait_writable
+        if length > 0
+          self.io_wait(io, IO::WRITABLE, nil)
+        else
+          return -EAGAIN
+        end
+      else
+        break unless result
+
+        buffer.set_string(result, offset)
+
+        size = result.bytesize
+        offset += size
+        break if size >= length
+        length -= size
+      end
+    end
+
+    return offset
+  end
+
+  def io_write(io, buffer, length)
+    offset = 0
+
+    while true
+      maximum_size = buffer.size - offset
+
+      chunk = buffer.get_string(offset, maximum_size)
+      result = blocking{io.write_nonblock(chunk, exception: false)}
+
+      # blocking{pp write: maximum_size, result: result, length: length}
+
+      case result
+      when :wait_readable
+        if length > 0
+          self.io_wait(io, IO::READABLE, nil)
+        else
+          return -EAGAIN
+        end
+      when :wait_writable
+        if length > 0
+          self.io_wait(io, IO::WRITABLE, nil)
+        else
+          return -EAGAIN
+        end
+      else
+        offset += result
+        break if result >= length
+        length -= result
+      end
+    end
+
+    return offset
+  end
+
+  def blocking(&block)
+    Fiber.new(blocking: true, &block).resume
   end
 end
 

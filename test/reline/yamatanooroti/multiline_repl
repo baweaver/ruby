@@ -1,5 +1,9 @@
 #!/usr/bin/env ruby
 
+
+require 'bundler'
+Bundler.require
+
 require 'reline'
 require 'optparse'
 require_relative 'termination_checker'
@@ -26,6 +30,14 @@ opt.on('--broken-dynamic-prompt') {
 }
 opt.on('--dynamic-prompt-returns-empty') {
   Reline.prompt_proc = proc { |l| [] }
+}
+opt.on('--dynamic-prompt-with-newline') {
+  Reline.prompt_proc = proc { |lines|
+    range = lines.size > 1 ? (0..(lines.size - 2)) : (0..0)
+    lines[range].each_with_index.map { |l, i|
+      '[%04d\n]> ' % i
+    }
+  }
 }
 opt.on('--auto-indent') {
   AutoIndent.new
@@ -55,6 +67,15 @@ opt.on('--dialog VAL') { |v|
         natural to read
         and easy to write.
       RUBY
+    elsif v.include?('fullwidth')
+      contents = <<~RUBY.split("\n")
+        Rubyとは...
+
+        オープンソースの動的なプログラミン
+        グ言語で、シンプルさと高い生産性を
+        備えています。エレガントな文法を持
+        ち、自然に読み書きができます。
+      RUBY
     end
     if v.include?('scrollkey')
       dialog.trap_key = nil
@@ -74,8 +95,14 @@ opt.on('--dialog VAL') { |v|
     if v.include?('scrollbar')
       scrollbar = true
     end
+    if v.include?('alt-scrollbar')
+      scrollbar = true
+    end
     Reline::DialogRenderInfo.new(pos: cursor_pos, contents: contents, height: height, scrollbar: scrollbar)
   })
+  if v.include?('alt-scrollbar')
+    ENV['RELINE_ALT_SCROLLBAR'] = '1'
+  end
 }
 opt.on('--complete') {
   Reline.completion_proc = lambda { |target, preposing = nil, postposing = nil|
@@ -91,7 +118,57 @@ opt.on('--autocomplete') {
 opt.on('--autocomplete-long') {
   Reline.autocompletion = true
   Reline.completion_proc = lambda { |target, preposing = nil, postposing = nil|
-    %w{String Struct Symbol StopIteration SystemCallError SystemExit SystemStackError ScriptError SyntaxError Signal SizedQueue Set SecureRandom Socket StringIO StringScanner Shellwords Syslog Singleton SDBM}.select{ |c| c.start_with?(target) }
+    %w{
+      String
+      Struct
+      Symbol
+      StopIteration
+      SystemCallError
+      SystemExit
+      SystemStackError
+      ScriptError
+      SyntaxError
+      Signal
+      SizedQueue
+      Set
+      SecureRandom
+      Socket
+      StringIO
+      StringScanner
+      Shellwords
+      Syslog
+      Singleton
+      SDBM
+    }.select{ |c| c.start_with?(target) }
+  }
+}
+opt.on('--autocomplete-super-long') {
+  Reline.autocompletion = true
+  Reline.completion_proc = lambda { |target, preposing = nil, postposing = nil|
+    c = 'A'
+    2000.times.map{ s = "Str_#{c}"; c.succ!; s }.select{ |c| c.start_with?(target) }
+  }
+}
+
+opt.on('--autocomplete-width-long') {
+  Reline.autocompletion = true
+  Reline.completion_proc = lambda { |target, preposing = nil, postposing = nil|
+    %w{
+        remove_instance_variable
+        respond_to?
+        ruby2_keywords
+        rand
+        readline
+        readlines
+        require
+        require_relative
+        raise
+        respond_to_missing?
+        redo
+        rescue
+        retry
+        return
+    }.select{ |c| c.start_with?(target) }
   }
 }
 opt.parse!(ARGV)

@@ -5,7 +5,7 @@ require "tempfile"
 
 class ErrorHighlightTest < Test::Unit::TestCase
   class DummyFormatter
-    def message_for(corrections)
+    def self.message_for(corrections)
       ""
     end
   end
@@ -13,7 +13,7 @@ class ErrorHighlightTest < Test::Unit::TestCase
   def setup
     if defined?(DidYouMean)
       @did_you_mean_old_formatter = DidYouMean.formatter
-      DidYouMean.formatter = DummyFormatter.new
+      DidYouMean.formatter = DummyFormatter
     end
   end
 
@@ -23,9 +23,16 @@ class ErrorHighlightTest < Test::Unit::TestCase
     end
   end
 
-  def assert_error_message(klass, expected_msg, &blk)
-    err = assert_raise(klass, &blk)
-    assert_equal(expected_msg.chomp, err.message)
+  if Exception.method_defined?(:detailed_message)
+    def assert_error_message(klass, expected_msg, &blk)
+      err = assert_raise(klass, &blk)
+      assert_equal(expected_msg.chomp, err.detailed_message(highlight: false).sub(/ \((?:NoMethod|Name)Error\)/, ""))
+    end
+  else
+    def assert_error_message(klass, expected_msg, &blk)
+      err = assert_raise(klass, &blk)
+      assert_equal(expected_msg.chomp, err.message)
+    end
   end
 
   def test_CALL_noarg_1
@@ -1191,6 +1198,36 @@ undefined method `time' for 1:Integer
     END
 
         load tmp.path
+      end
+    end
+  end
+
+  def test_simulate_funcallv_from_embedded_ruby
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `foo' for nil:NilClass
+    END
+
+      nil.foo + 1
+    rescue NoMethodError => exc
+      def exc.backtrace_locations = []
+      raise
+    end
+  end
+
+  def test_spoofed_filename
+    Tempfile.create(["error_highlight_test", ".rb"], binmode: true) do |tmp|
+      tmp << "module Dummy\nend\n"
+      tmp.close
+
+      assert_error_message(NameError, <<~END) do
+        undefined local variable or method `foo' for "dummy":String
+      END
+
+        "dummy".instance_eval do
+          eval <<-END, nil, tmp.path
+            foo
+          END
+        end
       end
     end
   end

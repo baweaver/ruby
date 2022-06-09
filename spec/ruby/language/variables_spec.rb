@@ -797,17 +797,6 @@ describe 'Local variable shadowing' do
 end
 
 describe 'Allowed characters' do
-  # new feature in 2.6 -- https://bugs.ruby-lang.org/issues/13770
-  it 'does not allow non-ASCII upcased characters at the beginning' do
-    -> do
-      eval <<-CODE
-        def test
-          ἍBB = 1
-        end
-      CODE
-    end.should raise_error(SyntaxError, /dynamic constant assignment/)
-  end
-
   it 'allows non-ASCII lowercased characters at the beginning' do
     result = nil
 
@@ -820,5 +809,44 @@ describe 'Allowed characters' do
     CODE
 
     result.should == 1
+  end
+
+  it 'parses a non-ASCII upcased character as a constant identifier' do
+    -> do
+      eval <<-CODE
+        def test
+          ἍBB = 1
+        end
+      CODE
+    end.should raise_error(SyntaxError, /dynamic constant assignment/)
+  end
+end
+
+describe "Instance variables" do
+  context "when instance variable is uninitialized" do
+    ruby_version_is ""..."3.0" do
+      it "warns about accessing uninitialized instance variable" do
+        obj = Object.new
+        def obj.foobar; a = @a; end
+
+        -> { obj.foobar }.should complain(/warning: instance variable @a not initialized/, verbose: true)
+      end
+    end
+
+    ruby_version_is "3.0" do
+      it "doesn't warn about accessing uninitialized instance variable" do
+        obj = Object.new
+        def obj.foobar; a = @a; end
+
+        -> { obj.foobar }.should_not complain(verbose: true)
+      end
+    end
+
+    it "doesn't warn at lazy initialization" do
+      obj = Object.new
+      def obj.foobar; @a ||= 42; end
+
+      -> { obj.foobar }.should_not complain(verbose: true)
+    end
   end
 end

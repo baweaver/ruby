@@ -151,6 +151,8 @@ class TestThreadQueue < Test::Unit::TestCase
   end
 
   def test_thr_kill
+    omit "[Bug #18613]" if /freebsd/ =~ RUBY_PLATFORM
+
     bug5343 = '[ruby-core:39634]'
     Dir.mktmpdir {|d|
       timeout = EnvUtil.apply_timeout_scale(60)
@@ -580,10 +582,10 @@ class TestThreadQueue < Test::Unit::TestCase
 
   def test_queue_with_trap
     if ENV['APPVEYOR'] == 'True' && RUBY_PLATFORM.match?(/mswin/)
-      skip 'This test fails too often on AppVeyor vs140'
+      omit 'This test fails too often on AppVeyor vs140'
     end
     if RUBY_PLATFORM.match?(/mingw/)
-      skip 'This test fails too often on MinGW'
+      omit 'This test fails too often on MinGW'
     end
 
     assert_in_out_err([], <<-INPUT, %w(INT INT exit), [])

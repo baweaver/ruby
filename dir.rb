@@ -9,72 +9,79 @@
 #
 # == What's Here
 #
-# \Class \Dir provides methods that are useful for:
+# First, what's elsewhere. \Class \Dir:
 #
-# - {Reading}[#class-Dir-label-Reading]
-# - {Setting}[#class-Dir-label-Setting]
-# - {Querying}[#class-Dir-label-Querying]
-# - {Iterating}[#class-Dir-label-Iterating]
-# - {Other}[#class-Dir-label-Other]
+# - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
+# - Includes {module Enumerable}[rdoc-ref:Enumerable@What-27s+Here],
+#   which provides dozens of additional methods.
+#
+# Here, class \Dir provides methods that are useful for:
+#
+# - {Reading}[rdoc-ref:Dir@Reading]
+# - {Setting}[rdoc-ref:Dir@Setting]
+# - {Querying}[rdoc-ref:Dir@Querying]
+# - {Iterating}[rdoc-ref:Dir@Iterating]
+# - {Other}[rdoc-ref:Dir@Other]
 #
 # === Reading
 #
-# - #close:: Closes the directory stream for +self+.
-# - #pos=:: Sets the position in the directory stream for +self+.
-# - #read:: Reads and returns the next entry in the directory stream for +self+.
-# - #rewind:: Sets the position in the directory stream for +self+ to the first entry.
-# - #seek:: Sets the position in the directory stream for +self+
-#           the entry at the given offset.
+# - #close: Closes the directory stream for +self+.
+# - #pos=: Sets the position in the directory stream for +self+.
+# - #read: Reads and returns the next entry in the directory stream for +self+.
+# - #rewind: Sets the position in the directory stream for +self+ to the first entry.
+# - #seek: Sets the position in the directory stream for +self+
+#   the entry at the given offset.
 #
 # === Setting
 #
-# - ::chdir:: Changes the working directory of the current process
-#             to the given directory.
-# - ::chroot:: Changes the file-system root for the current process
-#              to the given directory.
+# - ::chdir: Changes the working directory of the current process
+#   to the given directory.
+# - ::chroot: Changes the file-system root for the current process
+#   to the given directory.
 #
 # === Querying
 #
-# - ::[]:: Same as ::glob without the ability to pass flags.
-# - ::children:: Returns an array of names of the children
-#                (both files and directories) of the given directory,
-#                but not including <tt>.</tt> or <tt>..</tt>.
-# - ::empty?:: Returns whether the given path is an empty directory.
-# - ::entries:: Returns an array of names of the children
-#               (both files and directories) of the given directory,
-#               including <tt>.</tt> and <tt>..</tt>.
-# - ::exist?:: Returns whether the given path is a directory.
-# - ::getwd (aliased as #pwd):: Returns the path to the current working directory.
-# - ::glob:: Returns an array of file paths matching the given pattern and flags.
-# - ::home:: Returns the home directory path for a given user or the current user.
-# - #children:: Returns an array of names of the children
-#               (both files and directories) of +self+,
-#               but not including <tt>.</tt> or <tt>..</tt>.
-# - #fileno:: Returns the integer file descriptor for +self+.
-# - #path (aliased as #to_path):: Returns the path used to create +self+.
-# - #tell (aliased as #pos):: Returns the integer position
-#                             in the directory stream for +self+.
+# - ::[]: Same as ::glob without the ability to pass flags.
+# - ::children: Returns an array of names of the children
+#   (both files and directories) of the given directory,
+#   but not including <tt>.</tt> or <tt>..</tt>.
+# - ::empty?: Returns whether the given path is an empty directory.
+# - ::entries: Returns an array of names of the children
+#   (both files and directories) of the given directory,
+#   including <tt>.</tt> and <tt>..</tt>.
+# - ::exist?: Returns whether the given path is a directory.
+# - ::getwd (aliased as #pwd): Returns the path to the current working directory.
+# - ::glob: Returns an array of file paths matching the given pattern and flags.
+# - ::home: Returns the home directory path for a given user or the current user.
+# - #children: Returns an array of names of the children
+#   (both files and directories) of +self+,
+#   but not including <tt>.</tt> or <tt>..</tt>.
+# - #fileno: Returns the integer file descriptor for +self+.
+# - #path (aliased as #to_path): Returns the path used to create +self+.
+# - #tell (aliased as #pos): Returns the integer position
+#   in the directory stream for +self+.
 #
 # === Iterating
 #
-# - ::each_child:: Calls the given block with each entry in the given directory,
-#                  but not including <tt>.</tt> or <tt>..</tt>.
-# - ::foreach:: Calls the given block with each entryin the given directory,
-#               including <tt>.</tt> and <tt>..</tt>.
-# - #each:: Calls the given block with each entry in +self+,
-#           including <tt>.</tt> and <tt>..</tt>.
-# - #each_child:: Calls the given block with each entry in +self+,
-#                 but not including <tt>.</tt> or <tt>..</tt>.
+# - ::each_child: Calls the given block with each entry in the given directory,
+#   but not including <tt>.</tt> or <tt>..</tt>.
+# - ::foreach: Calls the given block with each entryin the given directory,
+#   including <tt>.</tt> and <tt>..</tt>.
+# - #each: Calls the given block with each entry in +self+,
+#   including <tt>.</tt> and <tt>..</tt>.
+# - #each_child: Calls the given block with each entry in +self+,
+#   but not including <tt>.</tt> or <tt>..</tt>.
 #
 # === Other
 #
-# - ::mkdir:: Creates a directory at the given path, with optional permissions.
-# - ::new:: Returns a new \Dir for the given path, with optional encoding.
-# - ::open:: Same as ::new, but if a block is given, yields the \Dir to the block,
-#            closing it upon block exit.
-# - ::unlink (aliased as ::delete and ::rmdir):: Removes the given directory.
-# - #inspect:: Returns a string description of +self+.
+# - ::mkdir: Creates a directory at the given path, with optional permissions.
+# - ::new: Returns a new \Dir for the given path, with optional encoding.
+# - ::open: Same as ::new, but if a block is given, yields the \Dir to the block,
+#   closing it upon block exit.
+# - ::unlink (aliased as ::delete and ::rmdir): Removes the given directory.
+# - #inspect: Returns a string description of +self+.
 class Dir
+  # call-seq:
   #    Dir.open( string ) -> aDir
   #    Dir.open( string, encoding: enc ) -> aDir
   #    Dir.open( string ) {| aDir | block } -> anObject
@@ -100,6 +107,7 @@ class Dir
     end
   end
 
+  # call-seq:
   #    Dir.new( string ) -> aDir
   #    Dir.new( string, encoding: enc ) -> aDir
   #
@@ -111,6 +119,7 @@ class Dir
     Primitive.dir_initialize(name, encoding)
   end
 
+  # call-seq:
   #    Dir[ string [, string ...] [, base: path] [, sort: true] ] -> array
   #
   # Equivalent to calling
@@ -119,6 +128,7 @@ class Dir
     Primitive.dir_s_aref(args, base, sort)
   end
 
+  # call-seq:
   #    Dir.glob( pattern, [flags], [base: path] [, sort: true] )                       -> array
   #    Dir.glob( pattern, [flags], [base: path] [, sort: true] ) { |filename| block }  -> nil
   #
@@ -134,13 +144,13 @@ class Dir
   # paths.
   #
   # The results which matched single wildcard or character set are sorted in
-  # binary ascending order, unless false is given as the optional +sort+
+  # binary ascending order, unless +false+ is given as the optional +sort+
   # keyword argument.  The order of an Array of pattern strings and braces
   # are preserved.
   #
   # Note that the pattern is not a regexp, it's closer to a shell glob.
   # See File::fnmatch for the meaning of the +flags+ parameter.
-  # Case sensitivity depends on your system (File::FNM_CASEFOLD is ignored).
+  # Case sensitivity depends on your system (+File::FNM_CASEFOLD+ is ignored).
   #
   # <code>*</code>::
   #   Matches any file. Can be restricted by other values in the glob.
@@ -190,7 +200,7 @@ class Dir
   #    Dir.glob("*.[^r]*")                 #=> ["config.h"]
   #    Dir.glob("*.{rb,h}")                #=> ["main.rb", "config.h"]
   #    Dir.glob("*")                       #=> ["config.h", "main.rb"]
-  #    Dir.glob("*", File::FNM_DOTMATCH)   #=> [".", "..", "config.h", "main.rb"]
+  #    Dir.glob("*", File::FNM_DOTMATCH)   #=> [".", "config.h", "main.rb"]
   #    Dir.glob(["*.rb", "*.h"])           #=> ["main.rb", "config.h"]
   #
   #    Dir.glob("**/*.rb")                 #=> ["main.rb",

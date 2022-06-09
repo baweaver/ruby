@@ -23,8 +23,14 @@
 # include <ieeefp.h>
 #endif
 
+#if !defined(USE_GMP)
 #if defined(HAVE_LIBGMP) && defined(HAVE_GMP_H)
-# define USE_GMP
+# define USE_GMP 1
+#else
+# define USE_GMP 0
+#endif
+#endif
+#if USE_GMP
 # include <gmp.h>
 #endif
 
@@ -145,7 +151,7 @@ STATIC_ASSERT(sizeof_long_and_sizeof_bdigit, SIZEOF_BDIGIT % SIZEOF_LONG == 0);
 #define GMP_DIV_DIGITS 20
 #define GMP_BIG2STR_DIGITS 20
 #define GMP_STR2BIG_DIGITS 20
-#ifdef USE_GMP
+#if USE_GMP
 # define NAIVE_MUL_DIGITS GMP_MUL_DIGITS
 #else
 # define NAIVE_MUL_DIGITS KARATSUBA_MUL_DIGITS
@@ -460,7 +466,6 @@ static int
 bary_2comp(BDIGIT *ds, size_t n)
 {
     size_t i;
-    i = 0;
     for (i = 0; i < n; i++) {
         if (ds[i] != 0) {
             goto non_zero;
@@ -1574,7 +1579,7 @@ rb_big_mul_normal(VALUE x, VALUE y)
 
 /* efficient squaring (2 times faster than normal multiplication)
  * ref: Handbook of Applied Cryptography, Algorithm 14.16
- *      http://www.cacr.math.uwaterloo.ca/hac/about/chap14.pdf
+ *      https://www.cacr.math.uwaterloo.ca/hac/about/chap14.pdf
  */
 static void
 bary_sq_fast(BDIGIT *zds, size_t zn, const BDIGIT *xds, size_t xn)
@@ -1640,13 +1645,21 @@ rb_big_sq_fast(VALUE x)
     return z;
 }
 
+static inline size_t
+max_size(size_t a, size_t b)
+{
+    return (a > b ? a : b);
+}
+
 /* balancing multiplication by slicing larger argument */
 static void
-bary_mul_balance_with_mulfunc(BDIGIT *zds, size_t zn, const BDIGIT *xds, size_t xn, const BDIGIT *yds, size_t yn, BDIGIT *wds, size_t wn, mulfunc_t *mulfunc)
+bary_mul_balance_with_mulfunc(BDIGIT *const zds, const size_t zn,
+                              const BDIGIT *const xds, const size_t xn,
+                              const BDIGIT *const yds, const size_t yn,
+                              BDIGIT *wds, size_t wn, mulfunc_t *const mulfunc)
 {
     VALUE work = 0;
-    size_t yn0 = yn;
-    size_t r, n;
+    size_t n;
 
     assert(xn + yn <= zn);
     assert(xn <= yn);
@@ -1654,14 +1667,26 @@ bary_mul_balance_with_mulfunc(BDIGIT *zds, size_t zn, const BDIGIT *xds, size_t 
 
     BDIGITS_ZERO(zds, xn);
 
+    if (wn < xn) {
+        /* The condition when a new buffer is needed:
+         * 1. (2(xn+r) > zn-(yn-r)) => (2xn+r > zn-yn), at the last
+         *    iteration (or r == 0)
+         * 2. (2(xn+xn) > zn-(yn-r-xn)) => (3xn-r > zn-yn), at the
+         *    previous iteration.
+         */
+        const size_t r = yn % xn;
+        if (2*xn + yn + max_size(xn-r, r) > zn) {
+            wn = xn;
+            wds = ALLOCV_N(BDIGIT, work, wn);
+        }
+    }
+
     n = 0;
-    while (yn > 0) {
-        BDIGIT *tds;
-        size_t tn;
-	r = xn > yn ? yn : xn;
-        tn = xn + r;
+    while (yn > n) {
+        const size_t r = (xn > (yn - n) ? (yn - n) : xn);
+        const size_t tn = (xn + r);
         if (2 * (xn + r) <= zn - n) {
-            tds = zds + n + xn + r;
+            BDIGIT *const tds = zds + n + xn + r;
             mulfunc(tds, tn, xds, xn, yds + n, r, wds, wn);
             BDIGITS_ZERO(zds + n + xn, r);
             bary_add(zds + n, tn,
@@ -1669,21 +1694,25 @@ bary_mul_balance_with_mulfunc(BDIGIT *zds, size_t zn, const BDIGIT *xds, size_t 
                      tds, tn);
         }
         else {
+            BDIGIT *const tds = zds + n;
             if (wn < xn) {
+                /* xn is invariant, only once here */
+#if 0
                 wn = xn;
                 wds = ALLOCV_N(BDIGIT, work, wn);
+#else
+                rb_bug("wds is not enough: %" PRIdSIZE " for %" PRIdSIZE, wn, xn);
+#endif
             }
-            tds = zds + n;
             MEMCPY(wds, zds + n, BDIGIT, xn);
             mulfunc(tds, tn, xds, xn, yds + n, r, wds+xn, wn-xn);
             bary_add(zds + n, tn,
                      zds + n, tn,
                      wds, xn);
         }
-	yn -= r;
 	n += r;
     }
-    BDIGITS_ZERO(zds+xn+yn0, zn - (xn+yn0));
+    BDIGITS_ZERO(zds+xn+yn, zn - (xn+yn));
 
     if (work)
         ALLOCV_END(work);
@@ -2280,7 +2309,7 @@ rb_big_mul_toom3(VALUE x, VALUE y)
     return z;
 }
 
-#ifdef USE_GMP
+#if USE_GMP
 static inline void
 bdigits_to_mpz(mpz_t mp, const BDIGIT *digits, size_t len)
 {
@@ -2545,7 +2574,7 @@ bary_mul(BDIGIT *zds, size_t zn, const BDIGIT *xds, size_t xn, const BDIGIT *yds
         }
     }
 
-#ifdef USE_GMP
+#if USE_GMP
     bary_mul_gmp(zds, zn, xds, xn, yds, yn);
 #else
     bary_mul_toom3_start(zds, zn, xds, xn, yds, yn, NULL, 0);
@@ -2765,7 +2794,7 @@ rb_big_divrem_normal(VALUE x, VALUE y)
     return rb_assoc_new(q, r);
 }
 
-#ifdef USE_GMP
+#if USE_GMP
 static void
 bary_divmod_gmp(BDIGIT *qds, size_t qn, BDIGIT *rds, size_t rn, const BDIGIT *xds, size_t xn, const BDIGIT *yds, size_t yn)
 {
@@ -2849,7 +2878,7 @@ rb_big_divrem_gmp(VALUE x, VALUE y)
 static void
 bary_divmod_branch(BDIGIT *qds, size_t qn, BDIGIT *rds, size_t rn, const BDIGIT *xds, size_t xn, const BDIGIT *yds, size_t yn)
 {
-#ifdef USE_GMP
+#if USE_GMP
     if (GMP_DIV_DIGITS < xn) {
         bary_divmod_gmp(qds, qn, rds, rn, xds, xn, yds, yn);
         return;
@@ -3946,7 +3975,7 @@ str2big_karatsuba(
     return z;
 }
 
-#ifdef USE_GMP
+#if USE_GMP
 static VALUE
 str2big_gmp(
     int sign,
@@ -4211,7 +4240,7 @@ rb_int_parse_cstr(const char *str, ssize_t len, char **endp, size_t *ndigits,
         maxpow_in_bdigit_dbl(base, &digits_per_bdigits_dbl);
         num_bdigits = roomof(num_digits, digits_per_bdigits_dbl)*2;
 
-#ifdef USE_GMP
+#if USE_GMP
         if (GMP_STR2BIG_DIGITS < num_bdigits) {
             z = str2big_gmp(sign, digits_start, digits_end, num_digits,
                     num_bdigits, base);
@@ -4391,7 +4420,7 @@ rb_str2big_karatsuba(VALUE arg, int base, int badcheck)
     return bignorm(z);
 }
 
-#ifdef USE_GMP
+#if USE_GMP
 VALUE
 rb_str2big_gmp(VALUE arg, int base, int badcheck)
 {
@@ -5001,7 +5030,7 @@ rb_big2str_generic(VALUE x, int base)
     return big2str_generic(x, base);
 }
 
-#ifdef USE_GMP
+#if USE_GMP
 static VALUE
 big2str_gmp(VALUE x, int base)
 {
@@ -5072,7 +5101,7 @@ rb_big2str1(VALUE x, int base)
         return big2str_base_poweroftwo(x, base);
     }
 
-#ifdef USE_GMP
+#if USE_GMP
     if (GMP_BIG2STR_DIGITS < xn) {
         return big2str_gmp(x, base);
     }
@@ -5306,7 +5335,7 @@ rb_big2dbl(VALUE x)
     double d = big2dbl(x);
 
     if (isinf(d)) {
-	rb_warning("Bignum out of Float range");
+	rb_warning("Integer out of Float range");
 	if (d < 0.0)
 	    d = -HUGE_VAL;
 	else
@@ -5388,18 +5417,14 @@ rb_integer_float_eq(VALUE x, VALUE y)
     if (FIXNUM_P(x)) {
 #if SIZEOF_LONG * CHAR_BIT < DBL_MANT_DIG /* assume FLT_RADIX == 2 */
         double xd = (double)FIX2LONG(x);
-        if (xd != yd)
-            return Qfalse;
-        return Qtrue;
+        return RBOOL(xd == yd);
 #else
         long xn, yn;
         if (yi < LONG_MIN || LONG_MAX_as_double <= yi)
             return Qfalse;
         xn = FIX2LONG(x);
         yn = (long)yi;
-        if (xn != yn)
-            return Qfalse;
-        return Qtrue;
+        return RBOOL(xn == yn);
 #endif
     }
     y = rb_dbl2big(yi);
@@ -5528,8 +5553,7 @@ rb_big_eq(VALUE x, VALUE y)
     }
     if (BIGNUM_SIGN(x) != BIGNUM_SIGN(y)) return Qfalse;
     if (BIGNUM_LEN(x) != BIGNUM_LEN(y)) return Qfalse;
-    if (MEMCMP(BDIGITS(x),BDIGITS(y),BDIGIT,BIGNUM_LEN(y)) != 0) return Qfalse;
-    return Qtrue;
+    return RBOOL(MEMCMP(BDIGITS(x),BDIGITS(y),BDIGIT,BIGNUM_LEN(y)) == 0);
 }
 
 VALUE
@@ -5538,8 +5562,7 @@ rb_big_eql(VALUE x, VALUE y)
     if (!RB_BIGNUM_TYPE_P(y)) return Qfalse;
     if (BIGNUM_SIGN(x) != BIGNUM_SIGN(y)) return Qfalse;
     if (BIGNUM_LEN(x) != BIGNUM_LEN(y)) return Qfalse;
-    if (MEMCMP(BDIGITS(x),BDIGITS(y),BDIGIT,BIGNUM_LEN(y)) != 0) return Qfalse;
-    return Qtrue;
+    return RBOOL(MEMCMP(BDIGITS(x),BDIGITS(y),BDIGIT,BIGNUM_LEN(y)) == 0);
 }
 
 VALUE
@@ -6725,14 +6748,15 @@ rb_big_hash(VALUE x)
 
 /*
  * call-seq:
- *   big.coerce(numeric)  ->  array
+ *   int.coerce(numeric)  ->  array
  *
- * Returns an array with both a +numeric+ and a +big+ represented as Bignum
- * objects.
+ * Returns an array with both a +numeric+ and a +int+ represented as
+ * Integer objects or Float objects.
  *
- * This is achieved by converting +numeric+ to a Bignum.
+ * This is achieved by converting +numeric+ to an Integer or a Float.
  *
- * A TypeError is raised if the +numeric+ is not a Fixnum or Bignum type.
+ * A TypeError is raised if the +numeric+ is not an Integer or a Float
+ * type.
  *
  *     (0x3FFFFFFFFFFFFFFF+1).coerce(42)   #=> [42, 4611686018427387904]
  */
@@ -6822,10 +6846,7 @@ rb_big_bit_length(VALUE big)
 VALUE
 rb_big_odd_p(VALUE num)
 {
-    if (BIGNUM_LEN(num) != 0 && BDIGITS(num)[0] & 1) {
-	return Qtrue;
-    }
-    return Qfalse;
+    return RBOOL(BIGNUM_LEN(num) != 0 && BDIGITS(num)[0] & 1);
 }
 
 VALUE
@@ -6932,14 +6953,12 @@ rb_big_isqrt(VALUE n)
 	    bary_small_rshift(xds, xds, xn, 1, carry);
 	    tn = BIGNUM_LEN(t);
 	}
-	rb_big_realloc(t, 0);
-	rb_gc_force_recycle(t);
     }
     RBASIC_SET_CLASS_RAW(x, rb_cInteger);
     return x;
 }
 
-#ifdef USE_GMP
+#if USE_GMP
 static void
 bary_powm_gmp(BDIGIT *zds, size_t zn, const BDIGIT *xds, size_t xn, const BDIGIT *yds, size_t yn, const BDIGIT *mds, size_t mn)
 {
@@ -6965,7 +6984,7 @@ bary_powm_gmp(BDIGIT *zds, size_t zn, const BDIGIT *xds, size_t xn, const BDIGIT
 static VALUE
 int_pow_tmp3(VALUE x, VALUE y, VALUE m, int nega_flg)
 {
-#ifdef USE_GMP
+#if USE_GMP
     VALUE z;
     size_t xn, yn, mn, zn;
 
@@ -7169,13 +7188,9 @@ rb_int_powm(int const argc, VALUE * const argv, VALUE const num)
 void
 Init_Bignum(void)
 {
-    /* An obsolete class, use Integer */
-    rb_define_const(rb_cObject, "Bignum", rb_cInteger);
-    rb_deprecate_constant(rb_cObject, "Bignum");
-
     rb_define_method(rb_cInteger, "coerce", rb_int_coerce, 1);
 
-#ifdef USE_GMP
+#if USE_GMP
     /* The version of loaded GMP. */
     rb_define_const(rb_cInteger, "GMP_VERSION", rb_sprintf("GMP %s", gmp_version));
 #endif

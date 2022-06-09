@@ -424,6 +424,9 @@ rb_class_modify_check(VALUE klass)
     if (SPECIAL_CONST_P(klass)) {
 	Check_Type(klass, T_CLASS);
     }
+    if (RB_TYPE_P(klass, T_MODULE)) {
+        rb_module_set_initialized(klass);
+    }
     if (OBJ_FROZEN(klass)) {
 	const char *desc;
 
@@ -692,17 +695,18 @@ rb_interrupt(void)
 enum {raise_opt_cause, raise_max_opt}; /*< \private */
 
 static int
-extract_raise_opts(int argc, const VALUE *argv, VALUE *opts)
+extract_raise_opts(int argc, VALUE *argv, VALUE *opts)
 {
     int i;
     if (argc > 0) {
-	VALUE opt = argv[argc-1];
-	if (RB_TYPE_P(opt, T_HASH)) {
+	VALUE opt;
+	argc = rb_scan_args(argc, argv, "*:", NULL, &opt);
+	if (!NIL_P(opt)) {
 	    if (!RHASH_EMPTY_P(opt)) {
 		ID keywords[1];
 		CONST_ID(keywords[0], "cause");
 		rb_get_kwargs(opt, keywords, 0, -1-raise_max_opt, opts);
-		if (RHASH_EMPTY_P(opt)) --argc;
+		if (!RHASH_EMPTY_P(opt)) argv[argc++] = opt;
 		return argc;
 	    }
 	}
@@ -1125,9 +1129,17 @@ rb_mod_include(int argc, VALUE *argv, VALUE module)
     CONST_ID(id_append_features, "append_features");
     CONST_ID(id_included, "included");
 
+    if (BUILTIN_TYPE(module) == T_MODULE && FL_TEST(module, RMODULE_IS_REFINEMENT)) {
+        rb_raise(rb_eTypeError, "Refinement#include has been removed");
+    }
+
     rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
-    for (i = 0; i < argc; i++)
+    for (i = 0; i < argc; i++) {
 	Check_Type(argv[i], T_MODULE);
+        if (FL_TEST(argv[i], RMODULE_IS_REFINEMENT)) {
+            rb_raise(rb_eTypeError, "Cannot include refinement");
+        }
+    }
     while (argc--) {
 	rb_funcall(argv[argc], id_append_features, 1, module);
 	rb_funcall(argv[argc], id_included, 1, module);
@@ -1171,12 +1183,20 @@ rb_mod_prepend(int argc, VALUE *argv, VALUE module)
     int i;
     ID id_prepend_features, id_prepended;
 
+    if (BUILTIN_TYPE(module) == T_MODULE && FL_TEST(module, RMODULE_IS_REFINEMENT)) {
+        rb_raise(rb_eTypeError, "Refinement#prepend has been removed");
+    }
+
     CONST_ID(id_prepend_features, "prepend_features");
     CONST_ID(id_prepended, "prepended");
 
     rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
-    for (i = 0; i < argc; i++)
+    for (i = 0; i < argc; i++) {
 	Check_Type(argv[i], T_MODULE);
+        if (FL_TEST(argv[i], RMODULE_IS_REFINEMENT)) {
+            rb_raise(rb_eTypeError, "Cannot prepend refinement");
+        }
+    }
     while (argc--) {
 	rb_funcall(argv[argc], id_prepend_features, 1, module);
 	rb_funcall(argv[argc], id_prepended, 1, module);
@@ -1244,7 +1264,6 @@ rb_using_refinement(rb_cref_t *cref, VALUE klass, VALUE module)
 	    }
 	}
     }
-    FL_SET(module, RMODULE_IS_OVERLAID);
     superclass = refinement_superclass(superclass);
     c = iclass = rb_include_class_new(module, superclass);
     RB_OBJ_WRITE(c, &RCLASS_REFINED_CLASS(c), klass);
@@ -1253,7 +1272,6 @@ rb_using_refinement(rb_cref_t *cref, VALUE klass, VALUE module)
 
     module = RCLASS_SUPER(module);
     while (module && module != klass) {
-	FL_SET(module, RMODULE_IS_OVERLAID);
 	c = RCLASS_SET_SUPER(c, rb_include_class_new(module, RCLASS_SUPER(c)));
         RB_OBJ_WRITE(c, &RCLASS_REFINED_CLASS(c), klass);
         module = RCLASS_SUPER(module);
@@ -1311,7 +1329,12 @@ rb_using_module(const rb_cref_t *cref, VALUE module)
     rb_clear_method_cache_all();
 }
 
-/*! \private */
+/*
+ *  call-seq:
+ *     refined_class    -> class
+ *
+ *  Return the class refined by the receiver.
+ */
 VALUE
 rb_refinement_module_get_refined_class(VALUE module)
 {
@@ -1337,13 +1360,11 @@ add_activated_refinement(VALUE activated_refinements,
 	    c = RCLASS_SUPER(c);
 	}
     }
-    FL_SET(refinement, RMODULE_IS_OVERLAID);
     superclass = refinement_superclass(superclass);
     c = iclass = rb_include_class_new(refinement, superclass);
     RB_OBJ_WRITE(c, &RCLASS_REFINED_CLASS(c), klass);
     refinement = RCLASS_SUPER(refinement);
     while (refinement && refinement != klass) {
-	FL_SET(refinement, RMODULE_IS_OVERLAID);
 	c = RCLASS_SET_SUPER(c, rb_include_class_new(refinement, RCLASS_SUPER(c)));
         RB_OBJ_WRITE(c, &RCLASS_REFINED_CLASS(c), klass);
 	refinement = RCLASS_SUPER(refinement);
@@ -1394,8 +1415,9 @@ rb_mod_refine(VALUE module, VALUE klass)
     refinement = rb_hash_lookup(refinements, klass);
     if (NIL_P(refinement)) {
 	VALUE superclass = refinement_superclass(klass);
-	refinement = rb_module_new();
+	refinement = rb_refinement_new();
 	RCLASS_SET_SUPER(refinement, superclass);
+        RUBY_ASSERT(BUILTIN_TYPE(refinement) == T_MODULE);
 	FL_SET(refinement, RMODULE_IS_REFINEMENT);
 	CONST_ID(id_refined_class, "__refined_class__");
 	rb_ivar_set(refinement, id_refined_class, klass);
@@ -1446,12 +1468,47 @@ mod_using(VALUE self, VALUE module)
     return self;
 }
 
+
+/*
+ *  call-seq:
+ *     refinements -> array
+ *
+ *  Returns an array of modules defined within the receiver.
+ *
+ *     module A
+ *       refine Integer do
+ *       end
+ *
+ *       refine String do
+ *       end
+ *     end
+ *
+ *     p A.refinements
+ *
+ *  <em>produces:</em>
+ *
+ *     [#<refinement:Integer@A>, #<refinement:String@A>]
+ */
+static VALUE
+mod_refinements(VALUE self)
+{
+    ID id_refinements;
+    VALUE refinements;
+
+    CONST_ID(id_refinements, "__refinements__");
+    refinements = rb_attr_get(self, id_refinements);
+    if (NIL_P(refinements)) {
+        return rb_ary_new();
+    }
+    return rb_hash_values(refinements);
+}
+
 static int
 used_modules_i(VALUE _, VALUE mod, VALUE ary)
 {
     ID id_defined_at;
     CONST_ID(id_defined_at, "__defined_at__");
-    while (FL_TEST(rb_class_of(mod), RMODULE_IS_REFINEMENT)) {
+    while (BUILTIN_TYPE(rb_class_of(mod)) == T_MODULE && FL_TEST(rb_class_of(mod), RMODULE_IS_REFINEMENT)) {
 	rb_ary_push(ary, rb_attr_get(rb_class_of(mod), id_defined_at));
 	mod = RCLASS_SUPER(mod);
     }
@@ -1497,6 +1554,109 @@ rb_mod_s_used_modules(VALUE _)
     }
 
     return rb_funcall(ary, rb_intern("uniq"), 0);
+}
+
+static int
+used_refinements_i(VALUE _, VALUE mod, VALUE ary)
+{
+    while (BUILTIN_TYPE(rb_class_of(mod)) == T_MODULE && FL_TEST(rb_class_of(mod), RMODULE_IS_REFINEMENT)) {
+        rb_ary_push(ary, rb_class_of(mod));
+	mod = RCLASS_SUPER(mod);
+    }
+    return ST_CONTINUE;
+}
+
+/*
+ *  call-seq:
+ *     used_refinements -> array
+ *
+ *  Returns an array of all modules used in the current scope. The ordering
+ *  of modules in the resulting array is not defined.
+ *
+ *     module A
+ *       refine Object do
+ *       end
+ *     end
+ *
+ *     module B
+ *       refine Object do
+ *       end
+ *     end
+ *
+ *     using A
+ *     using B
+ *     p Module.used_refinements
+ *
+ *  <em>produces:</em>
+ *
+ *     [#<refinement:Object@B>, #<refinement:Object@A>]
+ */
+static VALUE
+rb_mod_s_used_refinements(VALUE _)
+{
+    const rb_cref_t *cref = rb_vm_cref();
+    VALUE ary = rb_ary_new();
+
+    while (cref) {
+	if (!NIL_P(CREF_REFINEMENTS(cref))) {
+	    rb_hash_foreach(CREF_REFINEMENTS(cref), used_refinements_i, ary);
+	}
+	cref = CREF_NEXT(cref);
+    }
+
+    return ary;
+}
+
+struct refinement_import_methods_arg {
+    rb_cref_t *cref;
+    VALUE refinement;
+    VALUE module;
+};
+
+/* vm.c */
+rb_cref_t *rb_vm_cref_dup_without_refinements(const rb_cref_t *cref);
+
+static enum rb_id_table_iterator_result
+refinement_import_methods_i(ID key, VALUE value, void *data)
+{
+    const rb_method_entry_t *me = (const rb_method_entry_t *)value;
+    struct refinement_import_methods_arg *arg = (struct refinement_import_methods_arg *)data;
+
+    if (me->def->type != VM_METHOD_TYPE_ISEQ) {
+        rb_raise(rb_eArgError, "Can't import method which is not defined with Ruby code: %"PRIsVALUE"#%"PRIsVALUE, rb_class_path(arg->module), rb_id2str(key));
+    }
+    rb_cref_t *new_cref = rb_vm_cref_dup_without_refinements(me->def->body.iseq.cref);
+    CREF_REFINEMENTS_SET(new_cref, CREF_REFINEMENTS(arg->cref));
+    rb_add_method_iseq(arg->refinement, key, me->def->body.iseq.iseqptr, new_cref, METHOD_ENTRY_VISI(me));
+    return ID_TABLE_CONTINUE;
+}
+
+/*
+ * Note: docs for the method are in class.c
+ */
+
+static VALUE
+refinement_import_methods(int argc, VALUE *argv, VALUE refinement)
+{
+    int i;
+    struct refinement_import_methods_arg arg;
+
+    rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
+    for (i = 0; i < argc; i++) {
+        Check_Type(argv[i], T_MODULE);
+        if (RCLASS_SUPER(argv[i])) {
+            rb_warn("%"PRIsVALUE" has ancestors, but Refinement#import_methods doesn't import their methods", rb_class_path(argv[i]));
+        }
+    }
+    arg.cref = rb_vm_cref_replace_with_duplicated_cref();
+    arg.refinement = refinement;
+    for (i = 0; i < argc; i++) {
+        arg.module = argv[i];
+        struct rb_id_table *m_tbl = RCLASS_M_TBL(argv[i]);
+        if (!m_tbl) continue;
+        rb_id_table_foreach(m_tbl, refinement_import_methods_i, &arg);
+    }
+    return refinement;
 }
 
 void
@@ -1587,8 +1747,12 @@ rb_obj_extend(int argc, VALUE *argv, VALUE obj)
     CONST_ID(id_extended, "extended");
 
     rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
-    for (i = 0; i < argc; i++)
+    for (i = 0; i < argc; i++) {
 	Check_Type(argv[i], T_MODULE);
+        if (FL_TEST(argv[i], RMODULE_IS_REFINEMENT)) {
+            rb_raise(rb_eTypeError, "Cannot extend object with refinement");
+        }
+    }
     while (argc--) {
 	rb_funcall(argv[argc], id_extend_object, 1, obj);
 	rb_funcall(argv[argc], id_extended, 1, obj);
@@ -1649,10 +1813,10 @@ errinfo_place(const rb_execution_context_t *ec)
 
     while (RUBY_VM_VALID_CONTROL_FRAME_P(cfp, end_cfp)) {
 	if (VM_FRAME_RUBYFRAME_P(cfp)) {
-	    if (cfp->iseq->body->type == ISEQ_TYPE_RESCUE) {
+            if (ISEQ_BODY(cfp->iseq)->type == ISEQ_TYPE_RESCUE) {
 		return &cfp->ep[VM_ENV_INDEX_LAST_LVAR];
 	    }
-	    else if (cfp->iseq->body->type == ISEQ_TYPE_ENSURE &&
+            else if (ISEQ_BODY(cfp->iseq)->type == ISEQ_TYPE_ENSURE &&
 		     !THROW_DATA_P(cfp->ep[VM_ENV_INDEX_LAST_LVAR]) &&
 		     !FIXNUM_P(cfp->ep[VM_ENV_INDEX_LAST_LVAR])) {
 		return &cfp->ep[VM_ENV_INDEX_LAST_LVAR];
@@ -1879,9 +2043,17 @@ Init_eval(void)
     rb_define_private_method(rb_cModule, "prepend_features", rb_mod_prepend_features, 1);
     rb_define_private_method(rb_cModule, "refine", rb_mod_refine, 1);
     rb_define_private_method(rb_cModule, "using", mod_using, 1);
+    rb_define_method(rb_cModule, "refinements", mod_refinements, 0);
     rb_define_singleton_method(rb_cModule, "used_modules",
 			       rb_mod_s_used_modules, 0);
+    rb_define_singleton_method(rb_cModule, "used_refinements",
+                               rb_mod_s_used_refinements, 0);
     rb_undef_method(rb_cClass, "refine");
+    rb_define_private_method(rb_cRefinement, "import_methods", refinement_import_methods, -1);
+    rb_define_method(rb_cRefinement, "refined_class", rb_refinement_module_get_refined_class, 0);
+    rb_undef_method(rb_cRefinement, "append_features");
+    rb_undef_method(rb_cRefinement, "prepend_features");
+    rb_undef_method(rb_cRefinement, "extend_object");
 
     rb_undef_method(rb_cClass, "module_function");
 

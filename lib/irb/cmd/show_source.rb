@@ -4,8 +4,9 @@ require_relative "nop"
 require_relative "../color"
 require_relative "../ruby-lex"
 
-# :stopdoc:
 module IRB
+  # :stopdoc:
+
   module ExtendCommand
     class ShowSource < Nop
       def execute(str = nil)
@@ -61,15 +62,12 @@ module IRB
         lex = RubyLex.new
         lines = File.read(file).lines[(first_line - 1)..-1]
         tokens = RubyLex.ripper_lex_without_warning(lines.join)
-
-        code = +""
         prev_tokens = []
 
         # chunk with line number
-        tokens.chunk { |tok| tok[0][0] }.each do |lnum, chunk|
-          code << lines[lnum]
+        tokens.chunk { |tok| tok.pos[0] }.each do |lnum, chunk|
+          code = lines[0..lnum].join
           prev_tokens.concat chunk
-
           continue = lex.process_continue(prev_tokens)
           code_block_open = lex.check_code_block(code, prev_tokens)
           if !continue && !code_block_open
@@ -92,5 +90,6 @@ module IRB
       private_constant :Source
     end
   end
+
+  # :startdoc:
 end
-# :startdoc:

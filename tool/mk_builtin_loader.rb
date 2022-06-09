@@ -100,6 +100,7 @@ def collect_builtin base, tree, name, bs, inlines, locals = nil
     when :call, :command_call   # CALL
       _, recv, sep, mid, (_, args) = tree
     end
+
     if mid
       raise "unknown sexp: #{mid.inspect}" unless %i[@ident @const].include?(mid.first)
       _, mid, (lineno,) = mid
@@ -126,7 +127,7 @@ def collect_builtin base, tree, name, bs, inlines, locals = nil
         args.pop unless (args ||= []).last
         argc = args.size
 
-        if /(.+)\!\z/ =~ func_name
+        if /(.+)[\!\?]\z/ =~ func_name
           case $1
           when 'attr'
             text = inline_text(argc, args.first)
@@ -156,6 +157,8 @@ def collect_builtin base, tree, name, bs, inlines, locals = nil
             func_name = nil # required
             inlines[inlines.size] = [lineno, text, nil, nil]
             argc -= 1
+          when 'mandatory_only'
+            func_name = nil
           when 'arg'
             argc == 1 or raise "unexpected argument number #{argc}"
             (arg = args.first)[0] == :symbol_literal or raise "symbol literal expected #{args}"
@@ -318,7 +321,7 @@ def mk_builtin_header file
         f.puts %'        fprintf(f, "    const VALUE *argv = &stack[%d];\\n", stack_size - #{argc});'
         f.puts %'    }'
         f.puts %'    else {'
-        f.puts %'        fprintf(f, "    const unsigned int lnum = GET_ISEQ()->body->local_table_size;\\n");'
+        f.puts %'        fprintf(f, "    const unsigned int lnum = ISEQ_BODY(GET_ISEQ())->local_table_size;\\n");'
         f.puts %'        fprintf(f, "    const VALUE *argv = GET_EP() - lnum - VM_ENV_DATA_SIZE + 1 + %ld;\\n", index);'
         f.puts %'    }'
       end

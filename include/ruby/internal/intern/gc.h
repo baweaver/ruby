@@ -208,7 +208,9 @@ VALUE rb_gc_location(VALUE obj);
  * @post        `obj` could be invalidated.
  * @warning     It  is a  failure  to pass  an object  multiple  times to  this
  *              function.
+ * @deprecated  This is now a no-op function.
  */
+RBIMPL_ATTR_DEPRECATED(("this is now a no-op function"))
 void rb_gc_force_recycle(VALUE obj);
 
 /**
@@ -249,7 +251,7 @@ void rb_gc(void);
  *
  * @internal
  *
- * But isn't it  easier for you to call super,  and let `Object#intialize_copy`
+ * But isn't it  easier for you to call super,  and let `Object#initialize_copy`
  * call this function instead?
  */
 void rb_gc_copy_finalizer(VALUE dst, VALUE src);

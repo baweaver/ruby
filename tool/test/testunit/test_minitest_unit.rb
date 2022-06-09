@@ -171,7 +171,7 @@ class TestMiniTestUnit < MetaMetaMetaTestCase
   def test_passed_eh_teardown_skipped
     test_class = Class.new Test::Unit::TestCase do
       def teardown; assert true; end
-      def test_omg; skip "bork"; end
+      def test_omg; omit "bork"; end
     end
 
     test = test_class.new :test_omg
@@ -238,7 +238,7 @@ class TestMiniTestRunner < MetaMetaMetaTestCase
     tc = Class.new(Test::Unit::TestCase)
 
     assert_equal 2, Test::Unit::TestCase.test_suites.size
-    assert_equal [tc, Test::Unit::TestCase], Test::Unit::TestCase.test_suites
+    assert_equal [tc, Test::Unit::TestCase], Test::Unit::TestCase.test_suites.sort_by {|ts| ts.name.to_s}
   end
 
   def assert_filtering name, expected, a = false
@@ -896,7 +896,7 @@ class TestMiniTestUnitTestCase < Test::Unit::TestCase
         begin
           raise "blah"
         rescue
-          skip "skipped"
+          omit "skipped"
         end
       end
     end
@@ -1070,11 +1070,11 @@ class TestMiniTestUnitTestCase < Test::Unit::TestCase
     end
   end
 
-  def test_capture_io
+  def test_capture_output
     @assertion_count = 0
 
     non_verbose do
-      out, err = capture_io do
+      out, err = capture_output do
         puts 'hi'
         $stderr.puts 'bye!'
       end
@@ -1140,7 +1140,7 @@ class TestMiniTestUnitTestCase < Test::Unit::TestCase
   end
 
   def test_prints
-    printer = Class.new { extend Test::Unit::Assertions }
+    printer = Class.new { extend Test::Unit::CoreAssertions }
     @tc.assert_equal '"test"', printer.mu_pp(ImmutableString.new 'test')
   end
 
@@ -1323,42 +1323,33 @@ class TestMiniTestUnitTestCase < Test::Unit::TestCase
     end
   end
 
-  def test_skip
+  def test_omit
     @assertion_count = 0
 
     util_assert_triggered "haha!", Test::Unit::PendedError do
-      @tc.skip "haha!"
+      @tc.omit "haha!"
     end
   end
 
-  def test_test_methods_random
+  def test_pend
     @assertion_count = 0
 
-    sample_test_case = Class.new Test::Unit::TestCase do
-      def self.test_order; :random; end
-      def test_test1; assert "does not matter" end
-      def test_test2; assert "does not matter" end
-      def test_test3; assert "does not matter" end
-      @test_order = [1, 0, 2]
-      def self.rand(n) @test_order.shift; end
+    util_assert_triggered "haha!", Test::Unit::PendedError do
+      @tc.pend "haha!"
     end
-
-    expected = %w(test_test2 test_test1 test_test3)
-    assert_equal expected, sample_test_case.test_methods
   end
 
-  def test_test_methods_sorted
+  def test_test_methods
     @assertion_count = 0
 
     sample_test_case = Class.new Test::Unit::TestCase do
-      def self.test_order; :sorted end
-      def test_test3; assert "does not matter" end
-      def test_test2; assert "does not matter" end
       def test_test1; assert "does not matter" end
+      def test_test2; assert "does not matter" end
+      def test_test3; assert "does not matter" end
     end
 
-    expected = %w(test_test1 test_test2 test_test3)
-    assert_equal expected, sample_test_case.test_methods
+    expected = %i(test_test1 test_test2 test_test3)
+    assert_equal expected, sample_test_case.test_methods.sort
   end
 
   def assert_triggered expected, klass = Test::Unit::AssertionFailedError
@@ -1484,7 +1475,13 @@ class TestMiniTestUnitRecording < MetaMetaMetaTestCase
   def test_record_skip
     assert_run_record Test::Unit::PendedError do
       def test_method
-        skip "not yet"
+        omit "not yet"
+      end
+    end
+
+    assert_run_record Test::Unit::PendedError do
+      def test_method
+        pend "not yet"
       end
     end
   end

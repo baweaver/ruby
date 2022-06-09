@@ -3,32 +3,31 @@ require 'test/unit'
 require 'fiddle'
 require 'etc'
 
+if RUBY_PLATFORM =~ /s390x/
+  warn "Currently, it is known that the compaction does not work well on s390x; contribution is welcome https://github.com/ruby/ruby/pull/5077"
+  return
+end
+
 class TestGCCompact < Test::Unit::TestCase
-  module SupportsCompact
-    def setup
-      skip "autocompact not supported on this platform" unless supports_auto_compact?
-      super
-    end
-
-    private
-
+  module CompactionSupportInspector
     def supports_auto_compact?
-      return true unless defined?(Etc::SC_PAGE_SIZE)
-
-      begin
-        return GC::INTERNAL_CONSTANTS[:HEAP_PAGE_SIZE] % Etc.sysconf(Etc::SC_PAGE_SIZE) == 0
-      rescue NotImplementedError
-      rescue ArgumentError
-      end
-
-      true
+      GC::OPTS.include?("GC_COMPACTION_SUPPORTED")
     end
   end
 
-  include SupportsCompact
+  module OmitUnlessCompactSupported
+    include CompactionSupportInspector
+
+    def setup
+      omit "autocompact not supported on this platform" unless supports_auto_compact?
+      super
+    end
+  end
+
+  include OmitUnlessCompactSupported
 
   class AutoCompact < Test::Unit::TestCase
-    include SupportsCompact
+    include OmitUnlessCompactSupported
 
     def test_enable_autocompact
       before = GC.auto_compact
@@ -73,7 +72,7 @@ class TestGCCompact < Test::Unit::TestCase
       n.times do
         break if count < GC.stat(:compact_count)
         list2 << Object.new
-      end and skip "implicit compaction didn't happen within #{n} objects"
+      end and omit "implicit compaction didn't happen within #{n} objects"
       compact_stats = GC.latest_compact_info
       refute_predicate compact_stats[:considered], :empty?
       refute_predicate compact_stats[:moved], :empty?
@@ -82,13 +81,39 @@ class TestGCCompact < Test::Unit::TestCase
     end
   end
 
-  def os_page_size
-    return true unless defined?(Etc::SC_PAGE_SIZE)
+  class CompactMethodsNotImplemented < Test::Unit::TestCase
+    include CompactionSupportInspector
+
+    def assert_not_implemented(method, *args)
+      omit "autocompact is supported on this platform" if supports_auto_compact?
+
+      assert_raise(NotImplementedError) { GC.send(method, *args) }
+      refute(GC.respond_to?(method), "GC.#{method} should be defined as rb_f_notimplement")
+    end
+
+    def test_gc_compact_not_implemented
+      assert_not_implemented(:compact)
+    end
+
+    def test_gc_auto_compact_get_not_implemented
+      assert_not_implemented(:auto_compact)
+    end
+
+    def test_gc_auto_compact_set_not_implemented
+      assert_not_implemented(:auto_compact=, true)
+    end
+
+    def test_gc_latest_compact_info_not_implemented
+      assert_not_implemented(:latest_compact_info)
+    end
+
+    def test_gc_verify_compaction_references_not_implemented
+      assert_not_implemented(:verify_compaction_references)
+    end
   end
 
-  def setup
-    skip "autocompact not supported on this platform" unless supports_auto_compact?
-    super
+  def os_page_size
+    return true unless defined?(Etc::SC_PAGE_SIZE)
   end
 
   def test_gc_compact_stats
@@ -165,5 +190,22 @@ class TestGCCompact < Test::Unit::TestCase
     count = GC.stat(:compact_count)
     GC.compact
     assert_equal count + 1, GC.stat(:compact_count)
+  end
+
+  def test_compacting_from_trace_point
+    obj = Object.new
+    def obj.tracee
+      :ret # expected to emit both line and call event from one instruction
+    end
+
+    results = []
+    TracePoint.new(:call, :line) do |tp|
+      results << tp.event
+      GC.verify_compaction_references
+    end.enable(target: obj.method(:tracee)) do
+      obj.tracee
+    end
+
+    assert_equal([:call, :line], results)
   end
 end

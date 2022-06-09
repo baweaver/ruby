@@ -100,6 +100,14 @@ VALUE rb_define_class_id_under(VALUE outer, ID id, VALUE super);
  */
 VALUE rb_module_new(void);
 
+
+/**
+ * Creates a new, anonymous refinement.
+ *
+ * @return An anonymous refinement.
+ */
+VALUE rb_refinement_new(void);
+
 /**
  * This is a very badly designed API that creates an anonymous module.
  *
@@ -150,7 +158,7 @@ VALUE rb_mod_included_modules(VALUE mod);
 VALUE rb_mod_include_p(VALUE child, VALUE parent);
 
 /**
- * Queries the  module's ancestors.  This  routine gathers classes  and modules
+ * Queries the  module's ancestors.  This routine gathers classes  and modules
  * that  the  passed  module  either  inherits,  includes,  or  prepends,  then
  * recursively applies  that routine again  and again to the  collected entries
  * until the list doesn't grow up.
@@ -165,6 +173,32 @@ VALUE rb_mod_include_p(VALUE child, VALUE parent);
  * computes the return value iteratively.
  */
 VALUE rb_mod_ancestors(VALUE mod);
+
+/**
+ * Queries the class's descendants. This  routine gathers classes that are
+ * subclasses of the given class (or subclasses of those subclasses, etc.),
+ * returning an array of classes that have the given class as an ancestor.
+ * The returned array does not include the given class or singleton classes.
+ *
+ * @param[in]  klass A class.
+ * @return     An array of classes where `klass` is an ancestor.
+ *
+ * @internal
+ */
+VALUE rb_class_descendants(VALUE klass);
+
+/**
+ * Queries the class's direct descendants. This  routine gathers classes that are
+ * direct subclasses of the given class,
+ * returning an array of classes that have the given class as a superclass.
+ * The returned array does not include singleton classes.
+ *
+ * @param[in]  klass A class.
+ * @return     An array of classes where `klass` is the `superclass`.
+ *
+ * @internal
+ */
+VALUE rb_class_subclasses(VALUE klass);
 
 /**
  * Generates an array of symbols, which are the list of method names defined in

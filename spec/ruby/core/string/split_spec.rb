@@ -62,6 +62,10 @@ describe "String#split with String" do
     ",".split(",", -1).should == ["", ""]
   end
 
+  it "raises a RangeError when the limit is larger than int" do
+    -> { "a,b".split(" ", 2147483649) }.should raise_error(RangeError)
+  end
+
   it "defaults to $; when string isn't given or nil" do
     suppress_warning do
       old_fs = $;
@@ -85,21 +89,19 @@ describe "String#split with String" do
       end
     end
 
-    ruby_version_is "2.7" do
-      context "when $; is not nil" do
-        before do
-          suppress_warning do
-            @old_value, $; = $;, 'foobar'
-          end
+    context "when $; is not nil" do
+      before do
+        suppress_warning do
+          @old_value, $; = $;, 'foobar'
         end
+      end
 
-        after do
-          $; = @old_value
-        end
+      after do
+        $; = @old_value
+      end
 
-        it "warns" do
-          -> { "".split }.should complain(/warning: \$; is set to non-nil value/)
-        end
+      it "warns" do
+        -> { "".split }.should complain(/warning: \$; is set to non-nil value/)
       end
     end
   end
@@ -203,22 +205,15 @@ describe "String#split with String" do
     end
   end
 
-  ruby_version_is ''...'2.7' do
-    it "taints the resulting strings if self is tainted" do
-      ["", "x.y.z.", "  x  y  "].each do |str|
-        ["", ".", " "].each do |pat|
-          [-1, 0, 1, 2].each do |limit|
-            str.dup.taint.split(pat).each do |x|
-              x.should.tainted?
-            end
+  it "returns an empty array when whitespace is split on whitespace" do
+    " ".split(" ").should == []
+    " \n ".split(" ").should == []
+    "  ".split(" ").should == []
+    " \t ".split(" ").should == []
+  end
 
-            str.split(pat.dup.taint).each do |x|
-              x.should_not.tainted?
-            end
-          end
-        end
-      end
-    end
+  it "doesn't split on non-ascii whitespace" do
+    "a\u{2008}b".split(" ").should == ["a\u{2008}b"]
   end
 end
 
@@ -411,37 +406,6 @@ describe "String#split with Regexp" do
     end
   end
 
-  ruby_version_is ''...'2.7' do
-    it "taints the resulting strings if self is tainted" do
-      ["", "x:y:z:", "  x  y  "].each do |str|
-        [//, /:/, /\s+/].each do |pat|
-          [-1, 0, 1, 2].each do |limit|
-            str.dup.taint.split(pat, limit).each do |x|
-              # See the spec below for why the conditional is here
-              x.tainted?.should be_true unless x.empty?
-            end
-          end
-        end
-      end
-    end
-
-    it "taints an empty string if self is tainted" do
-      ":".taint.split(//, -1).last.tainted?.should be_true
-    end
-
-    it "doesn't taints the resulting strings if the Regexp is tainted" do
-      ["", "x:y:z:", "  x  y  "].each do |str|
-        [//, /:/, /\s+/].each do |pat|
-          [-1, 0, 1, 2].each do |limit|
-            str.split(pat.dup.taint, limit).each do |x|
-              x.tainted?.should be_false
-            end
-          end
-        end
-      end
-    end
-  end
-
   it "retains the encoding of the source string" do
     ary = "а б в".split
     encodings = ary.map { |s| s.encoding }
@@ -573,5 +537,12 @@ describe "String#split with Regexp" do
         last.should == "b"
       end
     end
+  end
+
+  it "raises a TypeError when not called with nil, String, or Regexp" do
+    -> { "hello".split(42) }.should raise_error(TypeError)
+    -> { "hello".split(:ll) }.should raise_error(TypeError)
+    -> { "hello".split(false) }.should raise_error(TypeError)
+    -> { "hello".split(Object.new) }.should raise_error(TypeError)
   end
 end

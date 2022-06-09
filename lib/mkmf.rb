@@ -7,9 +7,7 @@ require 'rbconfig'
 require 'fileutils'
 require 'shellwords'
 
-class String
-  # :stopdoc:
-
+class String # :nodoc:
   # Wraps a string in escaped quotes if it contains whitespace.
   def quote
     /\s/ =~ self ? "\"#{self}\"" : "#{self}"
@@ -32,19 +30,13 @@ class String
   def sans_arguments
     self[/\A[^()]+/]
   end
-
-  # :startdoc:
 end
 
-class Array
-  # :stopdoc:
-
+class Array # :nodoc:
   # Wraps all strings in escaped quotes if they contain whitespace.
   def quote
     map {|s| s.quote}
   end
-
-  # :startdoc:
 end
 
 ##
@@ -75,7 +67,7 @@ module MakeMakefile
   C_EXT = %w[c m]
 
   ##
-  # Extensions for files complied with a C++ compiler
+  # Extensions for files compiled with a C++ compiler
 
   CXX_EXT = %w[cc mm cxx cpp]
   unless File.exist?(File.join(*File.split(__FILE__).tap {|d, b| b.swapcase}))
@@ -285,7 +277,7 @@ MESSAGE
 
   def split_libs(*strs)
     sep = $mswin ? /\s+/ : /\s+(?=-|\z)/
-    strs.map {|s| s.lstrip.split(sep)}.flatten
+    strs.flat_map {|s| s.lstrip.split(sep)}
   end
 
   def merge_libs(*libs)
@@ -386,38 +378,64 @@ MESSAGE
     end
   end
 
-  def xsystem command, opts = nil
+  def expand_command(commands, envs = libpath_env)
     varpat = /\$\((\w+)\)|\$\{(\w+)\}/
-    if varpat =~ command
-      vars = Hash.new {|h, k| h[k] = ENV[k]}
-      command = command.dup
-      nil while command.gsub!(varpat) {vars[$1||$2]}
+    vars = nil
+    expand = proc do |command|
+      case command
+      when Array
+        command.map(&expand)
+      when String
+        if varpat =~ command
+          vars ||= Hash.new {|h, k| h[k] = ENV[k]}
+          command = command.dup
+          nil while command.gsub!(varpat) {vars[$1||$2]}
+        end
+        command
+      else
+        command
+      end
     end
+    if Array === commands
+      env, *commands = commands if Hash === commands.first
+      envs.merge!(env) if env
+    end
+    return envs, expand[commands]
+  end
+
+  def env_quote(envs)
+    envs.map {|e, v| "#{e}=#{v.quote}"}
+  end
+
+  def xsystem command, opts = nil
+    env, command = expand_command(command)
     Logging::open do
-      puts command.quote
+      puts [env_quote(env), command.quote].join(' ')
       if opts and opts[:werror]
         result = nil
         Logging.postpone do |log|
-          output = IO.popen(libpath_env, command, &:read)
+          output = IO.popen(env, command, &:read)
           result = ($?.success? and File.zero?(log.path))
           output
         end
         result
       else
-        system(libpath_env, command)
+        system(env, *command)
       end
     end
   end
 
   def xpopen command, *mode, &block
+    env, commands = expand_command(command)
+    command = [env_quote(env), command].join(' ')
     Logging::open do
       case mode[0]
-      when nil, /^r/
+      when nil, Hash, /^r/
         puts "#{command} |"
       else
         puts "| #{command}"
       end
-      IO.popen(libpath_env, command, *mode, &block)
+      IO.popen(env, commands, *mode, &block)
     end
   end
 
@@ -447,7 +465,7 @@ EOM
     src.sub!(/[^\n]\z/, "\\&\n")
     count = 0
     begin
-      open(conftest_source, "wb") do |cfile|
+      File.open(conftest_source, "wb") do |cfile|
         cfile.print src
       end
     rescue Errno::EACCES
@@ -662,16 +680,6 @@ MSG
     try_compile(MAIN_DOES_NOTHING, flags, {:werror => true}.update(opts))
   end
 
-  def append_cflags(flags, *opts)
-    Array(flags).each do |flag|
-      if checking_for("whether #{flag} is accepted as CFLAGS") {
-           try_cflags(flag, *opts)
-         }
-        $CFLAGS << " " << flag
-      end
-    end
-  end
-
   def with_ldflags(flags)
     ldflags = $LDFLAGS
     $LDFLAGS = flags.dup
@@ -821,19 +829,11 @@ SRC
   # You should use +have_var+ rather than +try_var+.
   def try_var(var, headers = nil, opt = "", &b)
     headers = cpp_include(headers)
-    try_compile(<<"SRC", opt, &b) or
+    try_compile(<<"SRC", opt, &b)
 #{headers}
 /*top*/
 extern int t(void);
 #{MAIN_DOES_NOTHING 't'}
-int t(void) { const volatile void *volatile p; p = &(&#{var})[0]; return !p; }
-SRC
-    try_link(<<"SRC", opt, &b)
-#{headers}
-/*top*/
-extern int t(void);
-#{MAIN_DOES_NOTHING 't'}
-extern int #{var};
 int t(void) { const volatile void *volatile p; p = &(&#{var})[0]; return !p; }
 SRC
   end
@@ -1014,6 +1014,21 @@ SRC
 
   # :startdoc:
 
+  # Check whether each given C compiler flag is acceptable and append it
+  # to <tt>$CFLAGS</tt> if so.
+  #
+  # [+flags+] a C compiler flag as a +String+ or an +Array+ of them
+  #
+  def append_cflags(flags, *opts)
+    Array(flags).each do |flag|
+      if checking_for("whether #{flag} is accepted as CFLAGS") {
+           try_cflags(flag, *opts)
+         }
+        $CFLAGS << " " << flag
+      end
+    end
+  end
+
   # Returns whether or not +macro+ is defined either in the common header
   # files or within any +headers+ you provide.
   #
@@ -1065,7 +1080,7 @@ SRC
   def find_library(lib, func, *paths, &b)
     dir_config(lib)
     lib = with_config(lib+'lib', lib)
-    paths = paths.collect {|path| path.split(File::PATH_SEPARATOR)}.flatten
+    paths = paths.flat_map {|path| path.split(File::PATH_SEPARATOR)}
     checking_for checking_message(func && func.funcall_style, LIBARG%lib) do
       libpath = $LIBPATH
       libs = append_library($libs, lib)
@@ -1341,8 +1356,10 @@ SRC
 
   # :stopdoc:
   STRING_OR_FAILED_FORMAT = "%s"
-  def STRING_OR_FAILED_FORMAT.%(x) # :nodoc:
-    x ? super : "failed"
+  class << STRING_OR_FAILED_FORMAT # :nodoc:
+    def %(x)
+      x ? super : "failed"
+    end
   end
 
   def typedef_expr(type, headers)
@@ -1746,7 +1763,7 @@ SRC
     hdr = hdr.join("")
     log_src(hdr, "#{header} is")
     unless (IO.read(header) == hdr rescue false)
-      open(header, "wb") do |hfile|
+      File.open(header, "wb") do |hfile|
         hfile.write(hdr)
       end
     end
@@ -1818,54 +1835,59 @@ SRC
     $config_dirs[target] = [idir, ldir]
   end
 
-  # Returns compile/link information about an installed library in a
-  # tuple of <code>[cflags, ldflags, libs]</code>, by using the
-  # command found first in the following commands:
+  # Returns compile/link information about an installed library in a tuple of <code>[cflags,
+  # ldflags, libs]</code>, by using the command found first in the following commands:
   #
   # 1. If <code>--with-{pkg}-config={command}</code> is given via
-  #    command line option: <code>{command} {option}</code>
+  #    command line option: <code>{command} {options}</code>
   #
-  # 2. <code>{pkg}-config {option}</code>
+  # 2. <code>{pkg}-config {options}</code>
   #
-  # 3. <code>pkg-config {option} {pkg}</code>
+  # 3. <code>pkg-config {options} {pkg}</code>
   #
-  # Where {option} is, for instance, <code>--cflags</code>.
+  # Where +options+ is the option name without dashes, for instance <code>"cflags"</code> for the
+  # <code>--cflags</code> flag.
   #
-  # The values obtained are appended to +$INCFLAGS+, +$CFLAGS+, +$LDFLAGS+ and
-  # +$libs+.
+  # The values obtained are appended to <code>$INCFLAGS</code>, <code>$CFLAGS</code>,
+  # <code>$LDFLAGS</code> and <code>$libs</code>.
   #
-  # If an <code>option</code> argument is given, the config command is
-  # invoked with the option and a stripped output string is returned
-  # without modifying any of the global values mentioned above.
-  def pkg_config(pkg, option=nil)
+  # If one or more <code>options</code> argument is given, the config command is
+  # invoked with the options and a stripped output string is returned without
+  # modifying any of the global values mentioned above.
+  def pkg_config(pkg, *options)
+    _, ldir = dir_config(pkg)
+    if ldir
+      pkg_config_path = "#{ldir}/pkgconfig"
+      if File.directory?(pkg_config_path)
+        Logging.message("PKG_CONFIG_PATH = %s\n", pkg_config_path)
+        envs = ["PKG_CONFIG_PATH"=>[pkg_config_path, ENV["PKG_CONFIG_PATH"]].compact.join(File::PATH_SEPARATOR)]
+      end
+    end
     if pkgconfig = with_config("#{pkg}-config") and find_executable0(pkgconfig)
       # if and only if package specific config command is given
     elsif ($PKGCONFIG ||=
            (pkgconfig = with_config("pkg-config", ("pkg-config" unless CROSS_COMPILING))) &&
            find_executable0(pkgconfig) && pkgconfig) and
-        xsystem("#{$PKGCONFIG} --exists #{pkg}")
+        xsystem([*envs, $PKGCONFIG, "--exists", pkg])
       # default to pkg-config command
       pkgconfig = $PKGCONFIG
-      get = proc {|opt|
-        opt = xpopen("#{$PKGCONFIG} --#{opt} #{pkg}", err:[:child, :out], &:read)
-        Logging.open {puts opt.each_line.map{|s|"=> #{s.inspect}"}}
-        opt.strip if $?.success?
-      }
+      args = [pkg]
     elsif find_executable0(pkgconfig = "#{pkg}-config")
       # default to package specific config command, as a last resort.
     else
       pkgconfig = nil
     end
     if pkgconfig
-      get ||= proc {|opt|
-        opt = xpopen("#{pkgconfig} --#{opt}", err:[:child, :out], &:read)
-        Logging.open {puts opt.each_line.map{|s|"=> #{s.inspect}"}}
-        opt.strip if $?.success?
+      get = proc {|opts|
+        opts = Array(opts).map { |o| "--#{o}" }
+        opts = xpopen([*envs, pkgconfig, *opts, *args], err:[:child, :out], &:read)
+        Logging.open {puts opts.each_line.map{|s|"=> #{s.inspect}"}}
+        opts.strip if $?.success?
       }
     end
     orig_ldflags = $LDFLAGS
-    if get and option
-      get[option]
+    if get and !options.empty?
+      get[options]
     elsif get and try_ldflags(ldflags = get['libs'])
       if incflags = get['cflags-only-I']
         $INCFLAGS << " " << incflags
@@ -1942,13 +1964,14 @@ SRC
 
   def configuration(srcdir)
     mk = []
+    CONFIG['MKMF_VERBOSE'] ||= "0"
     vpath = $VPATH.dup
     CONFIG["hdrdir"] ||= $hdrdir
     mk << %{
 SHELL = /bin/sh
 
 # V=0 quiet, V=1 verbose.  other values don't work.
-V = 0
+V = #{CONFIG['MKMF_VERBOSE']}
 V0 = $(V:0=)
 Q1 = $(V:1=)
 Q = $(Q1:0=@)
@@ -2087,7 +2110,7 @@ preload = #{defined?($preload) && $preload ? $preload.join(' ') : ''}
   end
   # :startdoc:
 
-  # creates a stub Makefile.
+  # Creates a stub Makefile.
   #
   def dummy_makefile(srcdir)
     configuration(srcdir) << <<RULES << CLEANINGS
@@ -2258,7 +2281,7 @@ RULES
     RbConfig.expand(srcdir = srcprefix.dup)
 
     ext = ".#{$OBJEXT}"
-    orig_srcs = Dir[File.join(srcdir, "*.{#{SRC_EXT.join(%q{,})}}")].sort
+    orig_srcs = Dir[File.join(srcdir, "*.{#{SRC_EXT.join(%q{,})}}")]
     if not $objs
       srcs = $srcs || orig_srcs
       $objs = []
@@ -2268,7 +2291,7 @@ RULES
         h
       }
       unless objs.delete_if {|b, f| f.size == 1}.empty?
-        dups = objs.sort.map {|b, f|
+        dups = objs.map {|b, f|
           "#{b[/.*\./]}{#{f.collect {|n| n[/([^.]+)\z/]}.join(',')}}"
         }
         abort "source files duplication - #{dups.join(", ")}"
@@ -2358,7 +2381,7 @@ CLEANOBJS     = *.#{$OBJEXT} #{config_string('cleanobjs') {|t| t.gsub(/\$\*/, "$
 " #"
 
     conf = yield(conf) if block_given?
-    mfile = open("Makefile", "wb")
+    mfile = File.open("Makefile", "wb")
     mfile.puts(conf)
     mfile.print "
 all:    #{$extout ? "install" : target ? "$(DLLIB)" : "Makefile"}
@@ -2549,7 +2572,7 @@ site-install-rb: install-rb
 
     if $warnflags = CONFIG['warnflags'] and CONFIG['GCC'] == 'yes'
       # turn warnings into errors only for bundled extensions.
-      config['warnflags'] = $warnflags.gsub(/(\A|\s)-Werror[-=]/, '\1-W')
+      config['warnflags'] = $warnflags.gsub(/(?:\A|\s)-W\Kerror[-=](?!implicit-function-declaration)/, '')
       if /icc\z/ =~ config['CC']
         config['warnflags'].gsub!(/(\A|\s)-W(?:division-by-zero|deprecated-declarations)/, '\1')
       end

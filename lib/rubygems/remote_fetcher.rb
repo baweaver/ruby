@@ -72,7 +72,7 @@ class Gem::RemoteFetcher
   #            fetching the gem.
 
   def initialize(proxy=nil, dns=nil, headers={})
-    require 'rubygems/core_ext/tcpsocket_init' if Gem.configuration.ipv4_fallback_enabled
+    require_relative 'core_ext/tcpsocket_init' if Gem.configuration.ipv4_fallback_enabled
     require 'net/http'
     require 'stringio'
     require 'uri'
@@ -172,10 +172,10 @@ class Gem::RemoteFetcher
     when nil then # TODO test for local overriding cache
       source_path = if Gem.win_platform? && source_uri.scheme &&
                        !source_uri.path.include?(':')
-                      "#{source_uri.scheme}:#{source_uri.path}"
-                    else
-                      source_uri.path
-                    end
+        "#{source_uri.scheme}:#{source_uri.path}"
+      else
+        source_uri.path
+      end
 
       source_path = Gem::UriFormatter.new(source_path).unescape
 

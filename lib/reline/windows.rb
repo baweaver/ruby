@@ -95,7 +95,7 @@ class Reline::Windows
   end
 
   VK_RETURN = 0x0D
-  VK_MENU = 0x12
+  VK_MENU = 0x12 # ALT key
   VK_LMENU = 0xA4
   VK_CONTROL = 0x11
   VK_SHIFT = 0x10
@@ -168,7 +168,9 @@ class Reline::Windows
   @@input_buf = []
   @@output_buf = []
 
-  def self.msys_tty?(io=@@hConsoleInputHandle)
+  @@output = STDOUT
+
+  def self.msys_tty?(io = @@hConsoleInputHandle)
     # check if fd is a pipe
     if @@GetFileType.call(io) != FILE_TYPE_PIPE
       return false
@@ -184,7 +186,7 @@ class Reline::Windows
     #     DWORD FileNameLength;
     #     WCHAR FileName[1];
     #   } FILE_NAME_INFO
-    len = p_buffer[0, 4].unpack("L")[0]
+    len = p_buffer[0, 4].unpack1("L")
     name = p_buffer[4, len].encode(Encoding::UTF_8, Encoding::UTF_16LE, invalid: :replace)
 
     # Check if this could be a MSYS2 pty pipe ('\msys-XXXX-ptyN-XX')
@@ -213,7 +215,28 @@ class Reline::Windows
     [ { control_keys: :SHIFT, virtual_key_code: VK_TAB }, [27, 91, 90] ],
   ]
 
+  @@hsg = nil
+
   def self.process_key_event(repeat_count, virtual_key_code, virtual_scan_code, char_code, control_key_state)
+
+    # high-surrogate
+    if 0xD800 <= char_code and char_code <= 0xDBFF
+      @@hsg = char_code
+      return
+    end
+    # low-surrogate
+    if 0xDC00 <= char_code and char_code <= 0xDFFF
+      if @@hsg
+        char_code = 0x10000 + (@@hsg - 0xD800) * 0x400 + char_code - 0xDC00
+        @@hsg = nil
+      else
+        # no high-surrogate. ignored.
+        return
+      end
+    else
+      # ignore high-surrogate without low-surrogate if there
+      @@hsg = nil
+    end
 
     key = KeyEventRecord.new(virtual_key_code, char_code, control_key_state)
 
@@ -226,33 +249,42 @@ class Reline::Windows
     # no char, only control keys
     return if key.char_code == 0 and key.control_keys.any?
 
-    @@output_buf.push("\e".ord) if key.control_keys.include?(:ALT)
+    @@output_buf.push("\e".ord) if key.control_keys.include?(:ALT) and !key.control_keys.include?(:CTRL)
 
     @@output_buf.concat(key.char.bytes)
   end
 
   def self.check_input_event
     num_of_events = 0.chr * 8
-    while @@output_buf.empty? #or true
-      next if @@WaitForSingleObject.(@@hConsoleInputHandle, 100) != 0 # max 0.1 sec
-      next if @@GetNumberOfConsoleInputEvents.(@@hConsoleInputHandle, num_of_events) == 0 or num_of_events.unpack('L').first == 0
-      input_record = 0.chr * 18
+    while @@output_buf.empty?
+      Reline.core.line_editor.resize
+      if @@WaitForSingleObject.(@@hConsoleInputHandle, 100) != 0 # max 0.1 sec
+        # prevent for background consolemode change
+        @@legacy_console = (getconsolemode() & ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0)
+        next
+      end
+      next if @@GetNumberOfConsoleInputEvents.(@@hConsoleInputHandle, num_of_events) == 0 or num_of_events.unpack1('L') == 0
+      input_records = 0.chr * 20 * 80
       read_event = 0.chr * 4
-      if @@ReadConsoleInputW.(@@hConsoleInputHandle, input_record, 1, read_event) != 0
-        event = input_record[0, 2].unpack('s*').first
-        case event
-        when WINDOW_BUFFER_SIZE_EVENT
-          @@winch_handler.()
-        when KEY_EVENT
-          key_down = input_record[4, 4].unpack('l*').first
-          repeat_count = input_record[8, 2].unpack('s*').first
-          virtual_key_code = input_record[10, 2].unpack('s*').first
-          virtual_scan_code = input_record[12, 2].unpack('s*').first
-          char_code = input_record[14, 2].unpack('S*').first
-          control_key_state = input_record[16, 2].unpack('S*').first
-          is_key_down = key_down.zero? ? false : true
-          if is_key_down
-            process_key_event(repeat_count, virtual_key_code, virtual_scan_code, char_code, control_key_state)
+      if @@ReadConsoleInputW.(@@hConsoleInputHandle, input_records, 80, read_event) != 0
+        read_events = read_event.unpack1('L')
+        0.upto(read_events) do |idx|
+          input_record = input_records[idx * 20, 20]
+          event = input_record[0, 2].unpack1('s*')
+          case event
+          when WINDOW_BUFFER_SIZE_EVENT
+            @@winch_handler.()
+          when KEY_EVENT
+            key_down = input_record[4, 4].unpack1('l*')
+            repeat_count = input_record[8, 2].unpack1('s*')
+            virtual_key_code = input_record[10, 2].unpack1('s*')
+            virtual_scan_code = input_record[12, 2].unpack1('s*')
+            char_code = input_record[14, 2].unpack1('S*')
+            control_key_state = input_record[16, 2].unpack1('S*')
+            is_key_down = key_down.zero? ? false : true
+            if is_key_down
+              process_key_event(repeat_count, virtual_key_code, virtual_scan_code, char_code, control_key_state)
+            end
           end
         end
       end
@@ -273,7 +305,7 @@ class Reline::Windows
   end
 
   def self.empty_buffer?
-    if not @@input_buf.empty?
+    if not @@output_buf.empty?
       false
     elsif @@kbhit.call == 0
       true
@@ -282,17 +314,37 @@ class Reline::Windows
     end
   end
 
-  def self.get_screen_size
+  def self.get_console_screen_buffer_info
+    # CONSOLE_SCREEN_BUFFER_INFO
+    # [ 0,2] dwSize.X
+    # [ 2,2] dwSize.Y
+    # [ 4,2] dwCursorPositions.X
+    # [ 6,2] dwCursorPositions.Y
+    # [ 8,2] wAttributes
+    # [10,2] srWindow.Left
+    # [12,2] srWindow.Top
+    # [14,2] srWindow.Right
+    # [16,2] srWindow.Bottom
+    # [18,2] dwMaximumWindowSize.X
+    # [20,2] dwMaximumWindowSize.Y
     csbi = 0.chr * 22
-    @@GetConsoleScreenBufferInfo.call(@@hConsoleHandle, csbi)
+    return if @@GetConsoleScreenBufferInfo.call(@@hConsoleHandle, csbi) == 0
+    csbi
+  end
+
+  def self.get_screen_size
+    unless csbi = get_console_screen_buffer_info
+      return [1, 1]
+    end
     csbi[0, 4].unpack('SS').reverse
   end
 
   def self.cursor_pos
-    csbi = 0.chr * 22
-    @@GetConsoleScreenBufferInfo.call(@@hConsoleHandle, csbi)
-    x = csbi[4, 2].unpack('s*').first
-    y = csbi[6, 2].unpack('s*').first
+    unless csbi = get_console_screen_buffer_info
+      return Reline::CursorPos.new(0, 0)
+    end
+    x = csbi[4, 2].unpack1('s')
+    y = csbi[6, 2].unpack1('s')
     Reline::CursorPos.new(x, y)
   end
 
@@ -312,6 +364,7 @@ class Reline::Windows
 
   def self.move_cursor_down(val)
     if val > 0
+      return unless csbi = get_console_screen_buffer_info
       screen_height = get_screen_size.first
       y = cursor_pos.y + val
       y = screen_height - 1 if y > (screen_height - 1)
@@ -322,36 +375,54 @@ class Reline::Windows
   end
 
   def self.erase_after_cursor
-    csbi = 0.chr * 24
-    @@GetConsoleScreenBufferInfo.call(@@hConsoleHandle, csbi)
-    cursor = csbi[4, 4].unpack('L').first
+    return unless csbi = get_console_screen_buffer_info
+    attributes = csbi[8, 2].unpack1('S')
+    cursor = csbi[4, 4].unpack1('L')
     written = 0.chr * 4
     @@FillConsoleOutputCharacter.call(@@hConsoleHandle, 0x20, get_screen_size.last - cursor_pos.x, cursor, written)
-    @@FillConsoleOutputAttribute.call(@@hConsoleHandle, 0, get_screen_size.last - cursor_pos.x, cursor, written)
+    @@FillConsoleOutputAttribute.call(@@hConsoleHandle, attributes, get_screen_size.last - cursor_pos.x, cursor, written)
   end
 
   def self.scroll_down(val)
-    return if val.zero?
-    screen_height = get_screen_size.first
-    val = screen_height - 1 if val > (screen_height - 1)
-    scroll_rectangle = [0, val, get_screen_size.last, get_screen_size.first].pack('s4')
-    destination_origin = 0 # y * 65536 + x
-    fill = [' '.ord, 0].pack('SS')
-    @@ScrollConsoleScreenBuffer.call(@@hConsoleHandle, scroll_rectangle, nil, destination_origin, fill)
+    return if val < 0
+    return unless csbi = get_console_screen_buffer_info
+    buffer_width, buffer_lines, x, y, attributes, window_left, window_top, window_bottom = csbi.unpack('ssssSssx2s')
+    screen_height = window_bottom - window_top + 1
+    val = screen_height if val > screen_height
+
+    if @@legacy_console || window_left != 0
+      # unless ENABLE_VIRTUAL_TERMINAL,
+      # if srWindow.Left != 0 then it's conhost.exe hosted console
+      # and puts "\n" causes horizontal scroll. its glitch.
+      # FYI irb write from culumn 1, so this gives no gain.
+      scroll_rectangle = [0, val, buffer_width, buffer_lines - val].pack('s4')
+      destination_origin = 0 # y * 65536 + x
+      fill = [' '.ord, attributes].pack('SS')
+      @@ScrollConsoleScreenBuffer.call(@@hConsoleHandle, scroll_rectangle, nil, destination_origin, fill)
+    else
+      origin_x = x + 1
+      origin_y = y - window_top + 1
+      @@output.write [
+        (origin_y != screen_height) ? "\e[#{screen_height};H" : nil,
+        "\n" * val,
+        (origin_y != screen_height or !x.zero?) ? "\e[#{origin_y};#{origin_x}H" : nil
+      ].join
+    end
   end
 
   def self.clear_screen
-    csbi = 0.chr * 22
-    return if @@GetConsoleScreenBufferInfo.call(@@hConsoleHandle, csbi) == 0
-    buffer_width = csbi[0, 2].unpack('S').first
-    attributes = csbi[8, 2].unpack('S').first
-    _window_left, window_top, _window_right, window_bottom = *csbi[10,8].unpack('S*')
-    fill_length = buffer_width * (window_bottom - window_top + 1)
-    screen_topleft = window_top * 65536
-    written = 0.chr * 4
-    @@FillConsoleOutputCharacter.call(@@hConsoleHandle, 0x20, fill_length, screen_topleft, written)
-    @@FillConsoleOutputAttribute.call(@@hConsoleHandle, attributes, fill_length, screen_topleft, written)
-    @@SetConsoleCursorPosition.call(@@hConsoleHandle, screen_topleft)
+    if @@legacy_console
+      return unless csbi = get_console_screen_buffer_info
+      buffer_width, _buffer_lines, attributes, window_top, window_bottom = csbi.unpack('ss@8S@12sx2s')
+      fill_length = buffer_width * (window_bottom - window_top + 1)
+      screen_topleft = window_top * 65536
+      written = 0.chr * 4
+      @@FillConsoleOutputCharacter.call(@@hConsoleHandle, 0x20, fill_length, screen_topleft, written)
+      @@FillConsoleOutputAttribute.call(@@hConsoleHandle, attributes, fill_length, screen_topleft, written)
+      @@SetConsoleCursorPosition.call(@@hConsoleHandle, screen_topleft)
+    else
+      @@output.write "\e[2J" "\e[H"
+    end
   end
 
   def self.set_screen_size(rows, columns)

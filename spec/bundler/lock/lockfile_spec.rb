@@ -1,18 +1,8 @@
 # frozen_string_literal: true
 
 RSpec.describe "the lockfile format" do
-  include Bundler::GemHelpers
-
   before do
-    build_repo2 do
-      # Capistrano did this (at least until version 2.5.10)
-      # RubyGems 2.2 doesn't allow the specifying of a dependency twice
-      # See https://github.com/rubygems/rubygems/commit/03dbac93a3396a80db258d9bc63500333c25bd2f
-      build_gem "double_deps", "1.0", :skip_validation => true do |s|
-        s.add_dependency "net-ssh", ">= 1.0.0"
-        s.add_dependency "net-ssh"
-      end
-    end
+    build_repo2
   end
 
   it "generates a simple lockfile for a single source, gem" do
@@ -22,7 +12,7 @@ RSpec.describe "the lockfile format" do
       gem "rack"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -39,7 +29,7 @@ RSpec.describe "the lockfile format" do
     G
   end
 
-  it "updates the lockfile's bundler version if current ver. is newer" do
+  it "updates the lockfile's bundler version if current ver. is newer, and version was forced through BUNDLER_VERSION" do
     system_gems "bundler-1.8.2"
 
     lockfile <<-L
@@ -64,13 +54,16 @@ RSpec.describe "the lockfile format" do
          1.8.2
     L
 
-    install_gemfile <<-G, :env => { "BUNDLER_VERSION" => Bundler::VERSION }
+    install_gemfile <<-G, :verbose => true, :env => { "BUNDLER_VERSION" => Bundler::VERSION }
       source "#{file_uri_for(gem_repo2)}"
 
       gem "rack"
     G
 
-    lockfile_should_be <<-G
+    expect(out).not_to include("Bundler #{Bundler::VERSION} is running, but your lockfile was generated with 1.8.2.")
+    expect(out).to include("Using bundler #{Bundler::VERSION}")
+
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -87,7 +80,52 @@ RSpec.describe "the lockfile format" do
     G
   end
 
-  it "does not update the lockfile's bundler version if nothing changed during bundle install" do
+  it "does not update the lockfile's bundler version if nothing changed during bundle install, but uses the locked version", :rubygems => ">= 3.3.0.a", :realworld => true do
+    version = "2.3.0"
+
+    lockfile <<-L
+      GEM
+        remote: #{file_uri_for(gem_repo2)}/
+        specs:
+          rack (1.0.0)
+
+      PLATFORMS
+        #{lockfile_platforms}
+
+      DEPENDENCIES
+        rack
+
+      BUNDLED WITH
+         #{version}
+    L
+
+    install_gemfile <<-G, :verbose => true, :artifice => "vcr"
+      source "#{file_uri_for(gem_repo2)}"
+
+      gem "rack"
+    G
+
+    expect(out).to include("Bundler #{Bundler::VERSION} is running, but your lockfile was generated with #{version}.")
+    expect(out).to include("Using bundler #{version}")
+
+    expect(lockfile).to eq <<~G
+      GEM
+        remote: #{file_uri_for(gem_repo2)}/
+        specs:
+          rack (1.0.0)
+
+      PLATFORMS
+        #{lockfile_platforms}
+
+      DEPENDENCIES
+        rack
+
+      BUNDLED WITH
+         #{version}
+    G
+  end
+
+  it "does not update the lockfile's bundler version if nothing changed during bundle install, and uses the latest version", :rubygems => "< 3.3.0.a" do
     version = "#{Bundler::VERSION.split(".").first}.0.0.a"
 
     lockfile <<-L
@@ -106,13 +144,16 @@ RSpec.describe "the lockfile format" do
          #{version}
     L
 
-    install_gemfile <<-G
+    install_gemfile <<-G, :verbose => true
       source "#{file_uri_for(gem_repo2)}"
 
       gem "rack"
     G
 
-    lockfile_should_be <<-G
+    expect(out).not_to include("Bundler #{Bundler::VERSION} is running, but your lockfile was generated with #{version}.")
+    expect(out).to include("Using bundler #{Bundler::VERSION}")
+
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -129,7 +170,7 @@ RSpec.describe "the lockfile format" do
     G
   end
 
-  it "updates the lockfile's bundler version if not present" do
+  it "adds the BUNDLED WITH section if not present" do
     lockfile <<-L
       GEM
         remote: #{file_uri_for(gem_repo2)}/
@@ -149,7 +190,7 @@ RSpec.describe "the lockfile format" do
       gem "rack", "> 0"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -166,57 +207,7 @@ RSpec.describe "the lockfile format" do
     G
   end
 
-  it "warns if the current is older than lockfile's bundler version" do
-    current_version = Bundler::VERSION
-    newer_minor = bump_minor(current_version)
-
-    lockfile <<-L
-      GEM
-        remote: #{file_uri_for(gem_repo2)}/
-        specs:
-          rack (1.0.0)
-
-      PLATFORMS
-        #{lockfile_platforms}
-
-      DEPENDENCIES
-        rack
-
-      BUNDLED WITH
-         #{newer_minor}
-    L
-
-    install_gemfile <<-G
-      source "#{file_uri_for(gem_repo2)}"
-
-      gem "rack"
-    G
-
-    pre_flag = prerelease?(newer_minor) ? " --pre" : ""
-    warning_message = "the running version of Bundler (#{current_version}) is older " \
-                      "than the version that created the lockfile (#{newer_minor}). " \
-                      "We suggest you to upgrade to the version that created the " \
-                      "lockfile by running `gem install bundler:#{newer_minor}#{pre_flag}`."
-    expect(err).to include warning_message
-
-    lockfile_should_be <<-G
-      GEM
-        remote: #{file_uri_for(gem_repo2)}/
-        specs:
-          rack (1.0.0)
-
-      PLATFORMS
-        #{lockfile_platforms}
-
-      DEPENDENCIES
-        rack
-
-      BUNDLED WITH
-         #{newer_minor}
-    G
-  end
-
-  it "warns when updating bundler major version" do
+  it "update the bundler major version just fine" do
     current_version = Bundler::VERSION
     older_major = previous_major(current_version)
 
@@ -244,12 +235,9 @@ RSpec.describe "the lockfile format" do
       gem "rack"
     G
 
-    expect(err).to include(
-      "Warning: the lockfile is being updated to Bundler " \
-      "#{current_version.split(".").first}, after which you will be unable to return to Bundler #{older_major.split(".").first}."
-    )
+    expect(err).to be_empty
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -273,7 +261,7 @@ RSpec.describe "the lockfile format" do
       gem "rack-obama"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -299,7 +287,7 @@ RSpec.describe "the lockfile format" do
       gem "rack-obama", ">= 1.0"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -333,7 +321,7 @@ RSpec.describe "the lockfile format" do
       end
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo1)}/
         specs:
@@ -366,7 +354,7 @@ RSpec.describe "the lockfile format" do
       gem "net-sftp"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -395,7 +383,7 @@ RSpec.describe "the lockfile format" do
       gem "foo", :git => "#{lib_path("foo-1.0")}"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GIT
         remote: #{lib_path("foo-1.0")}
         revision: #{git.ref_for("master")}
@@ -466,7 +454,7 @@ RSpec.describe "the lockfile format" do
       end
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GIT
         remote: #{lib_path("foo-1.0")}
         revision: #{git.ref_for("master")}
@@ -497,7 +485,7 @@ RSpec.describe "the lockfile format" do
       gem "foo", :git => "#{lib_path("foo-1.0")}", :branch => "omg"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GIT
         remote: #{lib_path("foo-1.0")}
         revision: #{git.ref_for("omg")}
@@ -529,7 +517,7 @@ RSpec.describe "the lockfile format" do
       gem "foo", :git => "#{lib_path("foo-1.0")}", :tag => "omg"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GIT
         remote: #{lib_path("foo-1.0")}
         revision: #{git.ref_for("omg")}
@@ -560,7 +548,7 @@ RSpec.describe "the lockfile format" do
       gem "foo", :path => "#{lib_path("foo-1.0")}"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       PATH
         remote: #{lib_path("foo-1.0")}
         specs:
@@ -593,7 +581,7 @@ RSpec.describe "the lockfile format" do
     bundle :cache
     bundle :install, :local => true
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       PATH
         remote: #{lib_path("foo-1.0")}
         specs:
@@ -626,7 +614,7 @@ RSpec.describe "the lockfile format" do
       gem "bar", :git => "#{lib_path("bar-1.0")}"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GIT
         remote: #{lib_path("bar-1.0")}
         revision: #{bar.ref_for("master")}
@@ -663,7 +651,7 @@ RSpec.describe "the lockfile format" do
       gem "rack", :source => "#{file_uri_for(gem_repo2)}/"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -689,7 +677,7 @@ RSpec.describe "the lockfile format" do
       gem "rack-obama"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -722,7 +710,7 @@ RSpec.describe "the lockfile format" do
       gem "rails"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -755,12 +743,22 @@ RSpec.describe "the lockfile format" do
   end
 
   it "orders dependencies by version" do
+    update_repo2 do
+      # Capistrano did this (at least until version 2.5.10)
+      # RubyGems 2.2 doesn't allow the specifying of a dependency twice
+      # See https://github.com/rubygems/rubygems/commit/03dbac93a3396a80db258d9bc63500333c25bd2f
+      build_gem "double_deps", "1.0", :skip_validation => true do |s|
+        s.add_dependency "net-ssh", ">= 1.0.0"
+        s.add_dependency "net-ssh"
+      end
+    end
+
     install_gemfile <<-G
       source "#{file_uri_for(gem_repo2)}/"
       gem 'double_deps'
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -787,7 +785,7 @@ RSpec.describe "the lockfile format" do
       gem "rack-obama", ">= 1.0", :require => "rack/obama"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -813,7 +811,7 @@ RSpec.describe "the lockfile format" do
       gem "rack-obama", ">= 1.0", :group => :test
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -842,7 +840,7 @@ RSpec.describe "the lockfile format" do
       end
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       PATH
         remote: foo
         specs:
@@ -873,7 +871,7 @@ RSpec.describe "the lockfile format" do
       end
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       PATH
         remote: ../foo
         specs:
@@ -899,12 +897,12 @@ RSpec.describe "the lockfile format" do
 
     install_gemfile <<-G
       source "#{file_uri_for(gem_repo1)}"
-      path File.expand_path("../foo", __FILE__) do
+      path File.expand_path("foo", __dir__) do
         gem "foo"
       end
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       PATH
         remote: foo
         specs:
@@ -933,7 +931,7 @@ RSpec.describe "the lockfile format" do
       gemspec :path => "../foo"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       PATH
         remote: ../foo
         specs:
@@ -977,15 +975,14 @@ RSpec.describe "the lockfile format" do
       gem "rack"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
           rack (1.0.0)
 
       PLATFORMS
-        java
-        #{lockfile_platforms}
+        #{lockfile_platforms_for(["java"] + local_platforms)}
 
       DEPENDENCIES
         rack
@@ -1009,7 +1006,7 @@ RSpec.describe "the lockfile format" do
       gem "platform_specific"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -1038,7 +1035,7 @@ RSpec.describe "the lockfile format" do
       gem "activesupport"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -1064,7 +1061,7 @@ RSpec.describe "the lockfile format" do
       gem "rack"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -1088,7 +1085,7 @@ RSpec.describe "the lockfile format" do
       gem "rack", "1.0"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -1112,7 +1109,7 @@ RSpec.describe "the lockfile format" do
       gem "rack", "1.0", :group => :two
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -1157,7 +1154,7 @@ RSpec.describe "the lockfile format" do
       gem "rack", "> 0.9", "< 1.0"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:
@@ -1181,7 +1178,7 @@ RSpec.describe "the lockfile format" do
       gem "rack", "> 0.9", "< 1.0"
     G
 
-    lockfile_should_be <<-G
+    expect(lockfile).to eq <<~G
       GEM
         remote: #{file_uri_for(gem_repo2)}/
         specs:

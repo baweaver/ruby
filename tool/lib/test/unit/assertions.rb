@@ -89,17 +89,6 @@ module Test
       end
 
       ##
-      # This returns a human-readable version of +obj+. By default
-      # #inspect is called. You can override this to use #pretty_print
-      # if you want.
-
-      def mu_pp obj
-        s = obj.inspect
-        s = s.encode Encoding.default_external if defined? Encoding
-        s
-      end
-
-      ##
       # This returns a diff-able human-readable version of +obj+. This
       # differs from the regular mu_pp because it expands escaped
       # newlines and makes hex-values generic (like object_ids). This
@@ -204,6 +193,22 @@ module Test
       end
 
       ##
+      # Fails unless +obj+ is true
+
+      def assert_true obj, msg = nil
+        msg = message(msg) { "Expected #{mu_pp(obj)} to be true" }
+        assert obj == true, msg
+      end
+
+      ##
+      # Fails unless +obj+ is false
+
+      def assert_false obj, msg = nil
+        msg = message(msg) { "Expected #{mu_pp(obj)} to be false" }
+        assert obj == false, msg
+      end
+
+      ##
       # For testing with binary operators.
       #
       #   assert_operator 5, :<=, 4
@@ -225,7 +230,7 @@ module Test
       # See also: #assert_silent
 
       def assert_output stdout = nil, stderr = nil
-        out, err = capture_io do
+        out, err = capture_output do
           yield
         end
 
@@ -323,19 +328,15 @@ module Test
       ##
       # Captures $stdout and $stderr into strings:
       #
-      #   out, err = capture_io do
+      #   out, err = capture_output do
       #     puts "Some info"
       #     warn "You did a bad thing"
       #   end
       #
       #   assert_match %r%info%, out
       #   assert_match %r%bad%, err
-      #
-      # NOTE: For efficiency, this method uses StringIO and does not
-      # capture IO for subprocesses. Use #capture_subprocess_io for
-      # that.
 
-      def capture_io
+      def capture_output
         require 'stringio'
 
         captured_stdout, captured_stderr = StringIO.new, StringIO.new
@@ -354,20 +355,9 @@ module Test
 
         return captured_stdout.string, captured_stderr.string
       end
-      alias capture_output capture_io
 
-      ##
-      # Returns details for exception +e+
-
-      def exception_details e, msg
-        [
-        "#{msg}",
-        "Class: <#{e.class}>",
-        "Message: <#{e.message.inspect}>",
-        "---Backtrace---",
-        "#{Test::filter_backtrace(e.backtrace).join("\n")}",
-        "---------------",
-        ].join "\n"
+      def capture_io
+        raise NoMethodError, "use capture_output"
       end
 
       ##
@@ -532,13 +522,16 @@ module Test
       # Skips the current test. Gets listed at the end of the run but
       # doesn't cause a failure exit code.
 
-      def skip msg = nil, bt = caller
+      def pend msg = nil, bt = caller
         msg ||= "Skipped, no message given"
         @skip = true
         raise Test::Unit::PendedError, msg, bt
       end
+      alias omit pend
 
-      alias omit skip
+      def skip(msg = nil, bt = caller)
+        raise NoMethodError, "use omit or pend", caller
+      end
 
       ##
       # Was this testcase skipped? Meant for #teardown.
@@ -772,9 +765,6 @@ EOT
         end
         assert(failed.empty?, message(m) {failed.pretty_inspect})
       end
-
-      # compatibility with test-unit
-      alias pend skip
 
       def assert_syntax_error(code, error, *args, **opt)
         prepare_syntax_check(code, *args, **opt) do |src, fname, line, mesg|

@@ -27,7 +27,7 @@ describe "Kernel#open" do
     open(@name, "r") { |f| f.gets }.should == @content
   end
 
-  platform_is_not :windows do
+  platform_is_not :windows, :wasi do
     it "opens an io when path starts with a pipe" do
       @io = open("|date")
       begin
@@ -144,6 +144,18 @@ describe "Kernel#open" do
       obj = Object.new
       def obj.to_open; self; end
       p open(obj) == obj
+      RUBY
+      ruby_exe(code, args: "2>&1").should == "true\n"
+    end
+  end
+
+  ruby_version_is "3.0" do
+    it "is not redefined by open-uri" do
+      code = <<~RUBY
+        before = Kernel.instance_method(:open)
+        require 'open-uri'
+        after = Kernel.instance_method(:open)
+        p before == after
       RUBY
       ruby_exe(code, args: "2>&1").should == "true\n"
     end
