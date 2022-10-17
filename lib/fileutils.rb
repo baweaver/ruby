@@ -6,17 +6,100 @@ rescue LoadError
   # for make mjit-headers
 end
 
+# Namespace for file utility methods for copying, moving, removing, etc.
 #
-# = fileutils.rb
+# == What's Here
 #
-# Copyright (c) 2000-2007 Minero Aoki
+# First, what’s elsewhere. \Module \FileUtils:
 #
-# This program is free software.
-# You can distribute/modify this program under the same terms of ruby.
+# - Inherits from {class Object}[rdoc-ref:Object].
+# - Supplements {class File}[rdoc-ref:File]
+#   (but is not included or extended there).
 #
-# == module FileUtils
+# Here, module \FileUtils provides methods that are useful for:
 #
-# Namespace for several file utility methods for copying, moving, removing, etc.
+# - {Creating}[rdoc-ref:FileUtils@Creating].
+# - {Deleting}[rdoc-ref:FileUtils@Deleting].
+# - {Querying}[rdoc-ref:FileUtils@Querying].
+# - {Setting}[rdoc-ref:FileUtils@Setting].
+# - {Comparing}[rdoc-ref:FileUtils@Comparing].
+# - {Copying}[rdoc-ref:FileUtils@Copying].
+# - {Moving}[rdoc-ref:FileUtils@Moving].
+# - {Options}[rdoc-ref:FileUtils@Options].
+#
+# === Creating
+#
+# - ::mkdir: Creates directories.
+# - ::mkdir_p, ::makedirs, ::mkpath: Creates directories,
+#   also creating ancestor directories as needed.
+# - ::link_entry: Creates a hard link.
+# - ::ln, ::link: Creates hard links.
+# - ::ln_s, ::symlink: Creates symbolic links.
+# - ::ln_sf: Creates symbolic links, overwriting if necessary.
+#
+# === Deleting
+#
+# - ::remove_dir: Removes a directory and its descendants.
+# - ::remove_entry: Removes an entry, including its descendants if it is a directory.
+# - ::remove_entry_secure: Like ::remove_entry, but removes securely.
+# - ::remove_file: Removes a file entry.
+# - ::rm, ::remove: Removes entries.
+# - ::rm_f, ::safe_unlink: Like ::rm, but removes forcibly.
+# - ::rm_r: Removes entries and their descendants.
+# - ::rm_rf, ::rmtree: Like ::rm_r, but removes forcibly.
+# - ::rmdir: Removes directories.
+#
+# === Querying
+#
+# - ::pwd, ::getwd: Returns the path to the working directory.
+# - ::uptodate?: Returns whether a given entry is newer than given other entries.
+#
+# === Setting
+#
+# - ::cd, ::chdir: Sets the working directory.
+# - ::chmod: Sets permissions for an entry.
+# - ::chmod_R: Sets permissions for an entry and its descendants.
+# - ::chown: Sets the owner and group for entries.
+# - ::chown_R: Sets the owner and group for entries and their descendants.
+# - ::touch: Sets modification and access times for entries,
+#   creating if necessary.
+#
+# === Comparing
+#
+# - ::compare_file, ::cmp, ::identical?: Returns whether two entries are identical.
+# - ::compare_stream: Returns whether two streams are identical.
+#
+# === Copying
+#
+# - ::copy_entry: Recursively copies an entry.
+# - ::copy_file: Copies an entry.
+# - ::copy_stream: Copies a stream.
+# - ::cp, ::copy: Copies files.
+# - ::cp_lr: Recursively creates hard links.
+# - ::cp_r: Recursively copies files, retaining mode, owner, and group.
+# - ::install: Recursively copies files, optionally setting mode,
+#   owner, and group.
+#
+# === Moving
+#
+# - ::mv, ::move: Moves entries.
+#
+# === Options
+#
+# - ::collect_method: Returns the names of methods that accept a given option.
+# - ::commands: Returns the names of methods that accept options.
+# - ::have_option?: Returns whether a given method accepts a given option.
+# - ::options: Returns all option names.
+# - ::options_of: Returns the names of the options for a given method.
+#
+# == Path Arguments
+#
+# Some methods in \FileUtils accept _path_ arguments,
+# which are interpreted as paths to filesystem entries:
+#
+# - If the argument is a string, that value is the path.
+# - If the argument has method +:to_path+, it is converted via that method.
+# - If the argument has method +:to_str+, it is converted via that method.
 #
 # == About the Examples
 #
@@ -33,105 +116,16 @@ end
 #     system(command)
 #   end
 #
-# To illustrate, here's the tree for the test directory for \FileUtils:
-#   tree('test')
-#   test
-#   |-- fileutils
-#   |   |-- clobber.rb
-#   |   |-- fileasserts.rb
-#   |   |-- test_dryrun.rb
-#   |   |-- test_fileutils.rb
-#   |   |-- test_nowrite.rb
-#   |   |-- test_verbose.rb
-#   |   `-- visibility_tests.rb
-#   `-- lib
-#       |-- core_assertions.rb
-#       |-- envutil.rb
-#       |-- find_executable.rb
-#       `-- helper.rb
+# To illustrate:
 #
-# === Module Functions
-#
-#   require 'fileutils'
-#
-#   FileUtils.cd(dir, **options)
-#   FileUtils.cd(dir, **options) {|dir| block }
-#   FileUtils.pwd()
-#   FileUtils.mkdir(dir, **options)
-#   FileUtils.mkdir(list, **options)
-#   FileUtils.mkdir_p(dir, **options)
-#   FileUtils.mkdir_p(list, **options)
-#   FileUtils.rmdir(dir, **options)
-#   FileUtils.rmdir(list, **options)
-#   FileUtils.ln(target, link, **options)
-#   FileUtils.ln(targets, dir, **options)
-#   FileUtils.ln_s(target, link, **options)
-#   FileUtils.ln_s(targets, dir, **options)
-#   FileUtils.ln_sf(target, link, **options)
-#   FileUtils.cp(src, dest, **options)
-#   FileUtils.cp(list, dir, **options)
-#   FileUtils.cp_r(src, dest, **options)
-#   FileUtils.cp_r(list, dir, **options)
-#   FileUtils.mv(src, dest, **options)
-#   FileUtils.mv(list, dir, **options)
-#   FileUtils.rm(list, **options)
-#   FileUtils.rm_r(list, **options)
-#   FileUtils.rm_rf(list, **options)
-#   FileUtils.install(src, dest, **options)
-#   FileUtils.chmod(mode, list, **options)
-#   FileUtils.chmod_R(mode, list, **options)
-#   FileUtils.chown(user, group, list, **options)
-#   FileUtils.chown_R(user, group, list, **options)
-#   FileUtils.touch(list, **options)
-#
-# Possible <tt>options</tt> are:
-#
-# <tt>:force</tt> :: forced operation (rewrite files if exist, remove
-#                    directories if not empty, etc.);
-# <tt>:verbose</tt> :: print command to be run, in bash syntax, before
-#                      performing it;
-# <tt>:preserve</tt> :: preserve object's group, user and modification
-#                       time on copying;
-# <tt>:noop</tt> :: no changes are made (usable in combination with
-#                   <tt>:verbose</tt> which will print the command to run)
-#
-# Each method documents the options that it honours. See also ::commands,
-# ::options and ::options_of methods to introspect which command have which
-# options.
-#
-# All methods that have the concept of a "source" file or directory can take
-# either one file or a list of files in that argument.  See the method
-# documentation for examples.
-#
-# There are some `low level' methods, which do not accept keyword arguments:
-#
-#   FileUtils.copy_entry(src, dest, preserve = false, dereference_root = false, remove_destination = false)
-#   FileUtils.copy_file(src, dest, preserve = false, dereference = true)
-#   FileUtils.copy_stream(srcstream, deststream)
-#   FileUtils.remove_entry(path, force = false)
-#   FileUtils.remove_entry_secure(path, force = false)
-#   FileUtils.remove_file(path, force = false)
-#   FileUtils.compare_file(path_a, path_b)
-#   FileUtils.compare_stream(stream_a, stream_b)
-#   FileUtils.uptodate?(file, cmp_list)
-#
-# == module FileUtils::Verbose
-#
-# This module has all methods of FileUtils module, but it outputs messages
-# before acting.  This equates to passing the <tt>:verbose</tt> flag to methods
-# in FileUtils.
-#
-# == module FileUtils::NoWrite
-#
-# This module has all methods of FileUtils module, but never changes
-# files/directories.  This equates to passing the <tt>:noop</tt> flag to methods
-# in FileUtils.
-#
-# == module FileUtils::DryRun
-#
-# This module has all methods of FileUtils module, but never changes
-# files/directories.  This equates to passing the <tt>:noop</tt> and
-# <tt>:verbose</tt> flags to methods in FileUtils.
+#   tree('src0')
+#   # => src0
+#   #    |-- sub0
+#   #    |   |-- src0.txt
+#   #    |   `-- src1.txt
+#   #    `-- sub1
+#   #        |-- src2.txt
+#   #        `-- src3.txt
 #
 # == Avoiding the TOCTTOU Vulnerability
 #
@@ -159,7 +153,7 @@ end
 # - FileUtils.rm_rf with keyword argument <tt>secure: true</tt>.
 #
 # Finally, this method for moving entries calls \FileUtils.remove_entry_secure
-# if the source and destination are on different devices
+# if the source and destination are on different file systems
 # (which means that the "move" is really a copy and remove):
 #
 # - FileUtils.mv with keyword argument <tt>secure: true</tt>.
@@ -167,9 +161,9 @@ end
 # \Method \FileUtils.remove_entry_secure removes securely
 # by applying a special pre-process:
 #
-# - If the target path points to a directory, this method uses
-#   {chown(2)}[https://man7.org/linux/man-pages/man2/chown.2.html]
-#   and {chmod(2)}[https://man7.org/linux/man-pages/man2/chmod.2.html]
+# - If the target path points to a directory, this method uses methods
+#   {File#chown}[rdoc-ref:File#chown]
+#   and {File#chmod}[rdoc-ref:File#chmod]
 #   in removing directories.
 # - The owner of the target directory should be either the current process
 #   or the super user (root).
@@ -199,6 +193,8 @@ module FileUtils
   #
   # FileUtils.getwd is an alias for FileUtils.pwd.
   #
+  # Related: FileUtils.cd.
+  #
   def pwd
     Dir.pwd
   end
@@ -207,10 +203,11 @@ module FileUtils
   alias getwd pwd
   module_function :getwd
 
+  # Changes the working directory to the given +dir+, which
+  # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments]:
   #
   # With no block given,
-  # changes the current directory to the directory
-  # at the path given by +dir+; returns zero:
+  # changes the current directory to the directory at +dir+; returns zero:
   #
   #   FileUtils.pwd # => "/rdoc/fileutils"
   #   FileUtils.cd('..')
@@ -218,7 +215,7 @@ module FileUtils
   #   FileUtils.cd('fileutils')
   #
   # With a block given, changes the current directory to the directory
-  # at the path given by +dir+, calls the block with argument +dir+,
+  # at +dir+, calls the block with argument +dir+,
   # and restores the original current directory; returns the block's value:
   #
   #   FileUtils.pwd                                     # => "/rdoc/fileutils"
@@ -239,6 +236,8 @@ module FileUtils
   #
   # FileUtils.chdir is an alias for FileUtils.cd.
   #
+  # Related: FileUtils.pwd.
+  #
   def cd(dir, verbose: nil, &block) # :yield: dir
     fu_output_message "cd #{dir}" if verbose
     result = Dir.chdir(dir, &block)
@@ -253,12 +252,17 @@ module FileUtils
   #
   # Returns +true+ if the file at path +new+
   # is newer than all the files at paths in array +old_list+;
-  # +false+ otherwise:
+  # +false+ otherwise.
+  #
+  # Argument +new+ and the elements of +old_list+
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments]:
   #
   #   FileUtils.uptodate?('Rakefile', ['Gemfile', 'README.md']) # => true
   #   FileUtils.uptodate?('Gemfile', ['Rakefile', 'README.md']) # => false
   #
   # A non-existent file is considered to be infinitely old.
+  #
+  # Related: FileUtils.touch.
   #
   def uptodate?(new, old_list)
     return false unless File.exist?(new)
@@ -279,12 +283,15 @@ module FileUtils
 
   #
   # Creates directories at the paths in the given +list+
-  # (an array of strings or a single string);
+  # (a single path or an array of paths);
   # returns +list+ if it is an array, <tt>[list]</tt> otherwise.
+  #
+  # Argument +list+ or its elements
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # With no keyword arguments, creates a directory at each +path+ in +list+
   # by calling: <tt>Dir.mkdir(path, mode)</tt>;
-  # see {Dir.mkdir}[https://docs.ruby-lang.org/en/master/Dir.html#method-c-mkdir]:
+  # see {Dir.mkdir}[rdoc-ref:Dir.mkdir]:
   #
   #   FileUtils.mkdir(%w[tmp0 tmp1]) # => ["tmp0", "tmp1"]
   #   FileUtils.mkdir('tmp4')        # => ["tmp4"]
@@ -292,7 +299,7 @@ module FileUtils
   # Keyword arguments:
   #
   # - <tt>mode: <i>mode</i></tt> - also calls <tt>File.chmod(mode, path)</tt>;
-  #   see {File.chmod}[https://docs.ruby-lang.org/en/master/File.html#method-c-chmod].
+  #   see {File.chmod}[rdoc-ref:File.chmod].
   # - <tt>noop: true</tt> - does not create directories.
   # - <tt>verbose: true</tt> - prints an equivalent command:
   #
@@ -304,8 +311,10 @@ module FileUtils
   #     mkdir tmp0 tmp1
   #     mkdir -m 700 tmp2 tmp3
   #
-  # Raises an exception if any path in +list+ points to an existing
+  # Raises an exception if any path points to an existing
   # file or directory, or if for any reason a directory cannot be created.
+  #
+  # Related: FileUtils.mkdir_p.
   #
   def mkdir(list, mode: nil, noop: nil, verbose: nil)
     list = fu_list(list)
@@ -320,14 +329,17 @@ module FileUtils
 
   #
   # Creates directories at the paths in the given +list+
-  # (an array of strings or a single string),
+  # (a single path or an array of paths),
   # also creating ancestor directories as needed;
   # returns +list+ if it is an array, <tt>[list]</tt> otherwise.
+  #
+  # Argument +list+ or its elements
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # With no keyword arguments, creates a directory at each +path+ in +list+,
   # along with any needed ancestor directories,
   # by calling: <tt>Dir.mkdir(path, mode)</tt>;
-  # see {Dir.mkdir}[https://docs.ruby-lang.org/en/master/Dir.html#method-c-mkdir]:
+  # see {Dir.mkdir}[rdoc-ref:Dir.mkdir]:
   #
   #   FileUtils.mkdir_p(%w[tmp0/tmp1 tmp2/tmp3]) # => ["tmp0/tmp1", "tmp2/tmp3"]
   #   FileUtils.mkdir_p('tmp4/tmp5')             # => ["tmp4/tmp5"]
@@ -335,7 +347,7 @@ module FileUtils
   # Keyword arguments:
   #
   # - <tt>mode: <i>mode</i></tt> - also calls <tt>File.chmod(mode, path)</tt>;
-  #   see {File.chmod}[https://docs.ruby-lang.org/en/master/File.html#method-c-chmod].
+  #   see {File.chmod}[rdoc-ref:File.chmod].
   # - <tt>noop: true</tt> - does not create directories.
   # - <tt>verbose: true</tt> - prints an equivalent command:
   #
@@ -349,6 +361,10 @@ module FileUtils
   #
   # Raises an exception if for any reason a directory cannot be created.
   #
+  # FileUtils.mkpath and FileUtils.makedirs are aliases for FileUtils.mkdir_p.
+  #
+  # Related: FileUtils.mkdir.
+  #
   def mkdir_p(list, mode: nil, noop: nil, verbose: nil)
     list = fu_list(list)
     fu_output_message "mkdir -p #{mode ? ('-m %03o ' % mode) : ''}#{list.join ' '}" if verbose
@@ -358,7 +374,7 @@ module FileUtils
       path = remove_trailing_slash(item)
 
       stack = []
-      until File.directory?(path)
+      until File.directory?(path) || File.dirname(path) == path
         stack.push path
         path = File.dirname(path)
       end
@@ -393,12 +409,15 @@ module FileUtils
 
   #
   # Removes directories at the paths in the given +list+
-  # (an array of strings or a single string);
+  # (a single path or an array of paths);
   # returns +list+, if it is an array, <tt>[list]</tt> otherwise.
+  #
+  # Argument +list+ or its elements
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # With no keyword arguments, removes the directory at each +path+ in +list+,
   # by calling: <tt>Dir.rmdir(path)</tt>;
-  # see {Dir.rmdir}[https://docs.ruby-lang.org/en/master/Dir.html#method-c-rmdir]:
+  # see {Dir.rmdir}[rdoc-ref:Dir.rmdir]:
   #
   #   FileUtils.rmdir(%w[tmp0/tmp1 tmp2/tmp3]) # => ["tmp0/tmp1", "tmp2/tmp3"]
   #   FileUtils.rmdir('tmp4/tmp5')             # => ["tmp4/tmp5"]
@@ -421,6 +440,8 @@ module FileUtils
   # Raises an exception if a directory does not exist
   # or if for any reason a directory cannot be removed.
   #
+  # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
+  #
   def rmdir(list, parents: nil, noop: nil, verbose: nil)
     list = fu_list(list)
     fu_output_message "rmdir #{parents ? '-p ' : ''}#{list.join ' '}" if verbose
@@ -441,6 +462,10 @@ module FileUtils
   module_function :rmdir
 
   # Creates {hard links}[https://en.wikipedia.org/wiki/Hard_link].
+  #
+  # Arguments +src+ (a single path or an array of paths)
+  # and +dest+ (a single path)
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # When +src+ is the path to an existing file
   # and +dest+ is the path to a non-existent file,
@@ -491,6 +516,8 @@ module FileUtils
   #
   # FileUtils#link is an alias for FileUtils#ln.
   #
+  # Related: FileUtils.link_entry (has different options).
+  #
   def ln(src, dest, force: nil, noop: nil, verbose: nil)
     fu_output_message "ln#{force ? ' -f' : ''} #{[src,dest].flatten.join ' '}" if verbose
     return if noop
@@ -506,55 +533,78 @@ module FileUtils
 
   # Creates {hard links}[https://en.wikipedia.org/wiki/Hard_link].
   #
+  # Arguments +src+ (a single path or an array of paths)
+  # and +dest+ (a single path)
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
   # If +src+ is the path to a directory and +dest+ does not exist,
   # creates links +dest+ and descendents pointing to +src+ and its descendents:
   #
-  #   Dir.glob('**/*.txt')
-  #   # => ["tmp0/tmp2/t0.txt",
-  #         "tmp0/tmp2/t1.txt",
-  #         "tmp0/tmp3/t2.txt",
-  #         "tmp0/tmp3/t3.txt"]
-  #   FileUtils.cp_lr('tmp0', 'tmp1')
-  #   Dir.glob('**/*.txt')
-  #   # => ["tmp0/tmp2/t0.txt",
-  #         "tmp0/tmp2/t1.txt",
-  #         "tmp0/tmp3/t2.txt",
-  #         "tmp0/tmp3/t3.txt",
-  #         "tmp1/tmp2/t0.txt",
-  #         "tmp1/tmp2/t1.txt",
-  #         "tmp1/tmp3/t2.txt",
-  #         "tmp1/tmp3/t3.txt"]
-  #
-  # If +src+ is an array of paths to files and +dest+ is the path to a directory,
-  # for each path +filepath+ in +src+, creates a link at <tt>dest/filepath</tt>
-  # pointing to that path:
-  #
-  #   FileUtils.rm_r('tmp1')
-  #   Dir.mkdir('tmp1')
-  #   FileUtils.cp_lr(['tmp0/tmp3/t2.txt', 'tmp0/tmp3/t3.txt'], 'tmp1')
-  #   Dir.glob('**/*.txt')
-  #   # => ["tmp0/tmp2/t0.txt",
-  #        "tmp0/tmp2/t1.txt",
-  #        "tmp0/tmp3/t2.txt",
-  #        "tmp0/tmp3/t3.txt",
-  #        "tmp1/t2.txt",
-  #        "tmp1/t3.txt"]
+  #   tree('src0')
+  #   # => src0
+  #   #    |-- sub0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- sub1
+  #   #        |-- src2.txt
+  #   #        `-- src3.txt
+  #   File.exist?('dest0') # => false
+  #   FileUtils.cp_lr('src0', 'dest0')
+  #   tree('dest0')
+  #   # => dest0
+  #   #    |-- sub0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- sub1
+  #   #        |-- src2.txt
+  #   #        `-- src3.txt
   #
   # If +src+ and +dest+ are both paths to directories,
   # creates links <tt>dest/src</tt> and descendents
   # pointing to +src+ and its descendents:
   #
-  #   FileUtils.rm_r('tmp1')
-  #   Dir.mkdir('tmp1')
-  #   FileUtils.cp_lr('tmp0', 'tmp1')
-  #   # => ["tmp0/tmp2/t0.txt",
-  #        "tmp0/tmp2/t1.txt",
-  #        "tmp0/tmp3/t2.txt",
-  #        "tmp0/tmp3/t3.txt",
-  #        "tmp1/tmp0/tmp2/t0.txt",
-  #        "tmp1/tmp0/tmp2/t1.txt",
-  #        "tmp1/tmp0/tmp3/t2.txt",
-  #        "tmp1/tmp0/tmp3/t3.txt"]
+  #   tree('src1')
+  #   # => src1
+  #   #    |-- sub0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- sub1
+  #   #        |-- src2.txt
+  #   #        `-- src3.txt
+  #   FileUtils.mkdir('dest1')
+  #   FileUtils.cp_lr('src1', 'dest1')
+  #   tree('dest1')
+  #   # => dest1
+  #   #    `-- src1
+  #   #        |-- sub0
+  #   #        |   |-- src0.txt
+  #   #        |   `-- src1.txt
+  #   #        `-- sub1
+  #   #            |-- src2.txt
+  #   #            `-- src3.txt
+  #
+  # If +src+ is an array of paths to entries and +dest+ is the path to a directory,
+  # for each path +filepath+ in +src+, creates a link at <tt>dest/filepath</tt>
+  # pointing to that path:
+  #
+  #   tree('src2')
+  #   # => src2
+  #   #    |-- sub0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- sub1
+  #   #        |-- src2.txt
+  #   #        `-- src3.txt
+  #   FileUtils.mkdir('dest2')
+  #   FileUtils.cp_lr(['src2/sub0', 'src2/sub1'], 'dest2')
+  #   tree('dest2')
+  #   # => dest2
+  #   #    |-- sub0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- sub1
+  #   #        |-- src2.txt
+  #   #        `-- src3.txt
   #
   # Keyword arguments:
   #
@@ -564,16 +614,20 @@ module FileUtils
   # - <tt>remove_destination: true</tt> - removes +dest+ before creating links.
   # - <tt>verbose: true</tt> - prints an equivalent command:
   #
-  #     FileUtils.cp_lr('tmp0', 'tmp1', verbose: true, noop: true)
-  #     FileUtils.cp_lr(['tmp0/tmp3/t2.txt', 'tmp0/tmp3/t3.txt'], 'tmp1', verbose: true, noop: true)
+  #     FileUtils.cp_lr('src0', 'dest0', noop: true, verbose: true)
+  #     FileUtils.cp_lr('src1', 'dest1', noop: true, verbose: true)
+  #     FileUtils.cp_lr(['src2/sub0', 'src2/sub1'], 'dest2', noop: true, verbose: true)
   #
   #   Output:
   #
-  #     cp -lr tmp0 tmp1
-  #     cp -lr tmp0/tmp3/t2.txt tmp0/tmp3/t3.txt tmp1
+  #     cp -lr src0 dest0
+  #     cp -lr src1 dest1
+  #     cp -lr src2/sub0 src2/sub1 dest2
   #
   # Raises an exception if +dest+ is the path to an existing file or directory
   # and keyword argument <tt>remove_destination: true</tt> is not given.
+  #
+  # Related: {methods for copying}[rdoc-ref:FileUtils@Copying].
   #
   def cp_lr(src, dest, noop: nil, verbose: nil,
             dereference_root: true, remove_destination: false)
@@ -587,7 +641,11 @@ module FileUtils
 
   # Creates {symbolic links}[https://en.wikipedia.org/wiki/Symbolic_link].
   #
-  # When +src+ is the path to an existing file:
+  # Arguments +src+ (a single path or an array of paths)
+  # and +dest+ (a single path)
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
+  # If +src+ is the path to an existing file:
   #
   # - When +dest+ is the path to a non-existent file,
   #   creates a symbolic link at +dest+ pointing to +src+:
@@ -609,7 +667,7 @@ module FileUtils
   #
   #     FileUtils.ln_s('src1.txt', 'dest1.txt') # Raises Errno::EEXIST.
   #
-  # When +dest+ is the path to a directory,
+  # If +dest+ is the path to a directory,
   # creates a symbolic link at <tt>dest/src</tt> pointing to +src+:
   #
   #   FileUtils.touch('src2.txt')
@@ -617,7 +675,7 @@ module FileUtils
   #   FileUtils.ln_s('src2.txt', 'destdir2')
   #   File.symlink?('destdir2/src2.txt') # => true
   #
-  # When +src+ is an array of paths to existing files and +dest+ is a directory,
+  # If +src+ is an array of paths to existing files and +dest+ is a directory,
   # for each child +child+ in +src+ creates a symbolic link <tt>dest/child</tt>
   # pointing to +child+:
   #
@@ -649,6 +707,8 @@ module FileUtils
   #
   # FileUtils.symlink is an alias for FileUtils.ln_s.
   #
+  # Related: FileUtils.ln_sf.
+  #
   def ln_s(src, dest, force: nil, noop: nil, verbose: nil)
     fu_output_message "ln -s#{force ? 'f' : ''} #{[src,dest].flatten.join ' '}" if verbose
     return if noop
@@ -671,13 +731,16 @@ module FileUtils
 
   # Creates {hard links}[https://en.wikipedia.org/wiki/Hard_link]; returns +nil+.
   #
+  # Arguments +src+ and +dest+
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
   # If +src+ is the path to a file and +dest+ does not exist,
   # creates a hard link at +dest+ pointing to +src+:
   #
   #   FileUtils.touch('src0.txt')
-  #   File.exist?('dest0.txt')   # => false
+  #   File.exist?('dest0.txt') # => false
   #   FileUtils.link_entry('src0.txt', 'dest0.txt')
-  #   File.exist?('dest0.txt') # => true
+  #   File.file?('dest0.txt')  # => true
   #
   # If +src+ is the path to a directory and +dest+ does not exist,
   # recursively creates hard links at +dest+ pointing to paths in +src+:
@@ -690,12 +753,12 @@ module FileUtils
   #     'src1/dir1/t3.txt',
   #     ]
   #   FileUtils.touch(src_file_paths)
-  #   File.exist?('dest1')             # => true
+  #   File.directory?('dest1')        # => true
   #   FileUtils.link_entry('src1', 'dest1')
-  #   File.exist?('dest1/dir0/t0.txt') # => true
-  #   File.exist?('dest1/dir0/t1.txt') # => true
-  #   File.exist?('dest1/dir1/t2.txt') # => true
-  #   File.exist?('dest1/dir1/t3.txt') # => true
+  #   File.file?('dest1/dir0/t0.txt') # => true
+  #   File.file?('dest1/dir0/t1.txt') # => true
+  #   File.file?('dest1/dir1/t2.txt') # => true
+  #   File.file?('dest1/dir1/t3.txt') # => true
   #
   # Keyword arguments:
   #
@@ -704,6 +767,8 @@ module FileUtils
   #
   # Raises an exception if +dest+ is the path to an existing file or directory
   # and keyword argument <tt>remove_destination: true</tt> is not given.
+  #
+  # Related: FileUtils.ln (has different options).
   #
   def link_entry(src, dest, dereference_root = false, remove_destination = false)
     Entry_.new(src, nil, dereference_root).traverse do |ent|
@@ -714,7 +779,11 @@ module FileUtils
   end
   module_function :link_entry
 
-  # Copies files from +src+ to +dest+.
+  # Copies files.
+  #
+  # Arguments +src+ (a single path or an array of paths)
+  # and +dest+ (a single path)
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # If +src+ is the path to a file and +dest+ is not the path to a directory,
   # copies +src+ to +dest+:
@@ -722,7 +791,7 @@ module FileUtils
   #   FileUtils.touch('src0.txt')
   #   File.exist?('dest0.txt') # => false
   #   FileUtils.cp('src0.txt', 'dest0.txt')
-  #   File.exist?('dest0.txt') # => true
+  #   File.file?('dest0.txt')  # => true
   #
   # If +src+ is the path to a file and +dest+ is the path to a directory,
   # copies +src+ to <tt>dest/src</tt>:
@@ -730,7 +799,7 @@ module FileUtils
   #   FileUtils.touch('src1.txt')
   #   FileUtils.mkdir('dest1')
   #   FileUtils.cp('src1.txt', 'dest1')
-  #   File.exist?('dest1/src1.txt') # => true
+  #   File.file?('dest1/src1.txt') # => true
   #
   # If +src+ is an array of paths to files and +dest+ is the path to a directory,
   # copies from each +src+ to +dest+:
@@ -739,8 +808,8 @@ module FileUtils
   #   FileUtils.touch(src_file_paths)
   #   FileUtils.mkdir('dest2')
   #   FileUtils.cp(src_file_paths, 'dest2')
-  #   File.exist?('dest2/src2.txt') # => true
-  #   File.exist?('dest2/src2.dat') # => true
+  #   File.file?('dest2/src2.txt') # => true
+  #   File.file?('dest2/src2.dat') # => true
   #
   # Keyword arguments:
   #
@@ -760,9 +829,9 @@ module FileUtils
   #
   # Raises an exception if +src+ is a directory.
   #
-  # Related: FileUtils.cp_r (recursive).
-  #
   # FileUtils.copy is an alias for FileUtils.cp.
+  #
+  # Related: {methods for copying}[rdoc-ref:FileUtils@Copying].
   #
   def cp(src, dest, preserve: nil, noop: nil, verbose: nil)
     fu_output_message "cp#{preserve ? ' -p' : ''} #{[src,dest].flatten.join ' '}" if verbose
@@ -776,8 +845,14 @@ module FileUtils
   alias copy cp
   module_function :copy
 
-  # Recursively copies files from +src+ to +dest+.
+  # Recursively copies files.
   #
+  # Arguments +src+ (a single path or an array of paths)
+  # and +dest+ (a single path)
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
+  # The mode, owner, and group are retained in the copy;
+  # to change those, use FileUtils.install instead.
   #
   # If +src+ is the path to a file and +dest+ is not the path to a directory,
   # copies +src+ to +dest+:
@@ -785,7 +860,7 @@ module FileUtils
   #   FileUtils.touch('src0.txt')
   #   File.exist?('dest0.txt') # => false
   #   FileUtils.cp_r('src0.txt', 'dest0.txt')
-  #   File.exist?('dest0.txt') # => true
+  #   File.file?('dest0.txt')  # => true
   #
   # If +src+ is the path to a file and +dest+ is the path to a directory,
   # copies +src+ to <tt>dest/src</tt>:
@@ -793,36 +868,56 @@ module FileUtils
   #   FileUtils.touch('src1.txt')
   #   FileUtils.mkdir('dest1')
   #   FileUtils.cp_r('src1.txt', 'dest1')
-  #   File.exist?('dest1/src1.txt') # => true
+  #   File.file?('dest1/src1.txt') # => true
   #
   # If +src+ is the path to a directory and +dest+ does not exist,
   # recursively copies +src+ to +dest+:
   #
-  #   FileUtils.mkdir_p(['src2/dir0', 'src2/dir1'])
-  #   FileUtils.touch('src2/dir0/src0.txt')
-  #   FileUtils.touch('src2/dir0/src1.txt')
-  #   FileUtils.touch('src2/dir1/src2.txt')
-  #   FileUtils.touch('src2/dir1/src3.txt')
+  #   tree('src2')
+  #   # => src2
+  #   #    |-- dir0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- dir1
+  #   #    |-- src2.txt
+  #   #    `-- src3.txt
+  #   FileUtils.exist?('dest2') # => false
   #   FileUtils.cp_r('src2', 'dest2')
-  #   File.exist?('dest2/dir0/src0.txt') # => true
-  #   File.exist?('dest2/dir0/src1.txt') # => true
-  #   File.exist?('dest2/dir1/src2.txt') # => true
-  #   File.exist?('dest2/dir1/src3.txt') # => true
+  #   tree('dest2')
+  #   # => dest2
+  #   #    |-- dir0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- dir1
+  #   #    |-- src2.txt
+  #   #    `-- src3.txt
   #
   # If +src+ and +dest+ are paths to directories,
   # recursively copies +src+ to <tt>dest/src</tt>:
   #
-  #   FileUtils.mkdir_p(['src3/dir0', 'src3/dir1'])
-  #   FileUtils.touch('src3/dir0/src0.txt')
-  #   FileUtils.touch('src3/dir0/src1.txt')
-  #   FileUtils.touch('src3/dir1/src2.txt')
-  #   FileUtils.touch('src3/dir1/src3.txt')
+  #   tree('src3')
+  #   # => src3
+  #   #    |-- dir0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- dir1
+  #   #    |-- src2.txt
+  #   #    `-- src3.txt
   #   FileUtils.mkdir('dest3')
   #   FileUtils.cp_r('src3', 'dest3')
-  #   File.exist?('dest3/src3/dir0/src0.txt') # => true
-  #   File.exist?('dest3/src3/dir0/src1.txt') # => true
-  #   File.exist?('dest3/src3/dir1/src2.txt') # => true
-  #   File.exist?('dest3/src3/dir1/src3.txt') # => true
+  #   tree('dest3')
+  #   # => dest3
+  #   #    `-- src3
+  #   #      |-- dir0
+  #   #      |   |-- src0.txt
+  #   #      |   `-- src1.txt
+  #   #      `-- dir1
+  #   #          |-- src2.txt
+  #   #          `-- src3.txt
+  #
+  # If +src+ is an array of paths and +dest+ is a directory,
+  # recursively copies from each path in +src+ to +dest+;
+  # the paths in +src+ may point to files and/or directories.
   #
   # Keyword arguments:
   #
@@ -848,7 +943,7 @@ module FileUtils
   # Raises an exception of +src+ is the path to a directory
   # and +dest+ is the path to a file.
   #
-  # Related: FileUtils.cp (not recursive).
+  # Related: {methods for copying}[rdoc-ref:FileUtils@Copying].
   #
   def cp_r(src, dest, preserve: nil, noop: nil, verbose: nil,
            dereference_root: true, remove_destination: nil)
@@ -862,6 +957,9 @@ module FileUtils
 
   # Recursively copies files from +src+ to +dest+.
   #
+  # Arguments +src+ and +dest+
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
   # If +src+ is the path to a file, copies +src+ to +dest+:
   #
   #   FileUtils.touch('src0.txt')
@@ -872,22 +970,22 @@ module FileUtils
   # If +src+ is a directory, recursively copies +src+ to +dest+:
   #
   #   tree('src1')
-  #   src1
-  #   |-- dir0
-  #   |   |-- src0.txt
-  #   |   `-- src1.txt
-  #   `-- dir1
-  #       |-- src2.txt
-  #       `-- src3.txt
+  #   # => src1
+  #   #    |-- dir0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- dir1
+  #   #        |-- src2.txt
+  #   #        `-- src3.txt
   #   FileUtils.copy_entry('src1', 'dest1')
   #   tree('dest1')
-  #   dest1
-  #   |-- dir0
-  #   |   |-- src0.txt
-  #   |   `-- src1.txt
-  #   `-- dir1
-  #       |-- src2.txt
-  #       `-- src3.txt
+  #   # => dest1
+  #   #    |-- dir0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- dir1
+  #   #        |-- src2.txt
+  #   #        `-- src3.txt
   #
   # The recursive copying preserves file types for regular files,
   # directories, and symbolic links;
@@ -899,6 +997,8 @@ module FileUtils
   #   follows the link.
   # - <tt>preserve: true</tt> - preserves file times.
   # - <tt>remove_destination: true</tt> - removes +dest+ before copying files.
+  #
+  # Related: {methods for copying}[rdoc-ref:FileUtils@Copying].
   #
   def copy_entry(src, dest, preserve = false, dereference_root = false, remove_destination = false)
     if dereference_root
@@ -916,7 +1016,12 @@ module FileUtils
   end
   module_function :copy_entry
 
-  # Copies file from +src+ to +dest+, which should not be directories:
+  # Copies file from +src+ to +dest+, which should not be directories.
+  #
+  # Arguments +src+ and +dest+
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
+  # Examples:
   #
   #   FileUtils.touch('src0.txt')
   #   FileUtils.copy_file('src0.txt', 'dest0.txt')
@@ -929,6 +1034,8 @@ module FileUtils
   # - <tt>preserve: true</tt> - preserves file times.
   # - <tt>remove_destination: true</tt> - removes +dest+ before copying files.
   #
+  # Related: {methods for copying}[rdoc-ref:FileUtils@Copying].
+  #
   def copy_file(src, dest, preserve = false, dereference = true)
     ent = Entry_.new(src, nil, dereference)
     ent.copy_file dest
@@ -937,15 +1044,22 @@ module FileUtils
   module_function :copy_file
 
   # Copies \IO stream +src+ to \IO stream +dest+ via
-  # {IO.copy_stream}[https://docs.ruby-lang.org/en/master/IO.html#method-c-copy_stream].
+  # {IO.copy_stream}[rdoc-ref:IO.copy_stream].
+  #
+  # Related: {methods for copying}[rdoc-ref:FileUtils@Copying].
   #
   def copy_stream(src, dest)
     IO.copy_stream(src, dest)
   end
   module_function :copy_stream
 
-  # Moves files from +src+ to +dest+.
-  # If +src+ and +dest+ are on different devices,
+  # Moves entries.
+  #
+  # Arguments +src+ (a single path or an array of paths)
+  # and +dest+ (a single path)
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
+  # If +src+ and +dest+ are on different file systems,
   # first copies, then removes +src+.
   #
   # May cause a local vulnerability if not called with keyword argument
@@ -956,16 +1070,16 @@ module FileUtils
   # moves +src+ to +dest+:
   #
   #   tree('src0')
-  #   src0
-  #   |-- src0.txt
-  #   `-- src1.txt
+  #   # => src0
+  #   #    |-- src0.txt
+  #   #    `-- src1.txt
   #   File.exist?('dest0') # => false
   #   FileUtils.mv('src0', 'dest0')
   #   File.exist?('src0')  # => false
   #   tree('dest0')
-  #   dest0
-  #   |-- src0.txt
-  #   `-- src1.txt
+  #   # => dest0
+  #   #    |-- src0.txt
+  #   #    `-- src1.txt
   #
   # If +src+ is an array of paths to files and directories
   # and +dest+ is the path to a directory,
@@ -973,22 +1087,22 @@ module FileUtils
   #
   #   File.file?('src1.txt') # => true
   #   tree('src1')
-  #   src1
-  #   |-- src.dat
-  #   `-- src.txt
-  #   Dir.empty?('dest1') # => true
+  #   # => src1
+  #   #    |-- src.dat
+  #   #    `-- src.txt
+  #   Dir.empty?('dest1')    # => true
   #   FileUtils.mv(['src1.txt', 'src1'], 'dest1')
   #   tree('dest1')
-  #   dest1
-  #   |-- src1
-  #   |   |-- src.dat
-  #   |   `-- src.txt
-  #   `-- src1.txt
+  #   # => dest1
+  #   #    |-- src1
+  #   #    |   |-- src.dat
+  #   #    |   `-- src.txt
+  #   #    `-- src1.txt
   #
   # Keyword arguments:
   #
   # - <tt>force: true</tt> - if the move includes removing +src+
-  #   (that is, if +src+ and +dest+ are on different devices),
+  #   (that is, if +src+ and +dest+ are on different file systems),
   #   ignores raised exceptions of StandardError and its descendants.
   # - <tt>noop: true</tt> - does not move files.
   # - <tt>secure: true</tt> - removes +src+ securely;
@@ -1038,8 +1152,11 @@ module FileUtils
   module_function :move
 
   # Removes entries at the paths in the given +list+
-  # (an array of strings or a single string);
+  # (a single path or an array of paths)
   # returns +list+, if it is an array, <tt>[list]</tt> otherwise.
+  #
+  # Argument +list+ or its elements
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # With no keyword arguments, removes files at the paths given in +list+:
   #
@@ -1048,7 +1165,7 @@ module FileUtils
   #
   # Keyword arguments:
   #
-  # - <tt>force: true</tt> - ignores raised exceptions of StandardError
+  # - <tt>force: true</tt> - ignores raised exceptions of Errno::ENOENT
   #   and its descendants.
   # - <tt>noop: true</tt> - does not remove files; returns +nil+.
   # - <tt>verbose: true</tt> - prints an equivalent command:
@@ -1060,6 +1177,8 @@ module FileUtils
   #     rm src0.dat src0.txt
   #
   # FileUtils.remove is an alias for FileUtils.rm.
+  #
+  # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
   def rm(list, force: nil, noop: nil, verbose: nil)
     list = fu_list(list)
@@ -1079,9 +1198,14 @@ module FileUtils
   #
   #   FileUtils.rm(list, force: true, **kwargs)
   #
+  # Argument +list+ (a single path or an array of paths)
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
   # See FileUtils.rm for keyword arguments.
   #
   # FileUtils.safe_unlink is an alias for FileUtils.rm_f.
+  #
+  # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
   def rm_f(list, noop: nil, verbose: nil)
     rm list, force: true, noop: noop, verbose: verbose
@@ -1092,8 +1216,11 @@ module FileUtils
   module_function :safe_unlink
 
   # Removes entries at the paths in the given +list+
-  # (an array of strings or a single string);
+  # (a single path or an array of paths);
   # returns +list+, if it is an array, <tt>[list]</tt> otherwise.
+  #
+  # Argument +list+ or its elements
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
   #
   # May cause a local vulnerability if not called with keyword argument
   # <tt>secure: true</tt>;
@@ -1109,19 +1236,19 @@ module FileUtils
   # For each directory path, recursively removes files and directories:
   #
   #   tree('src1')
-  #   src1
-  #   |-- dir0
-  #   |   |-- src0.txt
-  #   |   `-- src1.txt
-  #   `-- dir1
-  #       |-- src2.txt
-  #       `-- src3.txt
+  #   # => src1
+  #   #    |-- dir0
+  #   #    |   |-- src0.txt
+  #   #    |   `-- src1.txt
+  #   #    `-- dir1
+  #   #        |-- src2.txt
+  #   #        `-- src3.txt
   #   FileUtils.rm_r('src1')
   #   File.exist?('src1') # => false
   #
   # Keyword arguments:
   #
-  # - <tt>force: true</tt> - ignores raised exceptions of StandardError
+  # - <tt>force: true</tt> - ignores raised exceptions of Errno::ENOENT
   #   and its descendants.
   # - <tt>noop: true</tt> - does not remove entries; returns +nil+.
   # - <tt>secure: true</tt> - removes +src+ securely;
@@ -1135,6 +1262,8 @@ module FileUtils
   #
   #     rm -r src0.dat src0.txt
   #     rm -r src1
+  #
+  # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
   def rm_r(list, force: nil, noop: nil, verbose: nil, secure: nil)
     list = fu_list(list)
@@ -1154,6 +1283,9 @@ module FileUtils
   #
   #   FileUtils.rm_r(list, force: true, **kwargs)
   #
+  # Argument +list+ or its elements
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
   # May cause a local vulnerability if not called with keyword argument
   # <tt>secure: true</tt>;
   # see {Avoiding the TOCTTOU Vulnerability}[rdoc-ref:FileUtils@Avoiding+the+TOCTTOU+Vulnerability].
@@ -1161,6 +1293,8 @@ module FileUtils
   # See FileUtils.rm_r for keyword arguments.
   #
   # FileUtils.rmtree is an alias for FileUtils.rm_rf.
+  #
+  # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
   def rm_rf(list, noop: nil, verbose: nil, secure: nil)
     rm_r list, force: true, noop: noop, verbose: verbose, secure: secure
@@ -1174,11 +1308,16 @@ module FileUtils
   # which should be the entry for a regular file, a symbolic link,
   # or a directory.
   #
+  # Argument +path+
+  # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments].
+  #
   # Avoids a local vulnerability that can exist in certain circumstances;
   # see {Avoiding the TOCTTOU Vulnerability}[rdoc-ref:FileUtils@Avoiding+the+TOCTTOU+Vulnerability].
   #
   # Optional argument +force+ specifies whether to ignore
-  # raised exceptions of StandardError and its descendants.
+  # raised exceptions of Errno::ENOENT and its descendants.
+  #
+  # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
   def remove_entry_secure(path, force = false)
     unless fu_have_symlink?
@@ -1245,10 +1384,12 @@ module FileUtils
         ent.remove
       rescue
         raise unless force
+        raise unless Errno::ENOENT === $!
       end
     end
   rescue
     raise unless force
+    raise unless Errno::ENOENT === $!
   end
   module_function :remove_entry_secure
 
@@ -1270,8 +1411,11 @@ module FileUtils
   # which should be the entry for a regular file, a symbolic link,
   # or a directory.
   #
+  # Argument +path+
+  # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments].
+  #
   # Optional argument +force+ specifies whether to ignore
-  # raised exceptions of StandardError and its descendants.
+  # raised exceptions of Errno::ENOENT and its descendants.
   #
   # Related: FileUtils.remove_entry_secure.
   #
@@ -1281,23 +1425,31 @@ module FileUtils
         ent.remove
       rescue
         raise unless force
+        raise unless Errno::ENOENT === $!
       end
     end
   rescue
     raise unless force
+    raise unless Errno::ENOENT === $!
   end
   module_function :remove_entry
 
   # Removes the file entry given by +path+,
   # which should be the entry for a regular file or a symbolic link.
   #
+  # Argument +path+
+  # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments].
+  #
   # Optional argument +force+ specifies whether to ignore
-  # raised exceptions of StandardError and its descendants.
+  # raised exceptions of Errno::ENOENT and its descendants.
+  #
+  # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
   def remove_file(path, force = false)
     Entry_.new(path).remove_file
   rescue
     raise unless force
+    raise unless Errno::ENOENT === $!
   end
   module_function :remove_file
 
@@ -1305,8 +1457,13 @@ module FileUtils
   # which should be the entry for a regular file, a symbolic link,
   # or a directory.
   #
+  # Argument +path+
+  # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments].
+  #
   # Optional argument +force+ specifies whether to ignore
-  # raised exceptions of StandardError and its descendants.
+  # raised exceptions of Errno::ENOENT and its descendants.
+  #
+  # Related: {methods for deleting}[rdoc-ref:FileUtils@Deleting].
   #
   def remove_dir(path, force = false)
     remove_entry path, force   # FIXME?? check if it is a directory
@@ -1315,6 +1472,13 @@ module FileUtils
 
   # Returns +true+ if the contents of files +a+ and +b+ are identical,
   # +false+ otherwise.
+  #
+  # Arguments +a+ and +b+
+  # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments].
+  #
+  # FileUtils.identical? and FileUtils.cmp are aliases for FileUtils.compare_file.
+  #
+  # Related: FileUtils.compare_stream.
   #
   def compare_file(a, b)
     return false unless File.size(a) == File.size(b)
@@ -1334,6 +1498,11 @@ module FileUtils
   # Returns +true+ if the contents of streams +a+ and +b+ are identical,
   # +false+ otherwise.
   #
+  # Arguments +a+ and +b+
+  # should be {interpretable as a path}[rdoc-ref:FileUtils@Path+Arguments].
+  #
+  # Related: FileUtils.compare_file.
+  #
   def compare_stream(a, b)
     bsize = fu_stream_blksize(a, b)
 
@@ -1349,11 +1518,12 @@ module FileUtils
   end
   module_function :compare_stream
 
-  # Copies the file entry at path +src+ to the entry at path +dest+;
-  # each of +src+ and +dest+ may be a string or a
-  # {Pathname}[https://docs.ruby-lang.org/en/master/Pathname.html].
-  #
+  # Copies a file entry.
   # See {install(1)}[https://man7.org/linux/man-pages/man1/install.1.html].
+  #
+  # Arguments +src+ (a single path or an array of paths)
+  # and +dest+ (a single path)
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments];
   #
   # If the entry at +dest+ does not exist, copies from +src+ to +dest+:
   #
@@ -1377,21 +1547,27 @@ module FileUtils
   #   FileUtils.install('src2.txt', 'dest2')
   #   File.read('dest2/src2.txt') # => "aaa\n"
   #
+  # If +src+ is an array of paths and +dest+ points to a directory,
+  # copies each path +path+ in +src+ to <tt>dest/path</tt>:
+  #
+  #   File.file?('src3.txt') # => true
+  #   File.file?('src3.dat') # => true
+  #   FileUtils.mkdir('dest3')
+  #   FileUtils.install(['src3.txt', 'src3.dat'], 'dest3')
+  #   File.file?('dest3/src3.txt') # => true
+  #   File.file?('dest3/src3.dat') # => true
+  #
   # Keyword arguments:
   #
-  #   {chown(2)}[https://man7.org/linux/man-pages/man2/chown.2.html]
-  #   and {chmod(2)}[https://man7.org/linux/man-pages/man2/chmod.2.html]
-  #
-  #
   # - <tt>group: <i>group</i></tt> - changes the group if not +nil+,
-  #   using {File.chown}[https://docs.ruby-lang.org/en/master/File.html#method-c-chown].
+  #   using {File.chown}[rdoc-ref:File.chown].
   # - <tt>mode: <i>permissions</i></tt> - changes the permissions.
-  #   using {File.chmod}[https://docs.ruby-lang.org/en/master/File.html#method-c-chmod].
-  # - <tt>noop: true</tt> - does not remove entries; returns +nil+.
+  #   using {File.chmod}[rdoc-ref:File.chmod].
+  # - <tt>noop: true</tt> - does not copy entries; returns +nil+.
   # - <tt>owner: <i>owner</i></tt> - changes the owner if not +nil+,
-  #   using {File.chown}[https://docs.ruby-lang.org/en/master/File.html#method-c-chown].
+  #   using {File.chown}[rdoc-ref:File.chown].
   # - <tt>preserve: true</tt> - preserve timestamps
-  #   using {File.utime}[https://docs.ruby-lang.org/en/master/File.html#method-c-utime].
+  #   using {File.utime}[rdoc-ref:File.utime].
   # - <tt>verbose: true</tt> - prints an equivalent command:
   #
   #     FileUtils.install('src0.txt', 'dest0.txt', noop: true, verbose: true)
@@ -1403,6 +1579,8 @@ module FileUtils
   #     install -c src0.txt dest0.txt
   #     install -c src1.txt dest1.txt
   #     install -c src2.txt dest2
+  #
+  # Related: {methods for copying}[rdoc-ref:FileUtils@Copying].
   #
   def install(src, dest, mode: nil, owner: nil, group: nil, preserve: nil,
               noop: nil, verbose: nil)
@@ -1520,37 +1698,78 @@ module FileUtils
   end
   private_module_function :mode_to_s
 
+  # Changes permissions on the entries at the paths given in +list+
+  # (a single path or an array of paths)
+  # to the permissions given by +mode+;
+  # returns +list+ if it is an array, <tt>[list]</tt> otherwise:
   #
-  # Changes permission bits on the named files (in +list+) to the bit pattern
-  # represented by +mode+.
+  # - Modifies each entry that is a regular file using
+  #   {File.chmod}[rdoc-ref:File.chmod].
+  # - Modifies each entry that is a symbolic link using
+  #   {File.lchmod}[rdoc-ref:File.lchmod].
   #
-  # +mode+ is the symbolic and absolute mode can be used.
+  # Argument +list+ or its elements
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
   #
-  # Absolute mode is
-  #   FileUtils.chmod 0755, 'somecommand'
-  #   FileUtils.chmod 0644, %w(my.rb your.rb his.rb her.rb)
-  #   FileUtils.chmod 0755, '/usr/bin/ruby', verbose: true
+  # Argument +mode+ may be either an integer or a string:
   #
-  # Symbolic mode is
-  #   FileUtils.chmod "u=wrx,go=rx", 'somecommand'
-  #   FileUtils.chmod "u=wr,go=rr", %w(my.rb your.rb his.rb her.rb)
-  #   FileUtils.chmod "u=wrx,go=rx", '/usr/bin/ruby', verbose: true
+  # - \Integer +mode+: represents the permission bits to be set:
   #
-  # "a" :: is user, group, other mask.
-  # "u" :: is user's mask.
-  # "g" :: is group's mask.
-  # "o" :: is other's mask.
-  # "w" :: is write permission.
-  # "r" :: is read permission.
-  # "x" :: is execute permission.
-  # "X" ::
-  #   is execute permission for directories only, must be used in conjunction with "+"
-  # "s" :: is uid, gid.
-  # "t" :: is sticky bit.
-  # "+" :: is added to a class given the specified mode.
-  # "-" :: Is removed from a given class given mode.
-  # "=" :: Is the exact nature of the class will be given a specified mode.
-
+  #     FileUtils.chmod(0755, 'src0.txt')
+  #     FileUtils.chmod(0644, ['src0.txt', 'src0.dat'])
+  #
+  # - \String +mode+: represents the permissions to be set:
+  #
+  #   The string is of the form <tt>[targets][[operator][perms[,perms]]</tt>, where:
+  #
+  #   - +targets+ may be any combination of these letters:
+  #
+  #     - <tt>'u'</tt>: permissions apply to the file's owner.
+  #     - <tt>'g'</tt>: permissions apply to users in the file's group.
+  #     - <tt>'o'</tt>: permissions apply to other users not in the file's group.
+  #     - <tt>'a'</tt> (the default): permissions apply to all users.
+  #
+  #   - +operator+ may be one of these letters:
+  #
+  #     - <tt>'+'</tt>: adds permissions.
+  #     - <tt>'-'</tt>: removes permissions.
+  #     - <tt>'='</tt>: sets (replaces) permissions.
+  #
+  #   - +perms+ (may be repeated, with separating commas)
+  #     may be any combination of these letters:
+  #
+  #     - <tt>'r'</tt>: Read.
+  #     - <tt>'w'</tt>: Write.
+  #     - <tt>'x'</tt>: Execute (search, for a directory).
+  #     - <tt>'X'</tt>: Search (for a directories only;
+  #       must be used with <tt>'+'</tt>)
+  #     - <tt>'s'</tt>: Uid or gid.
+  #     - <tt>'t'</tt>: Sticky bit.
+  #
+  #   Examples:
+  #
+  #     FileUtils.chmod('u=wrx,go=rx', 'src1.txt')
+  #     FileUtils.chmod('u=wrx,go=rx', '/usr/bin/ruby')
+  #
+  # Keyword arguments:
+  #
+  # - <tt>noop: true</tt> - does not change permissions; returns +nil+.
+  # - <tt>verbose: true</tt> - prints an equivalent command:
+  #
+  #     FileUtils.chmod(0755, 'src0.txt', noop: true, verbose: true)
+  #     FileUtils.chmod(0644, ['src0.txt', 'src0.dat'], noop: true, verbose: true)
+  #     FileUtils.chmod('u=wrx,go=rx', 'src1.txt', noop: true, verbose: true)
+  #     FileUtils.chmod('u=wrx,go=rx', '/usr/bin/ruby', noop: true, verbose: true)
+  #
+  #   Output:
+  #
+  #     chmod 755 src0.txt
+  #     chmod 644 src0.txt src0.dat
+  #     chmod u=wrx,go=rx src1.txt
+  #     chmod u=wrx,go=rx /usr/bin/ruby
+  #
+  # Related: FileUtils.chmod_R.
+  #
   def chmod(mode, list, noop: nil, verbose: nil)
     list = fu_list(list)
     fu_output_message sprintf('chmod %s %s', mode_to_s(mode), list.join(' ')) if verbose
@@ -1561,12 +1780,7 @@ module FileUtils
   end
   module_function :chmod
 
-  #
-  # Changes permission bits on the named files (in +list+)
-  # to the bit pattern represented by +mode+.
-  #
-  #   FileUtils.chmod_R 0700, "/tmp/app.#{$$}"
-  #   FileUtils.chmod_R "u=wrx", "/tmp/app.#{$$}"
+  # Like FileUtils.chmod, but changes permissions recursively.
   #
   def chmod_R(mode, list, noop: nil, verbose: nil, force: nil)
     list = fu_list(list)
@@ -1586,15 +1800,68 @@ module FileUtils
   end
   module_function :chmod_R
 
+  # Changes the owner and group on the entries at the paths given in +list+
+  # (a single path or an array of paths)
+  # to the given +user+ and +group+;
+  # returns +list+ if it is an array, <tt>[list]</tt> otherwise:
   #
-  # Changes owner and group on the named files (in +list+)
-  # to the user +user+ and the group +group+.  +user+ and +group+
-  # may be an ID (Integer/String) or a name (String).
-  # If +user+ or +group+ is nil, this method does not change
-  # the attribute.
+  # - Modifies each entry that is a regular file using
+  #   {File.chown}[rdoc-ref:File.chown].
+  # - Modifies each entry that is a symbolic link using
+  #   {File.lchown}[rdoc-ref:File.lchown].
   #
-  #   FileUtils.chown 'root', 'staff', '/usr/local/bin/ruby'
-  #   FileUtils.chown nil, 'bin', Dir.glob('/usr/bin/*'), verbose: true
+  # Argument +list+ or its elements
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
+  # User and group:
+  #
+  # - Argument +user+ may be a user name or a user id;
+  #   if +nil+ or +-1+, the user is not changed.
+  # - Argument +group+ may be a group name or a group id;
+  #   if +nil+ or +-1+, the group is not changed.
+  # - The user must be a member of the group.
+  #
+  # Examples:
+  #
+  #   # One path.
+  #   # User and group as string names.
+  #   File.stat('src0.txt').uid # => 1004
+  #   File.stat('src0.txt').gid # => 1004
+  #   FileUtils.chown('user2', 'group1', 'src0.txt')
+  #   File.stat('src0.txt').uid # => 1006
+  #   File.stat('src0.txt').gid # => 1005
+  #
+  #   # User and group as uid and gid.
+  #   FileUtils.chown(1004, 1004, 'src0.txt')
+  #   File.stat('src0.txt').uid # => 1004
+  #   File.stat('src0.txt').gid # => 1004
+  #
+  #   # Array of paths.
+  #   FileUtils.chown(1006, 1005, ['src0.txt', 'src0.dat'])
+  #
+  #   # Directory (not recursive).
+  #   FileUtils.chown('user2', 'group1', '.')
+  #
+  # Keyword arguments:
+  #
+  # - <tt>noop: true</tt> - does not change permissions; returns +nil+.
+  # - <tt>verbose: true</tt> - prints an equivalent command:
+  #
+  #     FileUtils.chown('user2', 'group1', 'src0.txt', noop: true, verbose: true)
+  #     FileUtils.chown(1004, 1004, 'src0.txt', noop: true, verbose: true)
+  #     FileUtils.chown(1006, 1005, ['src0.txt', 'src0.dat'], noop: true, verbose: true)
+  #     FileUtils.chown('user2', 'group1', path, noop: true, verbose: true)
+  #     FileUtils.chown('user2', 'group1', '.', noop: true, verbose: true)
+  #
+  #   Output:
+  #
+  #     chown user2:group1 src0.txt
+  #     chown 1004:1004 src0.txt
+  #     chown 1006:1005 src0.txt src0.dat
+  #     chown user2:group1 src0.txt
+  #     chown user2:group1 .
+  #
+  # Related: FileUtils.chown_R.
   #
   def chown(user, group, list, noop: nil, verbose: nil)
     list = fu_list(list)
@@ -1610,15 +1877,7 @@ module FileUtils
   end
   module_function :chown
 
-  #
-  # Changes owner and group on the named files (in +list+)
-  # to the user +user+ and the group +group+ recursively.
-  # +user+ and +group+ may be an ID (Integer/String) or
-  # a name (String).  If +user+ or +group+ is nil, this
-  # method does not change the attribute.
-  #
-  #   FileUtils.chown_R 'www', 'www', '/var/www/htdocs'
-  #   FileUtils.chown_R 'cvs', 'cvs', '/var/cvs', verbose: true
+  # Like FileUtils.chown, but changes owner and group recursively.
   #
   def chown_R(user, group, list, noop: nil, verbose: nil, force: nil)
     list = fu_list(list)
@@ -1669,12 +1928,50 @@ module FileUtils
   end
   private_module_function :fu_get_gid
 
+  # Updates modification times (mtime) and access times (atime)
+  # of the entries given by the paths in +list+
+  # (a single path or an array of paths);
+  # returns +list+ if it is an array, <tt>[list]</tt> otherwise.
   #
-  # Updates modification time (mtime) and access time (atime) of file(s) in
-  # +list+.  Files are created if they don't exist.
+  # By default, creates an empty file for any path to a non-existent entry;
+  # use keyword argument +nocreate+ to raise an exception instead.
   #
-  #   FileUtils.touch 'timestamp'
-  #   FileUtils.touch Dir.glob('*.c');  system 'make'
+  # Argument +list+ or its elements
+  # should be {interpretable as paths}[rdoc-ref:FileUtils@Path+Arguments].
+  #
+  # Examples:
+  #
+  #   # Single path.
+  #   f = File.new('src0.txt') # Existing file.
+  #   f.atime # => 2022-06-10 11:11:21.200277 -0700
+  #   f.mtime # => 2022-06-10 11:11:21.200277 -0700
+  #   FileUtils.touch('src0.txt')
+  #   f = File.new('src0.txt')
+  #   f.atime # => 2022-06-11 08:28:09.8185343 -0700
+  #   f.mtime # => 2022-06-11 08:28:09.8185343 -0700
+  #
+  #   # Array of paths.
+  #   FileUtils.touch(['src0.txt', 'src0.dat'])
+  #
+  # Keyword arguments:
+  #
+  # - <tt>mtime: <i>time</i></tt> - sets the entry's mtime to the given time,
+  #   instead of the current time.
+  # - <tt>nocreate: true</tt> - raises an exception if the entry does not exist.
+  # - <tt>noop: true</tt> - does not touch entries; returns +nil+.
+  # - <tt>verbose: true</tt> - prints an equivalent command:
+  #
+  #     FileUtils.touch('src0.txt', noop: true, verbose: true)
+  #     FileUtils.touch(['src0.txt', 'src0.dat'], noop: true, verbose: true)
+  #     FileUtils.touch(path, noop: true, verbose: true)
+  #
+  #   Output:
+  #
+  #     touch src0.txt
+  #     touch src0.txt src0.dat
+  #     touch src0.txt
+  #
+  # Related: FileUtils.uptodate?.
   #
   def touch(list, noop: nil, verbose: nil, mtime: nil, nocreate: nil)
     list = fu_list(list)
@@ -2036,13 +2333,21 @@ module FileUtils
 
     def postorder_traverse
       if directory?
-        entries().each do |ent|
+        begin
+          children = entries()
+        rescue Errno::EACCES
+          # Failed to get the list of children.
+          # Assuming there is no children, try to process the parent directory.
+          yield self
+          return
+        end
+
+        children.each do |ent|
           ent.postorder_traverse do |e|
             yield e
           end
         end
       end
-    ensure
       yield self
     end
 
@@ -2177,50 +2482,49 @@ module FileUtils
 
   public
 
+  # Returns an array of the string names of \FileUtils methods
+  # that accept one or more keyword arguments:
   #
-  # Returns an Array of names of high-level methods that accept any keyword
-  # arguments.
-  #
-  #   p FileUtils.commands  #=> ["chmod", "cp", "cp_r", "install", ...]
+  #   FileUtils.commands.sort.take(3) # => ["cd", "chdir", "chmod"]
   #
   def self.commands
     OPT_TABLE.keys
   end
 
+  # Returns an array of the string keyword names:
   #
-  # Returns an Array of option names.
-  #
-  #   p FileUtils.options  #=> ["noop", "force", "verbose", "preserve", "mode"]
+  #   FileUtils.options.take(3) # => ["noop", "verbose", "force"]
   #
   def self.options
     OPT_TABLE.values.flatten.uniq.map {|sym| sym.to_s }
   end
 
+  # Returns +true+ if method +mid+ accepts the given option +opt+, +false+ otherwise;
+  # the arguments may be strings or symbols:
   #
-  # Returns true if the method +mid+ have an option +opt+.
-  #
-  #   p FileUtils.have_option?(:cp, :noop)     #=> true
-  #   p FileUtils.have_option?(:rm, :force)    #=> true
-  #   p FileUtils.have_option?(:rm, :preserve) #=> false
+  #   FileUtils.have_option?(:chmod, :noop) # => true
+  #   FileUtils.have_option?('chmod', 'secure') # => false
   #
   def self.have_option?(mid, opt)
     li = OPT_TABLE[mid.to_s] or raise ArgumentError, "no such method: #{mid}"
     li.include?(opt)
   end
 
+  # Returns an array of the string keyword name for method +mid+;
+  # the argument may be a string or a symbol:
   #
-  # Returns an Array of option names of the method +mid+.
-  #
-  #   p FileUtils.options_of(:rm)  #=> ["noop", "verbose", "force"]
+  #   FileUtils.options_of(:rm) # => ["force", "noop", "verbose"]
+  #   FileUtils.options_of('mv') # => ["force", "noop", "verbose", "secure"]
   #
   def self.options_of(mid)
     OPT_TABLE[mid.to_s].map {|sym| sym.to_s }
   end
 
+  # Returns an array of the string method names of the methods
+  # that accept the given keyword option +opt+;
+  # the argument must be a symbol:
   #
-  # Returns an Array of methods names which have the option +opt+.
-  #
-  #   p FileUtils.collect_method(:preserve) #=> ["cp", "cp_r", "copy", "install"]
+  #   FileUtils.collect_method(:preserve) # => ["cp", "copy", "cp_r", "install"]
   #
   def self.collect_method(opt)
     OPT_TABLE.keys.select {|m| OPT_TABLE[m].include?(opt) }

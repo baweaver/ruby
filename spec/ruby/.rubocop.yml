@@ -99,6 +99,9 @@ Lint/DuplicateElsifCondition:
 Lint/OutOfRangeRegexpRef:
   Enabled: false
 
+Lint/InheritException:
+  Enabled: false
+
 Lint/ElseLayout:
   Exclude:
     - 'language/if_spec.rb'
@@ -157,6 +160,9 @@ Lint/Debugger:
 
 Lint/Loop:
   Enabled: false
+
+Style/BlockComments:
+  Enabled: true
 
 Style/Lambda:
   Enabled: true

@@ -1,4 +1,5 @@
 require_relative 'spec_helper'
+require_relative 'fixtures/object'
 
 load_extension("object")
 
@@ -30,6 +31,7 @@ describe "CApiObject" do
   class ObjectTest
     def initialize
       @foo = 7
+      yield if block_given?
     end
 
     def foo
@@ -87,6 +89,15 @@ describe "CApiObject" do
       @o.rb_obj_call_init(o, 2, [:one, :two])
       o.initialized.should be_true
       o.arguments.should == [:one, :two]
+    end
+
+    it "passes the block to #initialize" do
+      v = nil
+      o = @o.rb_obj_alloc(ObjectTest)
+      @o.rb_obj_call_init(o, 0, []) do
+        v = :foo
+      end
+      v.should == :foo
     end
   end
 
@@ -512,6 +523,21 @@ describe "CApiObject" do
       @o.rb_is_type_module(Module.new).should == true
       @o.rb_is_type_class(ObjectTest).should == true
       @o.rb_is_type_data(Time.now).should == true
+    end
+
+    it "returns T_FILE for instances of IO and subclasses" do
+      STDERR.class.should == IO
+      @o.rb_is_rb_type_p_file(STDERR).should == true
+
+      File.open(__FILE__) do |f|
+        f.class.should == File
+        @o.rb_is_rb_type_p_file(f).should == true
+      end
+
+      require 'socket'
+      TCPServer.open(0) do |s|
+        @o.rb_is_rb_type_p_file(s).should == true
+      end
     end
   end
 
@@ -957,6 +983,25 @@ describe "CApiObject" do
 
         @o.speced_allocator?(parent).should == true
       end
+    end
+
+    describe "rb_ivar_foreach" do
+      it "calls the callback function for each instance variable on an object" do
+        o = CApiObjectSpecs::IVars.new
+        ary = @o.rb_ivar_foreach(o)
+        ary.should == [:@a, 3, :@b, 7, :@c, 4]
+      end
+
+      it "calls the callback function for each cvar and ivar on a class" do
+        ary = @o.rb_ivar_foreach(CApiObjectSpecs::CVars)
+        ary.should == [:__classpath__, 'CApiObjectSpecs::CVars', :@@cvar, :foo, :@@cvar2, :bar, :@ivar, :baz]
+      end
+
+      it "calls the callback function for each cvar and ivar on a module" do
+        ary = @o.rb_ivar_foreach(CApiObjectSpecs::MVars)
+        ary.should == [:__classpath__, 'CApiObjectSpecs::MVars', :@@mvar, :foo, :@@mvar2, :bar, :@ivar, :baz]
+      end
+
     end
   end
 end

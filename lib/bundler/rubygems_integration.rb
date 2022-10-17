@@ -203,20 +203,9 @@ module Bundler
       EXT_LOCK
     end
 
-    def spec_from_gem(path, policy = nil)
-      require "rubygems/security"
-      require "psych"
-      gem_from_path(path, security_policies[policy]).spec
-    rescue Exception, Gem::Exception, Gem::Security::Exception => e # rubocop:disable Lint/RescueException
-      if e.is_a?(Gem::Security::Exception) ||
-          e.message =~ /unknown trust policy|unsigned gem/i ||
-          e.message =~ /couldn't verify (meta)?data signature/i
-        raise SecurityError,
-          "The gem #{File.basename(path, ".gem")} can't be installed because " \
-          "the security policy didn't allow it, with the message: #{e.message}"
-      else
-        raise e
-      end
+    def spec_from_gem(path)
+      require "rubygems/package"
+      Gem::Package.new(path).spec
     end
 
     def build_gem(gem_dir, spec)
@@ -510,20 +499,9 @@ module Bundler
       Gem::RemoteFetcher.new(proxy)
     end
 
-    def gem_from_path(path, policy = nil)
-      require "rubygems/package"
-      p = Gem::Package.new(path)
-      p.security_policy = policy if policy
-      p
-    end
-
     def build(spec, skip_validation = false)
       require "rubygems/package"
       Gem::Package.build(spec, skip_validation)
-    end
-
-    def repository_subdirectories
-      Gem::REPOSITORY_SUBDIRECTORIES
     end
 
     def path_separator

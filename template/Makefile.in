@@ -89,7 +89,9 @@ optflags = @optflags@
 debugflags = @debugflags@
 warnflags = @warnflags@ @strict_warnflags@
 cppflags = @cppflags@
-XCFLAGS = @XCFLAGS@ $(INCFLAGS)
+RUBY_DEVEL = @RUBY_DEVEL@ # "yes" or empty
+_RUBY_DEVEL_enabled = $(RUBY_DEVEL:no=)
+XCFLAGS = @XCFLAGS@ $(INCFLAGS) $(_RUBY_DEVEL_enabled:yes=-DRUBY_DEVEL=1)
 USE_RUBYGEMS = @USE_RUBYGEMS@
 USE_RUBYGEMS_ = $(USE_RUBYGEMS:yes=)
 CPPFLAGS = @CPPFLAGS@ $(USE_RUBYGEMS_:no=-DDISABLE_RUBYGEMS=1)
@@ -163,7 +165,12 @@ INSTALL_PROGRAM = @INSTALL_PROGRAM@
 XRUBY_LIBDIR = @XRUBY_LIBDIR@
 XRUBY_RUBYLIBDIR = @XRUBY_RUBYLIBDIR@
 XRUBY_RUBYHDRDIR = @XRUBY_RUBYHDRDIR@
-BOOTSTRAPRUBY = @BOOTSTRAPRUBY@
+
+yes_baseruby = $(HAVE_BASERUBY:no=)
+no_baseruby = $(HAVE_BASERUBY:yes=)
+BOOTSTRAPRUBY = $(yes_baseruby:yes=$(BASERUBY)) $(no_baseruby:no=$(MINIRUBY))
+BOOTSTRAPRUBY_OPT = $(yes_baseruby:yes=-r./$(arch)-fake)
+BOOTSTRAPRUBY_FAKE = $(yes_baseruby:yes=$(arch)-fake.rb)
 
 COROUTINE_H = @X_COROUTINE_H@
 COROUTINE_OBJ = $(COROUTINE_H:.h=.$(OBJEXT))
@@ -295,6 +302,8 @@ $(PROGRAM):
 		$(Q) $(PURIFY) $(CC) $(EXE_LDFLAGS) $(XLDFLAGS) $(MAINOBJ) $(EXTOBJS) $(LIBRUBYARG) $(MAINLIBS) $(LIBS) $(EXTLIBS) $(OUTFLAG)$@
 		$(Q) $(POSTLINK)
 
+$(PROGRAM): @XRUBY_LIBPATHENV_WRAPPER@
+
 PRE_LIBRUBY_UPDATE = [ -n "$(LIBRUBY_SO_UPDATE)" ] || $(gnumake:yes=exec) $(RM) $(LIBRUBY_EXTS)
 
 # We must `rm' the library each time this rule is invoked because "updating" a
@@ -353,10 +362,6 @@ pre-install-local:: pkgconfig-data
 ruby-runner.h: template/ruby-runner.h.in config.status
 		@./config.status --file=$@:$(srcdir)/template/$(@F).in
 
-$(RBCONFIG): $(PREP)
-
-rbconfig.rb: $(RBCONFIG)
-
 install-cross: $(arch)-fake.rb $(RBCONFIG) rbconfig.rb $(arch_hdrdir)/ruby/config.h \
 	$(LIBRUBY_A) $(LIBRUBY_SO) $(ARCHFILE) pkgconfig-data
 	$(ECHO) installing cross-compiling stuff
@@ -376,7 +381,7 @@ install-cross: $(arch)-fake.rb $(RBCONFIG) rbconfig.rb $(arch_hdrdir)/ruby/confi
 
 Makefile:	$(srcdir)/template/Makefile.in $(srcdir)/enc/Makefile.in
 
-$(MKFILES): config.status $(srcdir)/version.h $(ABI_VERSION_HDR)
+$(MKFILES): config.status $(srcdir)/version.h $(srcdir)/revision.h $(ABI_VERSION_HDR)
 		@[ -f $@ ] && mv $@ $@.old
 		MAKE=$(MAKE) $(SHELL) ./config.status $@
 		@cmp $@ $@.old > /dev/null 2>&1 && echo $@ unchanged && exit 0; \
@@ -395,12 +400,13 @@ uncommon.mk: $(srcdir)/common.mk
 reconfig-args = $(srcdir)/$(CONFIGURE) $(yes_silence:yes=--silent) $(configure_args)
 config.status-args = ./config.status $(yes_silence:yes=--silent) --recheck
 reconfig-exec-0 = test -t 1 && { : $${CONFIGURE_TTY=yes}; export CONFIGURE_TTY; }; exec 3>&1; exit `exec 4>&1; { "$$@" 3>&- 4>&-; echo $$? 1>&4; } | fgrep -v '(cached)' 1>&3 3>&- 4>&-`
-reconfig-exec-1 = set -x; "$$@"
+reconfig-exec-1 = set -x; exec "$$@"
+reconfig-exec-yes = $(reconfig-exec-1)
 
 reconfig config.status:	$(srcdir)/$(CONFIGURE) $(srcdir)/enc/Makefile.in \
 			$(hdrdir)/ruby/version.h $(ABI_VERSION_HDR)
 	@PWD= MINIRUBY="$(MINIRUBY)"; export MINIRUBY; \
-	set $(SHELL) $($@-args); $(reconfig-exec-$(V))
+	set $(SHELL) $($@-args); $(reconfig-exec-$(silence:no=$(V)))
 
 $(srcdir)/$(CONFIGURE): $(srcdir)/configure.ac
 	$(CHDIR) $(srcdir) && exec $(AUTOCONF) -o $(@F)
@@ -530,12 +536,16 @@ ext/clean.mk ext/distclean.mk ext/realclean.mk::
 ext/clean:: ext/clean.sub
 ext/distclean:: ext/distclean.sub
 ext/realclean:: ext/realclean.sub
-gems/clean:: gems/clean.sub
-gems/distclean:: gems/distclean.sub
-gems/realclean:: gems/realclean.sub
+.bundle/clean:: .bundle/clean.sub
+.bundle/distclean:: .bundle/distclean.sub
+.bundle/realclean:: .bundle/realclean.sub
+
+ext/clean.sub .bundle/clean.sub:: ext/clean.mk
+ext/distclean.sub .bundle/distclean.sub:: ext/distclean.mk
+ext/realclean.sub .bundle/realclean.sub:: ext/realclean.mk
 
 ext/clean.sub ext/distclean.sub ext/realclean.sub \
-gems/clean.sub gems/distclean.sub gems/realclean.sub::
+.bundle/clean.sub .bundle/distclean.sub .bundle/realclean.sub::
 	$(Q) set dummy `echo "${EXTS}" | tr , ' '`; shift; \
 	test "$$#" = 0 && set .; \
 	set dummy `\
@@ -551,7 +561,7 @@ gems/clean.sub gems/distclean.sub gems/realclean.sub::
 	    fi; \
 	done || true
 
-ext/distclean ext/realclean gems/distclean gems/realclean::
+ext/distclean ext/realclean .bundle/distclean .bundle/realclean::
 	$(Q) set dummy `echo "${EXTS}" | tr , ' '`; shift; \
 	test "$$#" = 0 && set .; \
 	cd $(@D) 2>/dev/null && \
@@ -611,7 +621,7 @@ update-known-errors:
 	$(IFCHANGE) $(srcdir)/defs/known_errors.def -
 
 INSNS	= opt_sc.inc optinsn.inc optunifs.inc insns.inc insns_info.inc \
-	  vmtc.inc vm.inc mjit_compile.inc
+	  vmtc.inc vm.inc mjit_compile_attr.inc
 
 $(INSNS): $(srcdir)/insns.def vm_opts.h \
 	  $(srcdir)/defs/opt_operand.def $(srcdir)/defs/opt_insn_unif.def \
@@ -645,17 +655,12 @@ $(INSNS): $(srcdir)/insns.def vm_opts.h \
 	  $(tooldir)/ruby_vm/views/_insn_sp_pc_dependency.erb \
 	  $(tooldir)/ruby_vm/views/_insn_type_chars.erb \
 	  $(tooldir)/ruby_vm/views/_leaf_helpers.erb \
-	  $(tooldir)/ruby_vm/views/_mjit_compile_insn.erb \
-	  $(tooldir)/ruby_vm/views/_mjit_compile_insn_body.erb \
-	  $(tooldir)/ruby_vm/views/_mjit_compile_ivar.erb \
-	  $(tooldir)/ruby_vm/views/_mjit_compile_pc_and_sp.erb \
-	  $(tooldir)/ruby_vm/views/_mjit_compile_send.erb \
 	  $(tooldir)/ruby_vm/views/_notice.erb \
 	  $(tooldir)/ruby_vm/views/_sp_inc_helpers.erb \
 	  $(tooldir)/ruby_vm/views/_trace_instruction.erb \
 	  $(tooldir)/ruby_vm/views/insns.inc.erb \
 	  $(tooldir)/ruby_vm/views/insns_info.inc.erb \
-	  $(tooldir)/ruby_vm/views/mjit_compile.inc.erb \
+	  $(tooldir)/ruby_vm/views/mjit_compile_attr.inc.erb \
 	  $(tooldir)/ruby_vm/views/opt_sc.inc.erb \
 	  $(tooldir)/ruby_vm/views/optinsn.inc.erb \
 	  $(tooldir)/ruby_vm/views/optunifs.inc.erb \
@@ -663,8 +668,6 @@ $(INSNS): $(srcdir)/insns.def vm_opts.h \
 	  $(tooldir)/ruby_vm/views/vmtc.inc.erb
 	$(ECHO) generating $@
 	$(Q) $(BASERUBY) -Ku $(tooldir)/insns2vm.rb $(INSNS2VMOPT) $@
-
-verconf.h: $(RBCONFIG)
 
 loadpath: verconf.h
 	@$(CPP) $(XCFLAGS) $(CPPFLAGS) $(srcdir)/loadpath.c | \

@@ -317,7 +317,7 @@ class TestFileUtils < Test::Unit::TestCase
   def test_cp_preserve_permissions
     bug4507 = '[ruby-core:35518]'
     touch 'tmp/cptmp'
-    chmod 0755, 'tmp/cptmp'
+    chmod 0o755, 'tmp/cptmp'
     cp 'tmp/cptmp', 'tmp/cptmp2'
 
     assert_equal_filemode('tmp/cptmp', 'tmp/cptmp2', bug4507, mask: ~File.umask)
@@ -327,9 +327,9 @@ class TestFileUtils < Test::Unit::TestCase
     bug7246 = '[ruby-core:48603]'
     mkdir 'tmp/cptmp'
     mkdir 'tmp/cptmp/d1'
-    chmod 0745, 'tmp/cptmp/d1'
+    chmod 0o745, 'tmp/cptmp/d1'
     mkdir 'tmp/cptmp/d2'
-    chmod 0700, 'tmp/cptmp/d2'
+    chmod 0o700, 'tmp/cptmp/d2'
     cp_r 'tmp/cptmp', 'tmp/cptmp2', :preserve => true
     assert_equal_filemode('tmp/cptmp/d1', 'tmp/cptmp2/d1', bug7246)
     assert_equal_filemode('tmp/cptmp/d2', 'tmp/cptmp2/d2', bug7246)
@@ -750,6 +750,24 @@ class TestFileUtils < Test::Unit::TestCase
     assert_file_not_exist 'tmp/tmpdir3'
   end
 
+  def test_rm_r_no_permissions
+    check_singleton :rm_rf
+
+    return if /mswin|mingw/ =~ RUBY_PLATFORM
+
+    mkdir 'tmpdatadir'
+    touch 'tmpdatadir/tmpdata'
+    chmod "-x", 'tmpdatadir'
+
+    begin
+      assert_raise Errno::EACCES do
+        rm_r 'tmpdatadir'
+      end
+    ensure
+      chmod "+x", 'tmpdatadir'
+    end
+  end
+
   def test_remove_entry_cjk_path
     dir = "tmpdir\u3042"
     my_rm_rf dir
@@ -823,7 +841,7 @@ class TestFileUtils < Test::Unit::TestCase
       if File.sticky?('tmp/tmpdir')
         Dir.mkdir 'tmp/tmpdir/d', 0
         assert_raise(Errno::EACCES) {remove_entry_secure 'tmp/tmpdir/d'}
-        File.chmod 0777, 'tmp/tmpdir/d'
+        File.chmod 0o777, 'tmp/tmpdir/d'
         Dir.rmdir 'tmp/tmpdir/d'
       end
     end
@@ -1098,6 +1116,14 @@ class TestFileUtils < Test::Unit::TestCase
     ensure
       Dir.rmdir(drive) if drive and File.directory?(drive)
     end
+
+    def test_mkdir_p_offline_drive
+      offline_drive = ("A".."Z").to_a.reverse.find {|d| !File.exist?("#{d}:/") }
+
+      assert_raise(Errno::ENOENT) {
+        mkdir_p "#{offline_drive}:/new_dir"
+      }
+    end
   end
 
   def test_mkdir_p_file_perm
@@ -1227,9 +1253,9 @@ class TestFileUtils < Test::Unit::TestCase
     check_singleton :chmod
 
     touch 'tmp/a'
-    chmod 0700, 'tmp/a'
+    chmod 0o700, 'tmp/a'
     assert_filemode 0700, 'tmp/a'
-    chmod 0500, 'tmp/a'
+    chmod 0o500, 'tmp/a'
     assert_filemode 0500, 'tmp/a'
   end if have_file_perm?
 
@@ -1333,9 +1359,9 @@ class TestFileUtils < Test::Unit::TestCase
 
     assert_output_lines(["chmod 700 tmp/a", "chmod 500 tmp/a"]) {
       touch 'tmp/a'
-      chmod 0700, 'tmp/a', verbose: true
+      chmod 0o700, 'tmp/a', verbose: true
       assert_filemode 0700, 'tmp/a', mask: 0777
-      chmod 0500, 'tmp/a', verbose: true
+      chmod 0o500, 'tmp/a', verbose: true
       assert_filemode 0500, 'tmp/a', mask: 0777
     }
   end if have_file_perm?
@@ -1343,7 +1369,7 @@ class TestFileUtils < Test::Unit::TestCase
   def test_s_chmod_verbose
     assert_output_lines(["chmod 700 tmp/a"], FileUtils) {
       touch 'tmp/a'
-      FileUtils.chmod 0700, 'tmp/a', verbose: true
+      FileUtils.chmod 0o700, 'tmp/a', verbose: true
       assert_filemode 0700, 'tmp/a', mask: 0777
     }
   end if have_file_perm?
@@ -1656,7 +1682,7 @@ class TestFileUtils < Test::Unit::TestCase
 
   def test_remove_file_file_perm
     File.open('data/tmp', 'w') {|f| f.puts 'dummy' }
-    File.chmod 0, 'data/tmp'
+    File.chmod 0o000, 'data/tmp'
     remove_file 'data/tmp'
     assert_file_not_exist 'data/tmp'
   end if have_file_perm?
@@ -1671,7 +1697,7 @@ class TestFileUtils < Test::Unit::TestCase
 
   def test_remove_dir_file_perm
     Dir.mkdir 'data/tmpdir'
-    File.chmod 0555, 'data/tmpdir'
+    File.chmod 0o555, 'data/tmpdir'
     remove_dir 'data/tmpdir'
     assert_file_not_exist 'data/tmpdir'
   end if have_file_perm?
@@ -1790,10 +1816,30 @@ cd -
     return if /mswin|mingw/ =~ RUBY_PLATFORM
 
     mkdir 'tmpdatadir'
-    chmod 700, 'tmpdatadir'
+    chmod 0o000, 'tmpdatadir'
     rm_rf 'tmpdatadir'
 
     assert_file_not_exist 'tmpdatadir'
+  end
+
+  def test_rm_rf_no_permissions
+    check_singleton :rm_rf
+
+    return if /mswin|mingw/ =~ RUBY_PLATFORM
+
+    mkdir 'tmpdatadir'
+    touch 'tmpdatadir/tmpdata'
+    chmod "-x", 'tmpdatadir'
+
+    begin
+      assert_raise Errno::EACCES do
+        rm_rf 'tmpdatadir'
+      end
+
+      assert_file_exist 'tmpdatadir'
+    ensure
+      chmod "+x", 'tmpdatadir'
+    end
   end
 
   def test_rmdir

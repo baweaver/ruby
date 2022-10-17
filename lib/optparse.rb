@@ -765,15 +765,15 @@ class OptionParser
     end
 
     #
-    # Switch that takes an argument, which does not begin with '-'.
+    # Switch that takes an argument, which does not begin with '-' or is '-'.
     #
     class PlacedArgument < self
 
       #
-      # Returns nil if argument is not present or begins with '-'.
+      # Returns nil if argument is not present or begins with '-' and is not '-'.
       #
       def parse(arg, argv, &error)
-        if !(val = arg) and (argv.empty? or /\A-/ =~ (val = argv[0]))
+        if !(val = arg) and (argv.empty? or /\A-./ =~ (val = argv[0]))
           return nil, block, nil
         end
         opt = (val = parse_arg(val, &error))[1]
@@ -1502,7 +1502,7 @@ XXX
         style = notwice(default_style.guess(arg = o), style, 'style')
         default_pattern, conv = search(:atype, Object) unless default_pattern
       else
-        desc.push(o)
+        desc.push(o) if o && !o.empty?
       end
     end
 

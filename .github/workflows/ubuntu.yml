@@ -5,11 +5,13 @@ on:
       - 'doc/**'
       - '**.md'
       - '**.rdoc'
+      - '**/.document'
   pull_request:
     paths-ignore:
       - 'doc/**'
       - '**.md'
       - '**.rdoc'
+      - '**/.document'
 
 concurrency:
   group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
@@ -19,39 +21,40 @@ jobs:
   make:
     strategy:
       matrix:
-        test_task: ["check", "test-bundler-parallel", "test-bundled-gems"]
-        os:
-          - ubuntu-20.04
-#         - ubuntu-18.04
-        configure: ["", "cppflags=-DRUBY_DEBUG"]
+        # main variables included in the job name
+        test_task: [check]
+        configure: [cppflags=-DRUBY_DEBUG] # default to use more assertions
+        arch: ['']
+        # specify all jobs with `include` to avoid testing duplicated things
         include:
-          - test_task: "check"
-            configure: "--host=i686-$OSTYPE"
-          - test_task: "check"
+          - test_task: check
+          - test_task: check
+            arch: i686
+            configure: '' # test without -DRUBY_DEBUG as well
+          - test_task: check
             configure: "--enable-shared --enable-load-relative"
-            skipped_tests: "TestGem#test_.*_from_binstubs.*"
-            continue-on-skipped_tests: true
-          - test_task: "test-all TESTS=--repeat-count=2"
+          - test_task: test-all TESTS=--repeat-count=2
+          - test_task: test-syntax-suggest
+          - test_task: test-bundler-parallel
+          - test_task: test-bundled-gems
       fail-fast: false
     env:
       GITPULLOPTIONS: --no-tags origin ${{github.ref}}
       RUBY_DEBUG: ci
-    runs-on: ${{ matrix.os || 'ubuntu-20.04' }}
-    if: ${{ !startsWith(github.event.head_commit.message, '[DOC]') && !contains(github.event.pull_request.labels.*.name, 'Documentation') }}
+      SETARCH: ${{ matrix.arch && format('setarch {0}', matrix.arch) }}
+    runs-on: ubuntu-20.04
+    if: ${{ !contains(github.event.head_commit.message, '[DOC]') && !contains(github.event.pull_request.labels.*.name, 'Documentation') }}
     steps:
       - run: mkdir build
         working-directory:
       - name: Set ENV
-        env:
-          configure: ${{matrix.configure}}
         run: |
           echo "GNUMAKEFLAGS=-j$((1 + $(nproc --all)))" >> $GITHUB_ENV
-          arch=`echo " $configure" | sed '/.* --host=/!d;s///;s/[- ].*//'`
-          echo "SETARCH=${arch:+setarch $arch}" >> $GITHUB_ENV
       - name: Install libraries
+        env:
+          arch: ${{matrix.arch}}
         run: |
           set -x
-          arch="${SETARCH##* }"
           arch=${arch:+:${arch/i[3-6]86/i386}}
           ${arch:+sudo dpkg --add-architecture ${arch#:}}
           sudo apt-get update -q || :
@@ -84,12 +87,12 @@ jobs:
           arch: ${{matrix.arch}}
         run: >-
           $SETARCH ../src/configure -C --disable-install-doc ${{ matrix.configure }}
-          ${arch:+--target=$arch-$OSTYPE}
+          ${arch:+--target=$arch-$OSTYPE --host=$arch-$OSTYPE}
       - run: $SETARCH make incs
+      - run: $SETARCH make prepare-gems
+        if: ${{ matrix.test_task == 'test-bundled-gems' }}
       - run: $SETARCH make
       - run: $SETARCH make leaked-globals
-        if: ${{ matrix.test_task == 'check' }}
-      - run: $SETARCH make prepare-gems
         if: ${{ matrix.test_task == 'check' }}
       - name: Create dummy files in build dir
         run: |
@@ -118,7 +121,7 @@ jobs:
           payload: |
             {
               "ci": "GitHub Actions",
-              "env": "${{ matrix.os }} / ${{ matrix.test_task }}${{ matrix.configure }}",
+              "env": "${{ github.workflow }} / ${{ matrix.test_task }} ${{ matrix.configure }}${{ matrix.arch }}",
               "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
               "commit": "${{ github.sha }}",
               "branch": "${{ github.ref }}".split('/').reverse()[0]

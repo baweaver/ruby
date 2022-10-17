@@ -70,6 +70,16 @@ struct lex_context {
     BITFIELD(enum shareability, shareable_constant_value, 2);
 };
 
+#if defined(__GNUC__) && !defined(__clang__)
+// Suppress "parameter passing for argument of type 'struct
+// lex_context' changed" notes.  `struct lex_context` is file scope,
+// and has no ABI compatibility issue.
+RBIMPL_WARNING_PUSH()
+RBIMPL_WARNING_IGNORED(-Wpsabi)
+RBIMPL_WARNING_POP()
+// Not sure why effective even after popped.
+#endif
+
 #include "parse.h"
 
 #define NO_LEX_CTXT (struct lex_context){0}
@@ -222,12 +232,12 @@ enum {
 };
 
 #define NUMPARAM_ID_P(id) numparam_id_p(id)
-#define NUMPARAM_ID_TO_IDX(id) (unsigned int)(((id) >> ID_SCOPE_SHIFT) - tNUMPARAM_1 + 1)
-#define NUMPARAM_IDX_TO_ID(idx) TOKEN2LOCALID((tNUMPARAM_1 + (idx) - 1))
+#define NUMPARAM_ID_TO_IDX(id) (unsigned int)(((id) >> ID_SCOPE_SHIFT) - (tNUMPARAM_1 - 1))
+#define NUMPARAM_IDX_TO_ID(idx) TOKEN2LOCALID((tNUMPARAM_1 - 1 + (idx)))
 static int
 numparam_id_p(ID id)
 {
-    if (!is_local_id(id)) return 0;
+    if (!is_local_id(id) || id < (tNUMPARAM_1 << ID_SCOPE_SHIFT)) return 0;
     unsigned int idx = NUMPARAM_ID_TO_IDX(id);
     return idx > 0 && idx <= NUMPARAM_MAX;
 }
@@ -338,12 +348,15 @@ struct parser_params {
     unsigned int do_chomp: 1;
     unsigned int do_split: 1;
     unsigned int keep_script_lines: 1;
+    unsigned int error_tolerant: 1;
 
     NODE *eval_tree_begin;
     NODE *eval_tree;
     VALUE error_buffer;
     VALUE debug_lines;
     const struct rb_iseq_struct *parent_iseq;
+    /* store specific keyword locations to generate dummy end token */
+    VALUE end_expect_token_locations;
 #else
     /* Ripper only */
 
@@ -396,6 +409,43 @@ pop_pktbl(struct parser_params *p, st_table *tbl)
     if (p->pktbl) st_free_table(p->pktbl);
     p->pktbl = tbl;
 }
+
+#ifndef RIPPER
+static void flush_debug_buffer(struct parser_params *p, VALUE out, VALUE str);
+
+static void
+debug_end_expect_token_locations(struct parser_params *p, const char *name)
+{
+    if(p->debug) {
+        VALUE mesg = rb_sprintf("%s: ", name);
+        rb_str_catf(mesg, " %"PRIsVALUE"\n", p->end_expect_token_locations);
+        flush_debug_buffer(p, p->debug_output, mesg);
+    }
+}
+
+static void
+push_end_expect_token_locations(struct parser_params *p, const rb_code_position_t *pos)
+{
+    if(NIL_P(p->end_expect_token_locations)) return;
+    rb_ary_push(p->end_expect_token_locations, rb_ary_new_from_args(2, INT2NUM(pos->lineno), INT2NUM(pos->column)));
+    debug_end_expect_token_locations(p, "push_end_expect_token_locations");
+}
+
+static void
+pop_end_expect_token_locations(struct parser_params *p)
+{
+    if(NIL_P(p->end_expect_token_locations)) return;
+    rb_ary_pop(p->end_expect_token_locations);
+    debug_end_expect_token_locations(p, "pop_end_expect_token_locations");
+}
+
+static VALUE
+peek_end_expect_token_locations(struct parser_params *p)
+{
+    if(NIL_P(p->end_expect_token_locations)) return Qnil;
+    return rb_ary_last(0, 0, p->end_expect_token_locations);
+}
+#endif
 
 RBIMPL_ATTR_NONNULL((1, 2, 3))
 static int parser_yyerror(struct parser_params*, const YYLTYPE *yylloc, const char*);
@@ -1203,6 +1253,7 @@ static int looking_at_eol_p(struct parser_params *p);
 %token <node> tBACK_REF      "back reference"
 %token <node> tSTRING_CONTENT "literal content"
 %token <num>  tREGEXP_END
+%token <num>  tDUMNY_END     "dummy end"
 
 %type <node> singleton strings string string1 xstring regexp
 %type <node> string_contents xstring_contents regexp_contents string_content
@@ -1379,10 +1430,6 @@ top_stmts	: none
 		    /*% %*/
 		    /*% ripper: stmts_add!($1, $3) %*/
 		    }
-		| error top_stmt
-		    {
-			$$ = remove_begin($2);
-		    }
 		;
 
 top_stmt	: stmt
@@ -1451,10 +1498,6 @@ stmts		: none
 			$$ = block_append(p, $1, newline_node($3));
 		    /*% %*/
 		    /*% ripper: stmts_add!($1, $3) %*/
-		    }
-		| error stmt
-		    {
-			$$ = remove_begin($2);
 		    }
 		;
 
@@ -1608,6 +1651,12 @@ stmt		: keyword_alias fitem {SET_LEX_STATE(EXPR_FNAME|EXPR_FITEM);} fitem
 		    /*% ripper: massign!($1, $4) %*/
 		    }
 		| expr
+		| error
+		    {
+		    /*%%%*/
+			$$ = NEW_ERROR(&@$);
+		    /*% %*/
+		    }
 		;
 
 command_asgn	: lhs '=' lex_ctxt command_rhs
@@ -1764,14 +1813,18 @@ expr		: command_call
 			p->ctxt.in_kwarg = 1;
 			$<tbl>$ = push_pvtbl(p);
 		    }
+		    {
+			$<tbl>$ = push_pktbl(p);
+		    }
 		  p_top_expr_body
 		    {
+			pop_pktbl(p, $<tbl>4);
 			pop_pvtbl(p, $<tbl>3);
 			p->ctxt.in_kwarg = $<ctxt>2.in_kwarg;
 		    /*%%%*/
-			$$ = NEW_CASE3($1, NEW_IN($4, 0, 0, &@4), &@$);
+			$$ = NEW_CASE3($1, NEW_IN($5, 0, 0, &@5), &@$);
 		    /*% %*/
-		    /*% ripper: case!($1, in!($4, Qnil, Qnil)) %*/
+		    /*% ripper: case!($1, in!($5, Qnil, Qnil)) %*/
 		    }
 		| arg keyword_in
 		    {
@@ -1782,14 +1835,18 @@ expr		: command_call
 			p->ctxt.in_kwarg = 1;
 			$<tbl>$ = push_pvtbl(p);
 		    }
+		    {
+			$<tbl>$ = push_pktbl(p);
+		    }
 		  p_top_expr_body
 		    {
+			pop_pktbl(p, $<tbl>4);
 			pop_pvtbl(p, $<tbl>3);
 			p->ctxt.in_kwarg = $<ctxt>2.in_kwarg;
 		    /*%%%*/
-			$$ = NEW_CASE3($1, NEW_IN($4, NEW_TRUE(&@4), NEW_FALSE(&@4), &@4), &@$);
+			$$ = NEW_CASE3($1, NEW_IN($5, NEW_TRUE(&@5), NEW_FALSE(&@5), &@5), &@$);
 		    /*% %*/
-		    /*% ripper: case!($1, in!($4, Qnil, Qnil)) %*/
+		    /*% ripper: case!($1, in!($5, Qnil, Qnil)) %*/
 		    }
 		| arg %prec tLBRACE_ARG
 		;
@@ -1843,6 +1900,12 @@ expr_value	: expr
 		    {
 			value_expr($1);
 			$$ = $1;
+		    }
+		| error
+		    {
+		    /*%%%*/
+			$$ = NEW_ERROR(&@$);
+		    /*% %*/
 		    }
 		;
 
@@ -2663,11 +2726,7 @@ rel_expr	: arg relop arg   %prec '>'
 		    }
 		;
 
-lex_ctxt	: tSP
-		    {
-			$$ = p->ctxt;
-		    }
-		| none
+lex_ctxt	: none
 		    {
 			$$ = p->ctxt;
 		    }
@@ -2856,14 +2915,13 @@ block_arg	: tAMPER arg_value
 		    }
                 | tAMPER
                     {
-                    /*%%%*/
                         if (!local_id(p, ANON_BLOCK_ID)) {
                             compile_error(p, "no anonymous block parameter");
                         }
+                    /*%%%*/
                         $$ = NEW_BLOCK_PASS(NEW_LVAR(ANON_BLOCK_ID, &@1), &@$);
-                    /*%
-                    $$ = Qnil;
-                    %*/
+                    /*% %*/
+                    /*% ripper: Qnil %*/
                     }
 		;
 
@@ -2894,10 +2952,10 @@ args		: arg_value
 		    }
 		| tSTAR
 		    {
-		    /*%%%*/
                         if (!local_id(p, ANON_REST_ID)) {
                             compile_error(p, "no anonymous rest parameter");
                         }
+		    /*%%%*/
 			$$ = NEW_SPLAT(NEW_LVAR(ANON_REST_ID, &@1), &@$);
 		    /*% %*/
 		    /*% ripper: args_add_star!(args_new!, Qnil) %*/
@@ -2918,10 +2976,10 @@ args		: arg_value
 		    }
 		| args ',' tSTAR
 		    {
-		    /*%%%*/
                         if (!local_id(p, ANON_REST_ID)) {
                             compile_error(p, "no anonymous rest parameter");
                         }
+		    /*%%%*/
 			$$ = rest_arg_append(p, $1, NEW_LVAR(ANON_REST_ID, &@3), &@$);
 		    /*% %*/
 		    /*% ripper: args_add_star!($1, Qnil) %*/
@@ -3293,28 +3351,38 @@ primary		: literal
 		    }
 		| defn_head
 		  f_arglist
+		    {
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
+		    }
 		  bodystmt
 		  k_end
 		    {
 			restore_defun(p, $<node>1->nd_defn);
 		    /*%%%*/
-			$$ = set_defun_body(p, $1, $2, $3, &@$);
+			$$ = set_defun_body(p, $1, $2, $4, &@$);
 		    /*% %*/
-		    /*% ripper: def!(get_value($1), $2, $3) %*/
+		    /*% ripper: def!(get_value($1), $2, $4) %*/
 			local_pop(p);
 		    }
 		| defs_head
 		  f_arglist
+		    {
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
+		    }
 		  bodystmt
 		  k_end
 		    {
 			restore_defun(p, $<node>1->nd_defn);
 		    /*%%%*/
-			$$ = set_defun_body(p, $1, $2, $3, &@$);
+			$$ = set_defun_body(p, $1, $2, $4, &@$);
 		    /*%
 			$1 = get_value($1);
 		    %*/
-		    /*% ripper: defs!(AREF($1, 0), AREF($1, 1), AREF($1, 2), $2, $3) %*/
+		    /*% ripper: defs!(AREF($1, 0), AREF($1, 1), AREF($1, 2), $2, $4) %*/
 			local_pop(p);
 		    }
 		| keyword_break
@@ -3357,6 +3425,9 @@ primary_value	: primary
 k_begin		: keyword_begin
 		    {
 			token_info_push(p, "begin", &@$);
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
@@ -3374,36 +3445,54 @@ k_if		: keyword_if
 				p->token_info->nonspc = 0;
 			    }
 			}
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
 k_unless	: keyword_unless
 		    {
 			token_info_push(p, "unless", &@$);
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
 k_while		: keyword_while
 		    {
 			token_info_push(p, "while", &@$);
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
 k_until		: keyword_until
 		    {
 			token_info_push(p, "until", &@$);
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
 k_case		: keyword_case
 		    {
 			token_info_push(p, "case", &@$);
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
 k_for		: keyword_for
 		    {
 			token_info_push(p, "for", &@$);
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
@@ -3411,6 +3500,9 @@ k_class		: keyword_class
 		    {
 			token_info_push(p, "class", &@$);
 			$<ctxt>$ = p->ctxt;
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
@@ -3418,6 +3510,9 @@ k_module	: keyword_module
 		    {
 			token_info_push(p, "module", &@$);
 			$<ctxt>$ = p->ctxt;
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
@@ -3431,12 +3526,19 @@ k_def		: keyword_def
 k_do		: keyword_do
 		    {
 			token_info_push(p, "do", &@$);
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
+
 		    }
 		;
 
 k_do_block	: keyword_do_block
 		    {
 			token_info_push(p, "do", &@$);
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
 		    }
 		;
 
@@ -3483,6 +3585,13 @@ k_elsif 	: keyword_elsif
 k_end		: keyword_end
 		    {
 			token_info_pop(p, "end", &@$);
+		    /*%%%*/
+			pop_end_expect_token_locations(p);
+		    /*% %*/
+		    }
+		| tDUMNY_END
+		    {
+			compile_error(p, "syntax error, unexpected end-of-input");
 		    }
 		;
 
@@ -3848,9 +3957,15 @@ lambda_body	: tLAMBEG compstmt '}'
 			token_info_pop(p, "}", &@3);
 			$$ = $2;
 		    }
-		| keyword_do_LAMBDA bodystmt k_end
+		| keyword_do_LAMBDA
 		    {
-			$$ = $2;
+		    /*%%%*/
+			push_end_expect_token_locations(p, &@1.beg_pos);
+		    /*% %*/
+		    }
+		  bodystmt k_end
+		    {
+			$$ = $3;
 		    }
 		;
 
@@ -5030,9 +5145,7 @@ ssym		: tSYMBEG sym
 		;
 
 sym		: fname
-		| tIVAR
-		| tGVAR
-		| tCVAR
+		| nonlocal_var
 		;
 
 dsym		: tSYMBEG string_contents tSTRING_END
@@ -5068,10 +5181,8 @@ nonlocal_var    : tIVAR
 		;
 
 user_variable	: tIDENTIFIER
-		| tIVAR
-		| tGVAR
 		| tCONSTANT
-		| tCVAR
+		| nonlocal_var
 		;
 
 keyword_variable: keyword_nil {$$ = KWD2EID(nil, $1);}
@@ -5489,8 +5600,9 @@ f_kwrest	: kwrest_mark tIDENTIFIER
 		    }
 		| kwrest_mark
 		    {
+			arg_var(p, ANON_KEYWORD_REST_ID);
 		    /*%%%*/
-			arg_var(p, shadowing_lvar(p, get_id(ANON_KEYWORD_REST_ID)));
+			$$ = internal_id(p);
 		    /*% %*/
 		    /*% ripper: kwrest_param!(Qnil) %*/
 		    }
@@ -5564,8 +5676,9 @@ f_rest_arg	: restarg_mark tIDENTIFIER
 		    }
 		| restarg_mark
 		    {
+			arg_var(p, ANON_REST_ID);
 		    /*%%%*/
-                        arg_var(p, shadowing_lvar(p, get_id(ANON_REST_ID)));
+			$$ = internal_id(p);
 		    /*% %*/
 		    /*% ripper: rest_param!(Qnil) %*/
 		    }
@@ -5585,11 +5698,11 @@ f_block_arg	: blkarg_mark tIDENTIFIER
 		    }
                 | blkarg_mark
                     {
+			arg_var(p, ANON_BLOCK_ID);
                     /*%%%*/
-                        arg_var(p, shadowing_lvar(p, get_id(ANON_BLOCK_ID)));
-                    /*%
-                    $$ = dispatch1(blockarg, Qnil);
-                    %*/
+			$$ = internal_id(p);
+                    /*% %*/
+		    /*% ripper: blockarg!(Qnil) %*/
                     }
 		;
 
@@ -5721,10 +5834,10 @@ assoc		: arg_value tASSOC arg_value
 		    }
 		| tDSTAR
 		    {
-		    /*%%%*/
                         if (!local_id(p, ANON_KEYWORD_REST_ID)) {
                             compile_error(p, "no anonymous keyword rest parameter");
                         }
+		    /*%%%*/
                         $$ = list_append(p, NEW_LIST(0, &@$),
                                          NEW_LVAR(ANON_KEYWORD_REST_ID, &@$));
 		    /*% %*/
@@ -5775,8 +5888,7 @@ rbracket	: opt_nl ']'
 rbrace		: opt_nl '}'
 		;
 
-trailer		: /* none */
-		| '\n'
+trailer		: opt_nl
 		| ','
 		;
 
@@ -6376,8 +6488,10 @@ yycompile0(VALUE arg)
 	if (!mesg) {
 	    mesg = rb_class_new_instance(0, 0, rb_eSyntaxError);
 	}
-	rb_set_errinfo(mesg);
-	return FALSE;
+	if (!p->error_tolerant) {
+	    rb_set_errinfo(mesg);
+	    return FALSE;
+	}
     }
     tree = p->eval_tree;
     if (!tree) {
@@ -6464,12 +6578,6 @@ lex_getline(struct parser_params *p)
     if (NIL_P(line)) return line;
     must_be_ascii_compatible(line);
     if (RB_OBJ_FROZEN(line)) line = rb_str_dup(line); // needed for RubyVM::AST.of because script_lines in iseq is deep-frozen
-#ifndef RIPPER
-    if (p->debug_lines) {
-	rb_enc_associate(line, p->enc);
-	rb_ary_push(p->debug_lines, line);
-    }
-#endif
     p->line_count++;
     return line;
 }
@@ -6578,7 +6686,7 @@ parser_str_new(const char *ptr, long len, rb_encoding *enc, int func, rb_encodin
 
     str = rb_enc_str_new(ptr, len, enc);
     if (!(func & STR_FUNC_REGEXP) && rb_enc_asciicompat(enc)) {
-	if (rb_enc_str_coderange(str) == ENC_CODERANGE_7BIT) {
+	if (is_ascii_string(str)) {
 	}
 	else if (enc0 == rb_usascii_encoding() && enc != rb_utf8_encoding()) {
 	    rb_enc_associate(str, rb_ascii8bit_encoding());
@@ -6616,7 +6724,7 @@ add_delayed_token(struct parser_params *p, const char *tok, const char *end)
 #endif
 
 static int
-nextline(struct parser_params *p)
+nextline(struct parser_params *p, int set_encoding)
 {
     VALUE v = p->lex.nextline;
     p->lex.nextline = 0;
@@ -6634,6 +6742,12 @@ nextline(struct parser_params *p)
 	    lex_goto_eol(p);
 	    return -1;
 	}
+#ifndef RIPPER
+	if (p->debug_lines) {
+	    if (set_encoding) rb_enc_associate(v, p->enc);
+	    rb_ary_push(p->debug_lines, v);
+	}
+#endif
 	p->cr_seen = FALSE;
     }
     else if (NIL_P(v)) {
@@ -6665,12 +6779,12 @@ parser_cr(struct parser_params *p, int c)
 }
 
 static inline int
-nextc(struct parser_params *p)
+nextc0(struct parser_params *p, int set_encoding)
 {
     int c;
 
     if (UNLIKELY((p->lex.pcur == p->lex.pend) || p->eofp || RTEST(p->lex.nextline))) {
-	if (nextline(p)) return -1;
+	if (nextline(p, set_encoding)) return -1;
     }
     c = (unsigned char)*p->lex.pcur++;
     if (UNLIKELY(c == '\r')) {
@@ -6679,6 +6793,7 @@ nextc(struct parser_params *p)
 
     return c;
 }
+#define nextc(p) nextc0(p, TRUE)
 
 static void
 pushback(struct parser_params *p, int c)
@@ -7196,6 +7311,10 @@ tokadd_string(struct parser_params *p,
 {
     int c;
     bool erred = false;
+#ifdef RIPPER
+    const int heredoc_end = (p->heredoc_end ? p->heredoc_end + 1 : 0);
+    int top_of_line = FALSE;
+#endif
 
 #define mixed_error(enc1, enc2) \
     (void)(erred || (parser_mixed_error(p, enc1, enc2), erred = true))
@@ -7206,6 +7325,12 @@ tokadd_string(struct parser_params *p,
 	if (p->heredoc_indent > 0) {
 	    parser_update_heredoc_indent(p, c);
 	}
+#ifdef RIPPER
+        if (top_of_line && heredoc_end == p->ruby_sourceline) {
+            pushback(p, c);
+            break;
+        }
+#endif
 
 	if (paren && c == paren) {
 	    ++*nest;
@@ -7332,6 +7457,9 @@ tokadd_string(struct parser_params *p,
 	    }
         }
 	tokadd(p, c);
+#ifdef RIPPER
+	top_of_line = (c == '\n');
+#endif
     }
   terminate:
     if (*enc) *encp = *enc;
@@ -7452,7 +7580,7 @@ parser_string_term(struct parser_params *p, int func)
     }
     if ((func & STR_FUNC_LABEL) && IS_LABEL_SUFFIX(0)) {
 	nextc(p);
-	SET_LEX_STATE(EXPR_BEG|EXPR_LABEL);
+	SET_LEX_STATE(EXPR_ARG|EXPR_LABELED);
 	return tLABEL_END;
     }
     SET_LEX_STATE(EXPR_END);
@@ -8469,7 +8597,7 @@ set_file_encoding(struct parser_params *p, const char *str, const char *send)
 static void
 parser_prepare(struct parser_params *p)
 {
-    int c = nextc(p);
+    int c = nextc0(p, FALSE);
     p->token_info_enabled = !compile_for_eval && RTEST(ruby_verbose);
     switch (c) {
       case '#':
@@ -8481,6 +8609,11 @@ parser_prepare(struct parser_params *p)
 	    (unsigned char)p->lex.pcur[1] == 0xbf) {
 	    p->enc = rb_utf8_encoding();
 	    p->lex.pcur += 2;
+#ifndef RIPPER
+	    if (p->debug_lines) {
+		rb_enc_associate(p->lex.lastline, p->enc);
+	    }
+#endif
 	    p->lex.pbeg = p->lex.pcur;
 	    return;
 	}
@@ -9166,6 +9299,7 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
     int mb = ENC_CODERANGE_7BIT;
     const enum lex_state_e last_state = p->lex.state;
     ID ident;
+    int enforce_keyword_end = 0;
 
     do {
 	if (!ISASCII(c)) mb = ENC_CODERANGE_UNKNOWN;
@@ -9195,7 +9329,34 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
 	    return tLABEL;
 	}
     }
-    if (mb == ENC_CODERANGE_7BIT && !IS_lex_state(EXPR_DOT)) {
+
+#ifndef RIPPER
+    if (!NIL_P(peek_end_expect_token_locations(p))) {
+	VALUE end_loc;
+	int lineno, column;
+	int beg_pos = (int)(p->lex.ptok - p->lex.pbeg);
+
+	end_loc = peek_end_expect_token_locations(p);
+	lineno = NUM2INT(rb_ary_entry(end_loc, 0));
+	column = NUM2INT(rb_ary_entry(end_loc, 1));
+
+	if (p->debug) {
+	    rb_parser_printf(p, "enforce_keyword_end check. current: (%d, %d), peek: (%d, %d)\n",
+				p->ruby_sourceline, beg_pos, lineno, column);
+	}
+
+	if ((p->ruby_sourceline > lineno) && (beg_pos <= column)) {
+	    const struct kwtable *kw;
+
+	    if ((IS_lex_state(EXPR_DOT)) && (kw = rb_reserved_word(tok(p), toklen(p))) && (kw && kw->id[0] == keyword_end)) {
+		if (p->debug) rb_parser_printf(p, "enforce_keyword_end is enabled\n");
+		enforce_keyword_end = 1;
+	    }
+	}
+    }
+#endif
+
+    if (mb == ENC_CODERANGE_7BIT && (!IS_lex_state(EXPR_DOT) || enforce_keyword_end)) {
 	const struct kwtable *kw;
 
 	/* See if it is a reserved word.  */
@@ -9221,7 +9382,7 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
 		    return keyword_do_block;
 		return keyword_do;
 	    }
-	    if (IS_lex_state_for(state, (EXPR_BEG | EXPR_LABELED)))
+	    if (IS_lex_state_for(state, (EXPR_BEG | EXPR_LABELED | EXPR_CLASS)))
 		return kw->id[0];
 	    else {
 		if (kw->id[0] != kw->id[1])
@@ -9289,6 +9450,13 @@ parser_yylex(struct parser_params *p)
       case '\004':		/* ^D */
       case '\032':		/* ^Z */
       case -1:			/* end of script. */
+	p->eofp  = 1;
+#ifndef RIPPER
+	if (!NIL_P(p->end_expect_token_locations) && RARRAY_LEN(p->end_expect_token_locations) > 0) {
+	    pop_end_expect_token_locations(p);
+	    return tDUMNY_END;
+	}
+#endif
 	return 0;
 
 	/* white spaces */
@@ -10534,13 +10702,7 @@ static NODE *
 kwd_append(NODE *kwlist, NODE *kw)
 {
     if (kwlist) {
-	NODE *kws = kwlist;
-	kws->nd_loc.end_pos = kw->nd_loc.end_pos;
-	while (kws->nd_next) {
-	    kws = kws->nd_next;
-	    kws->nd_loc.end_pos = kw->nd_loc.end_pos;
-	}
-	kws->nd_next = kw;
+	opt_arg_append(kwlist, kw);
     }
     return kwlist;
 }
@@ -11932,7 +12094,7 @@ logop(struct parser_params *p, ID id, NODE *left, NODE *right,
 static void
 no_blockarg(struct parser_params *p, NODE *node)
 {
-    if (node && nd_type_p(node, NODE_BLOCK_PASS)) {
+    if (nd_type_p(node, NODE_BLOCK_PASS)) {
 	compile_error(p, "block argument should not be given");
     }
 }
@@ -12935,21 +13097,21 @@ rb_reg_fragment_setenc(struct parser_params* p, VALUE str, int options)
 	int opt, idx;
 	rb_char_to_option_kcode(c, &opt, &idx);
 	if (idx != ENCODING_GET(str) &&
-	    rb_enc_str_coderange(str) != ENC_CODERANGE_7BIT) {
+	    !is_ascii_string(str)) {
             goto error;
 	}
 	ENCODING_SET(str, idx);
     }
     else if (RE_OPTION_ENCODING_NONE(options)) {
         if (!ENCODING_IS_ASCII8BIT(str) &&
-            rb_enc_str_coderange(str) != ENC_CODERANGE_7BIT) {
+            !is_ascii_string(str)) {
             c = 'n';
             goto error;
         }
 	rb_enc_associate(str, rb_ascii8bit_encoding());
     }
     else if (p->enc == rb_usascii_encoding()) {
-	if (rb_enc_str_coderange(str) != ENC_CODERANGE_7BIT) {
+	if (!is_ascii_string(str)) {
 	    /* raise in re.c */
 	    rb_enc_associate(str, rb_usascii_encoding());
 	}
@@ -13160,6 +13322,7 @@ parser_initialize(struct parser_params *p)
     p->parsing_thread = Qnil;
 #else
     p->error_buffer = Qfalse;
+    p->end_expect_token_locations = Qnil;
 #endif
     p->debug_buffer = Qnil;
     p->debug_output = rb_ractor_stdout();
@@ -13188,6 +13351,7 @@ parser_mark(void *ptr)
     rb_gc_mark(p->debug_lines);
     rb_gc_mark(p->compile_option);
     rb_gc_mark(p->error_buffer);
+    rb_gc_mark(p->end_expect_token_locations);
 #else
     rb_gc_mark(p->delayed.token);
     rb_gc_mark(p->value);
@@ -13292,6 +13456,17 @@ rb_parser_keep_script_lines(VALUE vparser)
     TypedData_Get_Struct(vparser, struct parser_params, &parser_data_type, p);
     p->keep_script_lines = 1;
 }
+
+void
+rb_parser_error_tolerant(VALUE vparser)
+{
+    struct parser_params *p;
+
+    TypedData_Get_Struct(vparser, struct parser_params, &parser_data_type, p);
+    p->error_tolerant = 1;
+    p->end_expect_token_locations = rb_ary_new();
+}
+
 #endif
 
 #ifdef RIPPER
@@ -13601,7 +13776,7 @@ ripper_validate_object(VALUE self, VALUE x)
 {
     if (x == Qfalse) return x;
     if (x == Qtrue) return x;
-    if (x == Qnil) return x;
+    if (NIL_P(x)) return x;
     if (x == Qundef)
 	rb_raise(rb_eArgError, "Qundef given");
     if (FIXNUM_P(x)) return x;

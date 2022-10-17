@@ -78,9 +78,6 @@ module Spec
     end
 
     def bundle(cmd, options = {}, &block)
-      with_sudo = options.delete(:sudo)
-      sudo = with_sudo == :preserve_env ? "sudo -E --preserve-env=RUBYOPT" : "sudo" if with_sudo
-
       bundle_bin = options.delete(:bundle_bin)
       bundle_bin ||= installed_bindir.join("bundle")
 
@@ -119,7 +116,7 @@ module Spec
         end
       end.join
 
-      ruby_cmd = build_ruby_cmd({ :sudo => sudo, :load_path => load_path, :requires => requires })
+      ruby_cmd = build_ruby_cmd({ :load_path => load_path, :requires => requires })
       cmd = "#{ruby_cmd} #{bundle_bin} #{cmd}#{args}"
       sys_exec(cmd, { :env => env, :dir => dir, :raise_on_error => raise_on_error }, &block)
     end
@@ -146,8 +143,6 @@ module Spec
     end
 
     def build_ruby_cmd(options = {})
-      sudo = options.delete(:sudo)
-
       libs = options.delete(:load_path)
       lib_option = libs ? "-I#{libs.join(File::PATH_SEPARATOR)}" : []
 
@@ -155,7 +150,7 @@ module Spec
       requires << "#{Path.spec_dir}/support/hax.rb"
       require_option = requires.map {|r| "-r#{r}" }
 
-      [sudo, Gem.ruby, *lib_option, *require_option].compact.join(" ")
+      [Gem.ruby, *lib_option, *require_option].compact.join(" ")
     end
 
     def gembin(cmd, options = {})
@@ -445,12 +440,16 @@ module Spec
       ENV["BUNDLER_SPEC_PLATFORM"] = old if block_given?
     end
 
-    def simulate_windows(platform = mswin)
+    def simulate_windows(platform = x86_mswin32)
+      old = ENV["BUNDLER_SPEC_WINDOWS"]
+      ENV["BUNDLER_SPEC_WINDOWS"] = "true"
       simulate_platform platform do
         simulate_bundler_version_when_missing_prerelease_default_gem_activation do
           yield
         end
       end
+    ensure
+      ENV["BUNDLER_SPEC_WINDOWS"] = old
     end
 
     def simulate_bundler_version_when_missing_prerelease_default_gem_activation
@@ -472,7 +471,7 @@ module Spec
     end
 
     def current_ruby_minor
-      Gem.ruby_version.segments[0..1].join(".")
+      Gem.ruby_version.segments.tap {|s| s.delete_at(2) }.join(".")
     end
 
     def next_ruby_minor

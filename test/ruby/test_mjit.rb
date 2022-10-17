@@ -1,5 +1,4 @@
 # frozen_string_literal: true
-require 'shellwords'
 require 'test/unit'
 require 'tmpdir'
 require_relative '../lib/jit_support'
@@ -180,7 +179,7 @@ class TestMJIT < Test::Unit::TestCase
   end
 
   def test_compile_insn_constant
-    assert_compile_once("#{<<~"begin;"}\n#{<<~"end;"}", result_inspect: '1', insns: %i[getconstant setconstant])
+    assert_compile_once("#{<<~"begin;"}\n#{<<~"end;"}", result_inspect: '1', insns: %i[opt_getconstant_path setconstant])
     begin;
       FOO = 1
       FOO
@@ -491,8 +490,8 @@ class TestMJIT < Test::Unit::TestCase
     end;
   end
 
-  def test_compile_insn_inlinecache
-    assert_compile_once('Struct', result_inspect: 'Struct', insns: %i[opt_getinlinecache opt_setinlinecache])
+  def test_compile_insn_getconstant_path
+    assert_compile_once('Struct', result_inspect: 'Struct', insns: %i[opt_getconstant_path])
   end
 
   def test_compile_insn_once
@@ -621,6 +620,16 @@ class TestMJIT < Test::Unit::TestCase
     end;
   end
 
+  def test_compile_opt_pc
+    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: 'hello', success_count: 1)
+    begin;
+      def test(arg = 'hello')
+        print arg
+      end
+      test
+    end;
+  end
+
   def test_mjit_output
     out, err = eval_with_jit('5.times { puts "MJIT" }', verbose: 1, min_calls: 5)
     assert_equal("MJIT\n" * 5, out)
@@ -740,7 +749,7 @@ class TestMJIT < Test::Unit::TestCase
       end
 
       def a
-        # Calling #b should be vm_exec, not direct mjit_exec.
+        # Calling #b should be vm_exec, not direct jit_exec.
         # Otherwise `1` on local variable would be purged.
         1 + b
       end
@@ -773,9 +782,9 @@ class TestMJIT < Test::Unit::TestCase
   def test_catching_deep_exception
     assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: '1', success_count: 4)
     begin;
-      def catch_true(paths, prefixes) # catch_except_p: TRUE
-        prefixes.each do |prefix| # catch_except_p: TRUE
-          paths.each do |path| # catch_except_p: FALSE
+      def catch_true(paths, prefixes) # catch_except_p: true
+        prefixes.each do |prefix| # catch_except_p: true
+          paths.each do |path| # catch_except_p: false
             return path
           end
         end
@@ -822,7 +831,7 @@ class TestMJIT < Test::Unit::TestCase
   end
 
   def test_inlined_exivar
-    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: "aaa", success_count: 3, recompile_count: 1, min_calls: 2)
+    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: "aaa", success_count: 4, recompile_count: 2, min_calls: 2)
     begin;
       class Foo < Hash
         def initialize
@@ -841,7 +850,7 @@ class TestMJIT < Test::Unit::TestCase
   end
 
   def test_inlined_undefined_ivar
-    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: "bbb", success_count: 3, min_calls: 3)
+    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: "bbb", success_count: 2, min_calls: 2)
     begin;
       class Foo
         def initialize
@@ -960,23 +969,24 @@ class TestMJIT < Test::Unit::TestCase
   end
 
   def test_heap_promotion_of_ivar_in_the_middle_of_jit
+    omit if GC.using_rvargc?
+
     assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: "true\ntrue\n", success_count: 2, min_calls: 2)
     begin;
       class A
         def initialize
           @iv0 = nil
           @iv1 = []
-          @iv2 = nil
         end
 
         def test(add)
           @iv0.nil?
-          @iv2.nil?
           add_ivar if add
           @iv1.empty?
         end
 
         def add_ivar
+          @iv2 = nil
           @iv3 = nil
         end
       end
@@ -1189,6 +1199,18 @@ class TestMJIT < Test::Unit::TestCase
     end
   end if defined?(fork)
 
+  def test_jit_failure
+    _, err = eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", min_calls: 1, verbose: 1)
+    begin;
+      1.times do
+        class A
+        end
+      end
+    end;
+    assert_match(/^MJIT warning: .+ unsupported instruction: defineclass/, err)
+    assert_match(/^JIT failure: block in <main>/, err)
+  end
+
   private
 
   # The shortest way to test one proc
@@ -1207,7 +1229,7 @@ class TestMJIT < Test::Unit::TestCase
     success_actual = err.scan(/^#{JIT_SUCCESS_PREFIX}:/).size
     recompile_actual = err.scan(/^#{JIT_RECOMPILE_PREFIX}:/).size
     # Add --mjit-verbose=2 logs for cl.exe because compiler's error message is suppressed
-    # for cl.exe with --mjit-verbose=1. See `start_process` in mjit_worker.c.
+    # for cl.exe with --mjit-verbose=1. See `start_process` in mjit.c.
     if RUBY_PLATFORM.match?(/mswin/) && success_count != success_actual
       out2, err2 = eval_with_jit(script, verbose: 2, min_calls: min_calls, max_cache: max_cache)
     end

@@ -1,5 +1,20 @@
 # frozen_string_literal: true
 
+# Enable deprecation warnings for test-all, so deprecated methods/constants/functions are dealt with early.
+Warning[:deprecated] = true
+
+if ENV['BACKTRACE_FOR_DEPRECATION_WARNINGS']
+  Warning.extend Module.new {
+    def warn(message, category: nil, **kwargs)
+      if category == :deprecated and $stderr.respond_to?(:puts)
+        $stderr.puts nil, message, caller, nil
+      else
+        super
+      end
+    end
+  }
+end
+
 require_relative '../envutil'
 require_relative '../colorize'
 require_relative '../leakchecker'
@@ -199,8 +214,6 @@ module Test
         @help = "\n" + orig_args.map { |s|
           "  " + (s =~ /[\s|&<>$()]/ ? s.inspect : s)
         }.join("\n")
-
-        @failed_output = options[:stderr_on_failure] ? $stderr : $stdout
 
         @options = options
       end
@@ -1121,9 +1134,6 @@ module Test
         parser.on '-x', '--exclude REGEXP', 'Exclude test files on pattern.' do |pattern|
           (options[:reject] ||= []) << pattern
         end
-        parser.on '--stderr-on-failure', 'Use stderr to print failure messages' do
-          options[:stderr_on_failure] = true
-        end
       end
 
       def complement_test_name f, orig_f
@@ -1180,6 +1190,28 @@ module Test
         }
         files.flatten!
         super(files, options)
+      end
+    end
+
+    module OutputOption # :nodoc: all
+      def setup_options(parser, options)
+        super
+        parser.separator "output options:"
+
+        options[:failed_output] = $stdout
+        parser.on '--stderr-on-failure', 'Use stderr to print failure messages' do
+          options[:failed_output] = $stderr
+        end
+        parser.on '--stdout-on-failure', 'Use stdout to print failure messages', '(default)' do
+          options[:failed_output] = $stdout
+        end
+      end
+
+      def process_args(args = [])
+        return @options if @options
+        options = super
+        @failed_output = options[:failed_output]
+        options
       end
     end
 
@@ -1668,6 +1700,7 @@ module Test
       prepend Test::Unit::Statistics
       prepend Test::Unit::Skipping
       prepend Test::Unit::GlobOption
+      prepend Test::Unit::OutputOption
       prepend Test::Unit::RepeatOption
       prepend Test::Unit::LoadPathOption
       prepend Test::Unit::GCOption

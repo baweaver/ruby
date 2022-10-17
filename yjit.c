@@ -13,6 +13,7 @@
 #include "internal/variable.h"
 #include "internal/compile.h"
 #include "internal/class.h"
+#include "internal/fixnum.h"
 #include "gc.h"
 #include "vm_core.h"
 #include "vm_callinfo.h"
@@ -25,6 +26,7 @@
 #include "probes.h"
 #include "probes_helper.h"
 #include "iseq.h"
+#include "ruby/debug.h"
 
 // For mmapp(), sysconf()
 #ifndef _WIN32
@@ -55,23 +57,18 @@ STATIC_ASSERT(pointer_tagging_scheme, USE_FLONUM);
 // types in C such as int, long, etc. and use `std::os::raw::c_long` and friends on
 // the Rust side.
 //
-// What's up with the long prefix? The "rb_" part is to apease `make leaked-globals`
-// which runs on upstream CI. The rationale for the check is unclear to Alan as
-// we build with `-fvisibility=hidden` so only explicitly marked functions end
-// up as public symbols in libruby.so. Perhaps the check is for the static
-// libruby and or general namspacing hygiene? Alan admits his bias towards ELF
-// platforms and newer compilers.
-//
+// What's up with the long prefix? Even though we build with `-fvisibility=hidden`
+// we are sometimes a static library where the option doesn't prevent name collision.
 // The "_yjit_" part is for trying to be informative. We might want different
 // suffixes for symbols meant for Rust and symbols meant for broader CRuby.
 
-void
+bool
 rb_yjit_mark_writable(void *mem_block, uint32_t mem_size)
 {
     if (mprotect(mem_block, mem_size, PROT_READ | PROT_WRITE)) {
-        rb_bug("Couldn't make JIT page region (%p, %lu bytes) writeable, errno: %s\n",
-            mem_block, (unsigned long)mem_size, strerror(errno));
+        return false;
     }
+    return true;
 }
 
 void
@@ -81,6 +78,113 @@ rb_yjit_mark_executable(void *mem_block, uint32_t mem_size)
         rb_bug("Couldn't make JIT page (%p, %lu bytes) executable, errno: %s\n",
             mem_block, (unsigned long)mem_size, strerror(errno));
     }
+}
+
+// `start` is inclusive and `end` is exclusive.
+void
+rb_yjit_icache_invalidate(void *start, void *end)
+{
+    // Clear/invalidate the instruction cache. Compiles to nothing on x86_64
+    // but required on ARM before running freshly written code.
+    // On Darwin it's the same as calling sys_icache_invalidate().
+#ifdef __GNUC__
+    __builtin___clear_cache(start, end);
+#elif defined(__aarch64__)
+#error No instruction cache clear available with this compiler on Aarch64!
+#endif
+}
+
+# define PTR2NUM(x)   (rb_int2inum((intptr_t)(void *)(x)))
+
+// For a given raw_sample (frame), set the hash with the caller's
+// name, file, and line number. Return the  hash with collected frame_info.
+static void
+rb_yjit_add_frame(VALUE hash, VALUE frame)
+{
+    VALUE frame_id = PTR2NUM(frame);
+
+    if (RTEST(rb_hash_aref(hash, frame_id))) {
+        return;
+    }
+    else {
+        VALUE frame_info = rb_hash_new();
+        // Full label for the frame
+        VALUE name = rb_profile_frame_full_label(frame);
+        // Absolute path of the frame from rb_iseq_realpath
+        VALUE file = rb_profile_frame_absolute_path(frame);
+        // Line number of the frame
+        VALUE line = rb_profile_frame_first_lineno(frame);
+
+        // If absolute path isn't available use the rb_iseq_path
+        if (NIL_P(file)) {
+            file = rb_profile_frame_path(frame);
+        }
+
+        rb_hash_aset(frame_info, ID2SYM(rb_intern("name")), name);
+        rb_hash_aset(frame_info, ID2SYM(rb_intern("file")), file);
+        rb_hash_aset(frame_info, ID2SYM(rb_intern("samples")), INT2NUM(0));
+        rb_hash_aset(frame_info, ID2SYM(rb_intern("total_samples")), INT2NUM(0));
+        rb_hash_aset(frame_info, ID2SYM(rb_intern("edges")), rb_hash_new());
+        rb_hash_aset(frame_info, ID2SYM(rb_intern("lines")), rb_hash_new());
+
+        if (line != INT2FIX(0)) {
+            rb_hash_aset(frame_info, ID2SYM(rb_intern("line")), line);
+        }
+
+       rb_hash_aset(hash, frame_id, frame_info);
+    }
+}
+
+// Parses the YjitExitLocations raw_samples and line_samples collected by
+// rb_yjit_record_exit_stack and turns them into 3 hashes (raw, lines, and frames) to
+// be used by RubyVM::YJIT.exit_locations. yjit_raw_samples represents the raw frames information
+// (without name, file, and line), and yjit_line_samples represents the line information
+// of the iseq caller.
+VALUE
+rb_yjit_exit_locations_dict(VALUE *yjit_raw_samples, int *yjit_line_samples, int samples_len)
+{
+    VALUE result = rb_hash_new();
+    VALUE raw_samples = rb_ary_new_capa(samples_len);
+    VALUE line_samples = rb_ary_new_capa(samples_len);
+    VALUE frames = rb_hash_new();
+    int idx = 0;
+
+    // While the index is less than samples_len, parse yjit_raw_samples and
+    // yjit_line_samples, then add casted values to raw_samples and line_samples array.
+    while (idx < samples_len) {
+        int num = (int)yjit_raw_samples[idx];
+        int line_num = (int)yjit_line_samples[idx];
+        idx++;
+
+        rb_ary_push(raw_samples, SIZET2NUM(num));
+        rb_ary_push(line_samples, INT2NUM(line_num));
+
+        // Loop through the length of samples_len and add data to the
+        // frames hash. Also push the current value onto the raw_samples
+        // and line_samples array respectively.
+        for (int o = 0; o < num; o++) {
+            rb_yjit_add_frame(frames, yjit_raw_samples[idx]);
+            rb_ary_push(raw_samples, SIZET2NUM(yjit_raw_samples[idx]));
+            rb_ary_push(line_samples, INT2NUM(yjit_line_samples[idx]));
+            idx++;
+        }
+
+        rb_ary_push(raw_samples, SIZET2NUM(yjit_raw_samples[idx]));
+        rb_ary_push(line_samples, INT2NUM(yjit_line_samples[idx]));
+        idx++;
+
+        rb_ary_push(raw_samples, SIZET2NUM(yjit_raw_samples[idx]));
+        rb_ary_push(line_samples, INT2NUM(yjit_line_samples[idx]));
+        idx++;
+    }
+
+    // Set add the raw_samples, line_samples, and frames to the results
+    // hash.
+    rb_hash_aset(result, ID2SYM(rb_intern("raw")), raw_samples);
+    rb_hash_aset(result, ID2SYM(rb_intern("lines")), line_samples);
+    rb_hash_aset(result, ID2SYM(rb_intern("frames")), frames);
+
+    return result;
 }
 
 uint32_t
@@ -120,25 +224,29 @@ align_ptr(uint8_t *ptr, uint32_t multiple)
 }
 #endif
 
-// Allocate a block of executable memory
+// Address space reservation. Memory pages are mapped on an as needed basis.
+// See the Rust mm module for details.
 uint8_t *
-rb_yjit_alloc_exec_mem(uint32_t mem_size)
+rb_yjit_reserve_addr_space(uint32_t mem_size)
 {
 #ifndef _WIN32
     uint8_t *mem_block;
 
     // On Linux
     #if defined(MAP_FIXED_NOREPLACE) && defined(_SC_PAGESIZE)
+        uint32_t const page_size = (uint32_t)sysconf(_SC_PAGESIZE);
+        uint8_t *const cfunc_sample_addr = (void *)&rb_yjit_reserve_addr_space;
+        uint8_t *const probe_region_end = cfunc_sample_addr + INT32_MAX;
         // Align the requested address to page size
-        uint32_t page_size = (uint32_t)sysconf(_SC_PAGESIZE);
-        uint8_t *req_addr = align_ptr((uint8_t*)&rb_yjit_alloc_exec_mem, page_size);
+        uint8_t *req_addr = align_ptr(cfunc_sample_addr, page_size);
 
+        // Probe for addresses close to this function using MAP_FIXED_NOREPLACE
+        // to improve odds of being in range for 32-bit relative call instructions.
         do {
-            // Try to map a chunk of memory as executable
-            mem_block = (uint8_t*)mmap(
-                (void*)req_addr,
+            mem_block = mmap(
+                req_addr,
                 mem_size,
-                PROT_READ | PROT_EXEC,
+                PROT_NONE,
                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
                 -1,
                 0
@@ -151,15 +259,15 @@ rb_yjit_alloc_exec_mem(uint32_t mem_size)
 
             // +4MB
             req_addr += 4 * 1024 * 1024;
-        } while (req_addr < (uint8_t*)&rb_yjit_alloc_exec_mem + INT32_MAX);
+        } while (req_addr < probe_region_end);
 
     // On MacOS and other platforms
     #else
         // Try to map a chunk of memory as executable
-        mem_block = (uint8_t*)mmap(
-            (void*)rb_yjit_alloc_exec_mem,
+        mem_block = mmap(
+            (void *)rb_yjit_reserve_addr_space,
             mem_size,
-            PROT_READ | PROT_EXEC,
+            PROT_NONE,
             MAP_PRIVATE | MAP_ANONYMOUS,
             -1,
             0
@@ -169,10 +277,10 @@ rb_yjit_alloc_exec_mem(uint32_t mem_size)
     // Fallback
     if (mem_block == MAP_FAILED) {
         // Try again without the address hint (e.g., valgrind)
-        mem_block = (uint8_t*)mmap(
+        mem_block = mmap(
             NULL,
             mem_size,
-            PROT_READ | PROT_EXEC,
+            PROT_NONE,
             MAP_PRIVATE | MAP_ANONYMOUS,
             -1,
             0
@@ -181,16 +289,9 @@ rb_yjit_alloc_exec_mem(uint32_t mem_size)
 
     // Check that the memory mapping was successful
     if (mem_block == MAP_FAILED) {
-        perror("mmap call failed");
-        exit(-1);
+        perror("ruby: yjit: mmap:");
+        rb_bug("mmap failed");
     }
-
-    // Fill the executable memory with PUSH DS (0x1E) so that
-    // executing uninitialized memory will fault with #UD in
-    // 64-bit mode.
-    rb_yjit_mark_writable(mem_block, mem_size);
-    memset(mem_block, 0x1E, mem_size);
-    rb_yjit_mark_executable(mem_block, mem_size);
 
     return mem_block;
 #else
@@ -312,6 +413,26 @@ rb_str_bytesize(VALUE str)
     return LONG2NUM(RSTRING_LEN(str));
 }
 
+unsigned long
+rb_RSTRING_LEN(VALUE str)
+{
+    return RSTRING_LEN(str);
+}
+
+char *
+rb_RSTRING_PTR(VALUE str)
+{
+    return RSTRING_PTR(str);
+}
+
+rb_proc_t *
+rb_yjit_get_proc_ptr(VALUE procv)
+{
+    rb_proc_t *proc;
+    GetProcPtr(procv, proc);
+    return proc;
+}
+
 // This is defined only as a named struct inside rb_iseq_constant_body.
 // By giving it a separate typedef, we make it nameable by rust-bindgen.
 // Bindgen's temp/anon name isn't guaranteed stable.
@@ -367,61 +488,67 @@ rb_get_cikw_keywords_idx(const struct rb_callinfo_kwarg *cikw, int idx)
 }
 
 rb_method_visibility_t
-rb_METHOD_ENTRY_VISI(rb_callable_method_entry_t *me)
+rb_METHOD_ENTRY_VISI(const rb_callable_method_entry_t *me)
 {
     return METHOD_ENTRY_VISI(me);
 }
 
 rb_method_type_t
-rb_get_cme_def_type(rb_callable_method_entry_t *cme)
+rb_get_cme_def_type(const rb_callable_method_entry_t *cme)
 {
-    return cme->def->type;
+    if (UNDEFINED_METHOD_ENTRY_P(cme)) {
+        return VM_METHOD_TYPE_UNDEF;
+    } else {
+        return cme->def->type;
+    }
 }
 
 ID
-rb_get_cme_def_body_attr_id(rb_callable_method_entry_t *cme)
+rb_get_cme_def_body_attr_id(const rb_callable_method_entry_t *cme)
 {
     return cme->def->body.attr.id;
 }
 
+ID rb_get_symbol_id(VALUE namep);
+
 enum method_optimized_type
-rb_get_cme_def_body_optimized_type(rb_callable_method_entry_t *cme)
+rb_get_cme_def_body_optimized_type(const rb_callable_method_entry_t *cme)
 {
     return cme->def->body.optimized.type;
 }
 
 unsigned int
-rb_get_cme_def_body_optimized_index(rb_callable_method_entry_t *cme)
+rb_get_cme_def_body_optimized_index(const rb_callable_method_entry_t *cme)
 {
     return cme->def->body.optimized.index;
 }
 
 rb_method_cfunc_t *
-rb_get_cme_def_body_cfunc(rb_callable_method_entry_t *cme)
+rb_get_cme_def_body_cfunc(const rb_callable_method_entry_t *cme)
 {
     return UNALIGNED_MEMBER_PTR(cme->def, body.cfunc);
 }
 
 uintptr_t
-rb_get_def_method_serial(rb_method_definition_t *def)
+rb_get_def_method_serial(const rb_method_definition_t *def)
 {
     return def->method_serial;
 }
 
 ID
-rb_get_def_original_id(rb_method_definition_t *def)
+rb_get_def_original_id(const rb_method_definition_t *def)
 {
     return def->original_id;
 }
 
 int
-rb_get_mct_argc(rb_method_cfunc_t *mct)
+rb_get_mct_argc(const rb_method_cfunc_t *mct)
 {
     return mct->argc;
 }
 
 void *
-rb_get_mct_func(rb_method_cfunc_t *mct)
+rb_get_mct_func(const rb_method_cfunc_t *mct)
 {
     return (void*)mct->func; // this field is defined as type VALUE (*func)(ANYARGS)
 }
@@ -432,104 +559,117 @@ rb_get_def_iseq_ptr(rb_method_definition_t *def)
     return def_iseq_ptr(def);
 }
 
-rb_iseq_t *
-rb_get_iseq_body_local_iseq(rb_iseq_t  *iseq)
+VALUE
+rb_get_def_bmethod_proc(rb_method_definition_t *def)
+{
+    RUBY_ASSERT(def->type == VM_METHOD_TYPE_BMETHOD);
+    return def->body.bmethod.proc;
+}
+
+const rb_iseq_t *
+rb_get_iseq_body_local_iseq(const rb_iseq_t *iseq)
 {
     return iseq->body->local_iseq;
 }
 
 unsigned int
-rb_get_iseq_body_local_table_size(rb_iseq_t *iseq)
+rb_get_iseq_body_local_table_size(const rb_iseq_t *iseq)
 {
     return iseq->body->local_table_size;
 }
 
 VALUE *
-rb_get_iseq_body_iseq_encoded(rb_iseq_t *iseq)
+rb_get_iseq_body_iseq_encoded(const rb_iseq_t *iseq)
 {
     return iseq->body->iseq_encoded;
 }
 
 bool
-rb_get_iseq_body_builtin_inline_p(rb_iseq_t *iseq)
+rb_get_iseq_body_builtin_inline_p(const rb_iseq_t *iseq)
 {
     return iseq->body->builtin_inline_p;
 }
 
 unsigned
-rb_get_iseq_body_stack_max(rb_iseq_t *iseq)
+rb_get_iseq_body_stack_max(const rb_iseq_t *iseq)
 {
     return iseq->body->stack_max;
 }
 
 bool
-rb_get_iseq_flags_has_opt(rb_iseq_t *iseq)
+rb_get_iseq_flags_has_opt(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.has_opt;
 }
 
 bool
-rb_get_iseq_flags_has_kw(rb_iseq_t *iseq)
+rb_get_iseq_flags_has_kw(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.has_kw;
 }
 
 bool
-rb_get_iseq_flags_has_post(rb_iseq_t *iseq)
+rb_get_iseq_flags_has_post(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.has_post;
 }
 
 bool
-rb_get_iseq_flags_has_kwrest(rb_iseq_t *iseq)
+rb_get_iseq_flags_has_kwrest(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.has_kwrest;
 }
 
 bool
-rb_get_iseq_flags_has_rest(rb_iseq_t *iseq)
+rb_get_iseq_flags_has_rest(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.has_rest;
 }
 
 bool
-rb_get_iseq_flags_has_block(rb_iseq_t *iseq)
+rb_get_iseq_flags_ruby2_keywords(const rb_iseq_t *iseq)
+{
+    return iseq->body->param.flags.ruby2_keywords;
+}
+
+bool
+rb_get_iseq_flags_has_block(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.has_block;
 }
 
 bool
-rb_get_iseq_flags_has_accepts_no_kwarg(rb_iseq_t *iseq)
+rb_get_iseq_flags_has_accepts_no_kwarg(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.accepts_no_kwarg;
 }
 
 const rb_seq_param_keyword_struct *
-rb_get_iseq_body_param_keyword(rb_iseq_t *iseq)
+rb_get_iseq_body_param_keyword(const rb_iseq_t *iseq)
 {
     return iseq->body->param.keyword;
 }
 
 unsigned
-rb_get_iseq_body_param_size(rb_iseq_t *iseq)
+rb_get_iseq_body_param_size(const rb_iseq_t *iseq)
 {
     return iseq->body->param.size;
 }
 
 int
-rb_get_iseq_body_param_lead_num(rb_iseq_t *iseq)
+rb_get_iseq_body_param_lead_num(const rb_iseq_t *iseq)
 {
     return iseq->body->param.lead_num;
 }
 
 int
-rb_get_iseq_body_param_opt_num(rb_iseq_t *iseq)
+rb_get_iseq_body_param_opt_num(const rb_iseq_t *iseq)
 {
     return iseq->body->param.opt_num;
 }
 
 const VALUE *
-rb_get_iseq_body_param_opt_table(rb_iseq_t *iseq)
+rb_get_iseq_body_param_opt_table(const rb_iseq_t *iseq)
 {
     return iseq->body->param.opt_table;
 }
@@ -564,7 +704,7 @@ rb_yjit_str_simple_append(VALUE str1, VALUE str2)
 }
 
 struct rb_control_frame_struct *
-rb_get_ec_cfp(rb_execution_context_t *ec)
+rb_get_ec_cfp(const rb_execution_context_t *ec)
 {
     return ec->cfp;
 }
@@ -612,6 +752,17 @@ rb_get_cfp_ep(struct rb_control_frame_struct *cfp)
     return (VALUE*)cfp->ep;
 }
 
+const VALUE *
+rb_get_cfp_ep_level(struct rb_control_frame_struct *cfp, uint32_t lv)
+{
+    uint32_t i;
+    const VALUE *ep = (VALUE*)cfp->ep;
+    for (i = 0; i < lv; i++) {
+        ep = VM_ENV_PREV_EP(ep);
+    }
+    return ep;
+}
+
 VALUE
 rb_yarv_class_of(VALUE obj)
 {
@@ -631,6 +782,12 @@ VALUE
 rb_yarv_ary_entry_internal(VALUE ary, long offset)
 {
     return rb_ary_entry_internal(ary, offset);
+}
+
+VALUE
+rb_yarv_fix_mod_fix(VALUE recv, VALUE obj)
+{
+    return rb_fix_mod_fix(recv, obj);
 }
 
 // Print the Ruby source location of some ISEQ for debugging purposes
@@ -681,7 +838,7 @@ rb_RSTRUCT_SET(VALUE st, int k, VALUE v)
 }
 
 const struct rb_callinfo *
-rb_get_call_data_ci(struct rb_call_data *cd)
+rb_get_call_data_ci(const struct rb_call_data *cd)
 {
     return cd->ci;
 }
@@ -860,12 +1017,13 @@ rb_yjit_invalidate_all_method_lookup_assumptions(void)
 
 // Primitives used by yjit.rb
 VALUE rb_yjit_stats_enabled_p(rb_execution_context_t *ec, VALUE self);
+VALUE rb_yjit_trace_exit_locations_enabled_p(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_get_stats(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_reset_stats_bang(rb_execution_context_t *ec, VALUE self);
 VALUE rb_yjit_disasm_iseq(rb_execution_context_t *ec, VALUE self, VALUE iseq);
 VALUE rb_yjit_insns_compiled(rb_execution_context_t *ec, VALUE self, VALUE iseq);
 VALUE rb_yjit_simulate_oom_bang(rb_execution_context_t *ec, VALUE self);
-VALUE rb_yjit_get_stats(rb_execution_context_t *ec, VALUE self);
+VALUE rb_yjit_get_exit_locations(rb_execution_context_t *ec, VALUE self);
 
 // Preprocessed yjit.rb generated during build
 #include "yjit.rbinc"

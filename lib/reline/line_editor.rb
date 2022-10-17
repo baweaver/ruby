@@ -655,7 +655,10 @@ class Reline::LineEditor
   end
 
   private def padding_space_with_escape_sequences(str, width)
-    str + (' ' * (width - calculate_width(str, true)))
+    padding_width = width - calculate_width(str, true)
+    # padding_width should be only positive value. But macOS and Alacritty returns negative value.
+    padding_width = 0 if padding_width < 0
+    str + (' ' * padding_width)
   end
 
   private def render_each_dialog(dialog, cursor_column)
@@ -743,24 +746,21 @@ class Reline::LineEditor
     Reline::IOGate.move_cursor_column(dialog.column)
     dialog.contents.each_with_index do |item, i|
       if i == pointer
-        bg_color = '45'
+        fg_color = dialog_render_info.pointer_fg_color
+        bg_color = dialog_render_info.pointer_bg_color
       else
-        if dialog_render_info.bg_color
-          bg_color = dialog_render_info.bg_color
-        else
-          bg_color = '46'
-        end
+        fg_color = dialog_render_info.fg_color
+        bg_color = dialog_render_info.bg_color
       end
       str_width = dialog.width - (dialog.scrollbar_pos.nil? ? 0 : @block_elem_width)
       str = padding_space_with_escape_sequences(Reline::Unicode.take_range(item, 0, str_width), str_width)
-      @output.write "\e[#{bg_color}m#{str}"
+      @output.write "\e[#{bg_color}m\e[#{fg_color}m#{str}"
       if dialog.scrollbar_pos and (dialog.scrollbar_pos != old_dialog.scrollbar_pos or dialog.column != old_dialog.column)
         @output.write "\e[37m"
         if dialog.scrollbar_pos <= (i * 2) and (i * 2 + 1) < (dialog.scrollbar_pos + bar_height)
           @output.write @full_block
         elsif dialog.scrollbar_pos <= (i * 2) and (i * 2) < (dialog.scrollbar_pos + bar_height)
           @output.write @upper_half_block
-          str += ''
         elsif dialog.scrollbar_pos <= (i * 2 + 1) and (i * 2) < (dialog.scrollbar_pos + bar_height)
           @output.write @lower_half_block
         else
@@ -1430,7 +1430,7 @@ class Reline::LineEditor
     if @waiting_operator_proc
       if VI_MOTIONS.include?(method_symbol)
         old_cursor, old_byte_pointer = @cursor, @byte_pointer
-        @vi_arg = @waiting_operator_vi_arg if @waiting_operator_vi_arg > 1
+        @vi_arg = @waiting_operator_vi_arg if @waiting_operator_vi_arg&.> 1
         block.(true)
         unless @waiting_proc
           cursor_diff, byte_pointer_diff = @cursor - old_cursor, @byte_pointer - old_byte_pointer

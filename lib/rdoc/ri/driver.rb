@@ -1,5 +1,4 @@
 # frozen_string_literal: true
-require 'abbrev'
 require 'optparse'
 
 begin
@@ -1302,7 +1301,6 @@ or the PAGER environment variable.
         yield pager
       ensure
         pager.close
-        @jruby_pager_process.wait_for if @jruby_pager_process
       end
     else
       yield $stdout

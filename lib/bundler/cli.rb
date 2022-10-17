@@ -218,6 +218,8 @@ module Bundler
       "Specify the number of jobs to run in parallel"
     method_option "local", :type => :boolean, :banner =>
       "Do not attempt to fetch gems remotely and use the gem cache instead"
+    method_option "prefer-local", :type => :boolean, :banner =>
+      "Only attempt to fetch gems remotely if not present locally, even if newer versions are available remotely"
     method_option "no-cache", :type => :boolean, :banner =>
       "Don't update the existing gem cache."
     method_option "redownload", :type => :boolean, :aliases => "--force", :banner =>
@@ -236,7 +238,7 @@ module Bundler
       "Install to the system location ($BUNDLE_PATH or $GEM_HOME) even if the bundle was previously installed somewhere else for this application"
     method_option "trust-policy", :alias => "P", :type => :string, :banner =>
       "Gem trust policy (like gem install -P). Must be one of " +
-        Bundler.rubygems.security_policy_keys.join("|")
+      Bundler.rubygems.security_policy_keys.join("|")
     method_option "without", :type => :array, :banner =>
       "Exclude gems that are part of the specified named group."
     method_option "with", :type => :array, :banner =>
@@ -370,6 +372,7 @@ module Bundler
     method_option "group", :aliases => "-g", :type => :string
     method_option "source", :aliases => "-s", :type => :string
     method_option "require", :aliases => "-r", :type => :string, :banner => "Adds require path to gem. Provide false, or a path as a string."
+    method_option "path", :type => :string
     method_option "git", :type => :string
     method_option "github", :type => :string
     method_option "branch", :type => :string
@@ -399,9 +402,9 @@ module Bundler
       "Do not attempt to fetch gems remotely and use the gem cache instead"
     method_option "pre", :type => :boolean, :banner => "Check for newer pre-release gems"
     method_option "source", :type => :array, :banner => "Check against a specific source"
-    method_option "filter-strict", :type => :boolean, :banner =>
+    method_option "filter-strict", :type => :boolean, :aliases => "--strict", :banner =>
       "Only list newer versions allowed by your Gemfile requirements"
-    method_option "strict", :type => :boolean, :aliases => "--update-strict", :banner =>
+    method_option "update-strict", :type => :boolean, :banner =>
       "Strict conservative resolution, do not allow any gem to be updated past latest --patch | --minor | --major"
     method_option "minor", :type => :boolean, :banner => "Prefer updating only to next minor version"
     method_option "major", :type => :boolean, :banner => "Prefer updating to next major version (default)"
@@ -514,7 +517,7 @@ module Bundler
       end
     end
 
-    desc "version", "Prints the bundler's version information"
+    desc "version", "Prints Bundler version information"
     def version
       cli_help = current_command.name == "cli_help"
       if cli_help || ARGV.include?("version")

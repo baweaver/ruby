@@ -26,10 +26,15 @@ module Spec
         end
       end
       args[0] ||= [] # base
+      args[0].each {|ls| ls.source = default_source }
       args[1] ||= Bundler::GemVersionPromoter.new # gem_version_promoter
       args[2] ||= [] # additional_base_requirements
       args[3] ||= @platforms # platforms
       Bundler::Resolver.resolve(deps, source_requirements, *args)
+    end
+
+    def should_not_resolve
+      expect { resolve }.to raise_error(Bundler::GemNotFound)
     end
 
     def should_resolve_as(specs)

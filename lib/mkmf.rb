@@ -1866,7 +1866,7 @@ SRC
     if pkgconfig = with_config("#{pkg}-config") and find_executable0(pkgconfig)
       # if and only if package specific config command is given
     elsif ($PKGCONFIG ||=
-           (pkgconfig = with_config("pkg-config", ("pkg-config" unless CROSS_COMPILING))) &&
+           (pkgconfig = with_config("pkg-config", RbConfig::CONFIG["PKG_CONFIG"])) &&
            find_executable0(pkgconfig) && pkgconfig) and
         xsystem([*envs, $PKGCONFIG, "--exists", pkg])
       # default to pkg-config command
@@ -2076,6 +2076,11 @@ sitearch = #{CONFIG['sitearch']}
 ruby_version = #{RbConfig::CONFIG['ruby_version']}
 ruby = #{$ruby.sub(%r[\A#{Regexp.quote(RbConfig::CONFIG['bindir'])}(?=/|\z)]) {'$(bindir)'}}
 RUBY = $(ruby#{sep})
+BUILTRUBY = #{if defined?($builtruby) && $builtruby
+    $builtruby
+  else
+    File.join('$(bindir)', CONFIG["RUBY_INSTALL_NAME"] + CONFIG['EXEEXT'])
+  end}
 ruby_headers = #{headers.join(' ')}
 
 RM = #{config_string('RM', &possible_command) || '$(RUBY) -run -e rm -- -f'}
@@ -2594,6 +2599,7 @@ site-install-rb: install-rb
     $INCFLAGS << " -I$(hdrdir)/ruby/backward" unless $extmk
     $INCFLAGS << " -I$(hdrdir) -I$(srcdir)"
     $DLDFLAGS = with_config("dldflags", arg_config("DLDFLAGS", config["DLDFLAGS"])).dup
+    config_string("ADDITIONAL_DLDFLAGS") {|flags| $DLDFLAGS << " " << flags} unless $extmk
     $LIBEXT = config['LIBEXT'].dup
     $OBJEXT = config["OBJEXT"].dup
     $EXEEXT = config["EXEEXT"].dup

@@ -46,6 +46,35 @@ class Reline::Test < Reline::TestCase
     Reline.completion_append_character = completion_append_character
   end
 
+  def test_dialog_color_configuration
+    # defaults
+    assert_equal(:cyan, Reline.dialog_default_bg_color)
+    assert_equal(:white, Reline.dialog_default_fg_color)
+    assert_equal(:magenta, Reline.dialog_highlight_bg_color)
+    assert_equal(:white, Reline.dialog_highlight_fg_color)
+
+    Reline.dialog_default_bg_color = :black
+    assert_equal(:black, Reline.dialog_default_bg_color)
+    assert_equal(40, Reline.dialog_default_bg_color_sequence)
+
+    Reline.dialog_default_fg_color = :white
+    assert_equal(:white, Reline.dialog_default_fg_color)
+    assert_equal(37, Reline.dialog_default_fg_color_sequence)
+
+    Reline.dialog_highlight_bg_color = :white
+    assert_equal(:white, Reline.dialog_highlight_bg_color)
+    assert_equal(47, Reline.dialog_highlight_bg_color_sequence)
+
+    Reline.dialog_highlight_fg_color = :black
+    assert_equal(:black, Reline.dialog_highlight_fg_color)
+    assert_equal(30, Reline.dialog_highlight_fg_color_sequence)
+
+    # test value validation
+    assert_raise(ArgumentError) do
+      Reline.dialog_highlight_fg_color = :foo
+    end
+  end
+
   def test_basic_word_break_characters
     basic_word_break_characters = Reline.basic_word_break_characters
 
@@ -366,6 +395,12 @@ class Reline::Test < Reline::TestCase
 
   def test_read_io
     # TODO in Reline::Core
+  end
+
+  def test_dumb_terminal
+    lib = File.expand_path("../../lib", __dir__)
+    out = IO.popen([{"TERM"=>"dumb"}, "ruby", "-I#{lib}", "-rreline", "-e", "p Reline::IOGate"], &:read)
+    assert_equal("Reline::GeneralIO", out.chomp)
   end
 
   def get_reline_encoding

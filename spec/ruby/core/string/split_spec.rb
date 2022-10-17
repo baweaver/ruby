@@ -3,12 +3,17 @@ require_relative '../../spec_helper'
 require_relative 'fixtures/classes'
 
 describe "String#split with String" do
+  it "throws an ArgumentError if the string  is not a valid" do
+    s = "\xDF".force_encoding(Encoding::UTF_8)
+
+    -> { s.split }.should raise_error(ArgumentError)
+    -> { s.split(':') }.should raise_error(ArgumentError)
+  end
+
   it "throws an ArgumentError if the pattern is not a valid string" do
     str = 'проверка'
-    broken_str = 'проверка'
-    broken_str.force_encoding('binary')
-    broken_str.chop!
-    broken_str.force_encoding('utf-8')
+    broken_str = "\xDF".force_encoding(Encoding::UTF_8)
+
     -> { str.split(broken_str) }.should raise_error(ArgumentError)
   end
 
@@ -24,9 +29,35 @@ describe "String#split with String" do
     "1,2,,3,4,,".split(',').should == ["1", "2", "", "3", "4"]
     "1,2,,3,4,,".split(',', 0).should == ["1", "2", "", "3", "4"]
     "  a  b  c\nd  ".split("  ").should == ["", "a", "b", "c\nd"]
+    "  a  あ  c\nd  ".split("  ").should == ["", "a", "あ", "c\nd"]
     "hai".split("hai").should == []
     ",".split(",").should == []
     ",".split(",", 0).should == []
+    "あ".split("あ").should == []
+    "あ".split("あ", 0).should == []
+  end
+
+  it "does not suppress trailing empty fields when a positive limit is given" do
+    " 1 2 ".split(" ", 2).should == ["1", "2 "]
+    " 1 2 ".split(" ", 3).should == ["1", "2", ""]
+    " 1 2 ".split(" ", 4).should == ["1", "2", ""]
+    " 1 あ ".split(" ", 2).should == ["1", "あ "]
+    " 1 あ ".split(" ", 3).should == ["1", "あ", ""]
+    " 1 あ ".split(" ", 4).should == ["1", "あ", ""]
+
+    "1,2,".split(',', 2).should == ["1", "2,"]
+    "1,2,".split(',', 3).should == ["1", "2", ""]
+    "1,2,".split(',', 4).should == ["1", "2", ""]
+    "1,あ,".split(',', 2).should == ["1", "あ,"]
+    "1,あ,".split(',', 3).should == ["1", "あ", ""]
+    "1,あ,".split(',', 4).should == ["1", "あ", ""]
+
+    "1 2 ".split(/ /, 2).should == ["1", "2 "]
+    "1 2 ".split(/ /, 3).should == ["1", "2", ""]
+    "1 2 ".split(/ /, 4).should == ["1", "2", ""]
+    "1 あ ".split(/ /, 2).should == ["1", "あ "]
+    "1 あ ".split(/ /, 3).should == ["1", "あ", ""]
+    "1 あ ".split(/ /, 4).should == ["1", "あ", ""]
   end
 
   it "returns an array with one entry if limit is 1: the original string" do
@@ -218,6 +249,12 @@ describe "String#split with String" do
 end
 
 describe "String#split with Regexp" do
+  it "throws an ArgumentError if the string  is not a valid" do
+    s = "\xDF".force_encoding(Encoding::UTF_8)
+
+    -> { s.split(/./) }.should raise_error(ArgumentError)
+  end
+
   it "divides self on regexp matches" do
     " now's  the time".split(/ /).should == ["", "now's", "", "the", "time"]
     " x\ny ".split(/ /).should == ["", "x\ny"]
@@ -444,12 +481,28 @@ describe "String#split with Regexp" do
       a.should == ["Chunky", "Bacon"]
     end
 
+    it "yields each split substring with default pattern for a lazy substring" do
+      a = []
+      returned_object = "chunky bacon"[1...-1].split { |str| a << str.capitalize }
+
+      returned_object.should == "hunky baco"
+      a.should == ["Hunky", "Baco"]
+    end
+
     it "yields each split substring with default pattern for a non-ASCII string" do
       a = []
       returned_object = "l'été arrive bientôt".split { |str| a << str }
 
       returned_object.should == "l'été arrive bientôt"
       a.should == ["l'été", "arrive", "bientôt"]
+    end
+
+    it "yields each split substring with default pattern for a non-ASCII lazy substring" do
+      a = []
+      returned_object = "l'été arrive bientôt"[1...-1].split { |str| a << str }
+
+      returned_object.should == "'été arrive bientô"
+      a.should == ["'été", "arrive", "bientô"]
     end
 
     it "yields the string when limit is 1" do

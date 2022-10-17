@@ -1,50 +1,20 @@
+use std::fmt;
 use std::mem;
 
 #[cfg(feature = "asm_comments")]
 use std::collections::BTreeMap;
 
+use crate::virtualmem::{VirtualMem, CodePtr};
+
 // Lots of manual vertical alignment in there that rustfmt doesn't handle well.
 #[rustfmt::skip]
 pub mod x86_64;
 
-/// Pointer to a piece of machine code
-/// We may later change this to wrap an u32
-/// Note: there is no NULL constant for CodePtr. You should use Option<CodePtr> instead.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Debug)]
-#[repr(C)]
-pub struct CodePtr(*const u8);
-
-impl CodePtr {
-    pub fn raw_ptr(&self) -> *const u8 {
-        let CodePtr(ptr) = *self;
-        return ptr;
-    }
-
-    fn into_i64(&self) -> i64 {
-        let CodePtr(ptr) = self;
-        *ptr as i64
-    }
-
-    #[allow(unused)]
-    fn into_usize(&self) -> usize {
-        let CodePtr(ptr) = self;
-        *ptr as usize
-    }
-}
-
-impl From<*mut u8> for CodePtr {
-    fn from(value: *mut u8) -> Self {
-        assert!(value as usize != 0);
-        return CodePtr(value);
-    }
-}
+pub mod arm64;
 
 //
 // TODO: need a field_size_of macro, to compute the size of a struct field in bytes
 //
-
-// 1 is not aligned so this won't match any pages
-const ALIGNED_WRITE_POSITION_NONE: usize = 1;
 
 /// Reference to an ASM label
 struct LabelRef {
@@ -53,17 +23,20 @@ struct LabelRef {
 
     // Label which this refers to
     label_idx: usize,
+
+    /// The number of bytes that this label reference takes up in the memory.
+    /// It's necessary to know this ahead of time so that when we come back to
+    /// patch it it takes the same amount of space.
+    num_bytes: usize,
+
+    /// The object that knows how to encode the branch instruction.
+    encode: fn(&mut CodeBlock, i64, i64)
 }
 
 /// Block of memory into which instructions can be assembled
 pub struct CodeBlock {
-    // Block of non-executable memory used for dummy code blocks
-    // This memory is owned by this block and lives as long as the block
-    #[allow(unused)]
-    dummy_block: Vec<u8>,
-
-    // Pointer to memory we are writing into
-    mem_block: *mut u8,
+    // Memory for storing the encoded instructions
+    mem_block: VirtualMem,
 
     // Memory block size
     mem_size: usize,
@@ -84,13 +57,9 @@ pub struct CodeBlock {
     #[cfg(feature = "asm_comments")]
     asm_comments: BTreeMap<usize, Vec<String>>,
 
-    // Keep track of the current aligned write position.
-    // Used for changing protection when writing to the JIT buffer
-    current_aligned_write_pos: usize,
-
-    // Memory protection works at page granularity and this is the
-    // the size of each page. Used to implement W^X.
-    page_size: usize,
+    // True for OutlinedCb
+    #[cfg(feature = "disasm")]
+    pub outlined: bool,
 
     // Set if the CodeBlock is unable to output some instructions,
     // for example, when there is not enough space or when a jump
@@ -99,47 +68,24 @@ pub struct CodeBlock {
 }
 
 impl CodeBlock {
-    #[cfg(test)]
-    pub fn new_dummy(mem_size: usize) -> Self {
-        // Allocate some non-executable memory
-        let mut dummy_block = vec![0; mem_size];
-        let mem_ptr = dummy_block.as_mut_ptr();
-
+    /// Make a new CodeBlock
+    pub fn new(mem_block: VirtualMem, outlined: bool) -> Self {
         Self {
-            dummy_block: dummy_block,
-            mem_block: mem_ptr,
-            mem_size: mem_size,
+            mem_size: mem_block.virtual_region_size(),
+            mem_block,
             write_pos: 0,
             label_addrs: Vec::new(),
             label_names: Vec::new(),
             label_refs: Vec::new(),
             #[cfg(feature = "asm_comments")]
             asm_comments: BTreeMap::new(),
-            current_aligned_write_pos: ALIGNED_WRITE_POSITION_NONE,
-            page_size: 4096,
+            #[cfg(feature = "disasm")]
+            outlined,
             dropped_bytes: false,
         }
     }
 
-    #[cfg(not(test))]
-    pub fn new(mem_block: *mut u8, mem_size: usize, page_size: usize) -> Self {
-        Self {
-            dummy_block: vec![0; 0],
-            mem_block: mem_block,
-            mem_size: mem_size,
-            write_pos: 0,
-            label_addrs: Vec::new(),
-            label_names: Vec::new(),
-            label_refs: Vec::new(),
-            #[cfg(feature = "asm_comments")]
-            asm_comments: BTreeMap::new(),
-            current_aligned_write_pos: ALIGNED_WRITE_POSITION_NONE,
-            page_size,
-            dropped_bytes: false,
-        }
-    }
-
-    // Check if this code block has sufficient remaining capacity
+    /// Check if this code block has sufficient remaining capacity
     pub fn has_capacity(&self, num_bytes: usize) -> bool {
         self.write_pos + num_bytes < self.mem_size
     }
@@ -175,12 +121,16 @@ impl CodeBlock {
         self.write_pos
     }
 
+    pub fn get_mem(&mut self) -> &mut VirtualMem {
+        &mut self.mem_block
+    }
+
     // Set the current write position
     pub fn set_pos(&mut self, pos: usize) {
-        // Assert here since while CodeBlock functions do bounds checking, there is
-        // nothing stopping users from taking out an out-of-bounds pointer and
-        // doing bad accesses with it.
-        assert!(pos < self.mem_size);
+        // No bounds check here since we can be out of bounds
+        // when the code block fills up. We want to be able to
+        // restore to the filled up state after patching something
+        // in the middle.
         self.write_pos = pos;
     }
 
@@ -204,43 +154,40 @@ impl CodeBlock {
 
     // Set the current write position from a pointer
     pub fn set_write_ptr(&mut self, code_ptr: CodePtr) {
-        let pos = (code_ptr.raw_ptr() as usize) - (self.mem_block as usize);
+        let pos = code_ptr.into_usize() - self.mem_block.start_ptr().into_usize();
         self.set_pos(pos);
     }
 
-    // Get a direct pointer into the executable memory block
+    /// Get a (possibly dangling) direct pointer into the executable memory block
     pub fn get_ptr(&self, offset: usize) -> CodePtr {
-        unsafe {
-            let ptr = self.mem_block.add(offset);
-            CodePtr(ptr)
-        }
+        self.mem_block.start_ptr().add_bytes(offset)
     }
 
-    // Get a direct pointer to the current write position
+    /// Get a (possibly dangling) direct pointer to the current write position
     pub fn get_write_ptr(&mut self) -> CodePtr {
         self.get_ptr(self.write_pos)
     }
 
-    // Write a single byte at the current position
+    /// Write a single byte at the current position.
     pub fn write_byte(&mut self, byte: u8) {
-        if self.write_pos < self.mem_size {
-            self.mark_position_writable(self.write_pos);
-            unsafe { self.mem_block.add(self.write_pos).write(byte) };
+        let write_ptr = self.get_write_ptr();
+
+        if self.mem_block.write_byte(write_ptr, byte).is_ok() {
             self.write_pos += 1;
         } else {
             self.dropped_bytes = true;
         }
     }
 
-    // Write multiple bytes starting from the current position
+    /// Write multiple bytes starting from the current position.
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         for byte in bytes {
             self.write_byte(*byte);
         }
     }
 
-    // Write a signed integer over a given number of bits at the current position
-    pub fn write_int(&mut self, val: u64, num_bits: u32) {
+    /// Write an integer over the given number of bits at the current position.
+    fn write_int(&mut self, val: u64, num_bits: u32) {
         assert!(num_bits > 0);
         assert!(num_bits % 8 == 0);
 
@@ -273,6 +220,8 @@ impl CodeBlock {
 
     /// Allocate a new label with a given name
     pub fn new_label(&mut self, name: String) -> usize {
+        assert!(!name.contains(' '), "use underscores in label names, not spaces");
+
         // This label doesn't have an address yet
         self.label_addrs.push(0);
         self.label_names.push(name);
@@ -282,22 +231,18 @@ impl CodeBlock {
 
     /// Write a label at the current address
     pub fn write_label(&mut self, label_idx: usize) {
-        // TODO: make sure that label_idx is valid
-        // TODO: add an asseer here
-
         self.label_addrs[label_idx] = self.write_pos;
     }
 
     // Add a label reference at the current write position
-    pub fn label_ref(&mut self, label_idx: usize) {
-        // TODO: make sure that label_idx is valid
-        // TODO: add an asseer here
+    pub fn label_ref(&mut self, label_idx: usize, num_bytes: usize, encode: fn(&mut CodeBlock, i64, i64)) {
+        assert!(label_idx < self.label_addrs.len());
 
         // Keep track of the reference
-        self.label_refs.push(LabelRef {
-            pos: self.write_pos,
-            label_idx,
-        });
+        self.label_refs.push(LabelRef { pos: self.write_pos, label_idx, num_bytes, encode });
+
+        // Move past however many bytes the instruction takes up
+        self.write_pos += num_bytes;
     }
 
     // Link internal label references
@@ -313,11 +258,12 @@ impl CodeBlock {
             let label_addr = self.label_addrs[label_idx];
             assert!(label_addr < self.mem_size);
 
-            // Compute the offset from the reference's end to the label
-            let offset = (label_addr as i64) - ((ref_pos + 4) as i64);
-
             self.set_pos(ref_pos);
-            self.write_int(offset as u64, 32);
+            (label_ref.encode)(self, (ref_pos + label_ref.num_bytes) as i64, label_addr as i64);
+
+            // Assert that we've written the same number of bytes that we
+            // expected to have written.
+            assert!(self.write_pos == ref_pos + label_ref.num_bytes);
         }
 
         self.write_pos = orig_pos;
@@ -328,33 +274,39 @@ impl CodeBlock {
         assert!(self.label_refs.is_empty());
     }
 
-    pub fn mark_position_writable(&mut self, write_pos: usize) {
-        let page_size = self.page_size;
-        let aligned_position = (write_pos / page_size) * page_size;
-
-        if self.current_aligned_write_pos != aligned_position {
-            self.current_aligned_write_pos = aligned_position;
-
-            #[cfg(not(test))]
-            unsafe {
-                use core::ffi::c_void;
-                let page_ptr = self.get_ptr(aligned_position).raw_ptr() as *mut c_void;
-                crate::cruby::rb_yjit_mark_writable(page_ptr, page_size.try_into().unwrap());
-            }
-        }
+    pub fn mark_all_executable(&mut self) {
+        self.mem_block.mark_all_executable();
     }
 
-    pub fn mark_all_executable(&mut self) {
-        self.current_aligned_write_pos = ALIGNED_WRITE_POSITION_NONE;
+    #[cfg(feature = "disasm")]
+    pub fn inline(&self) -> bool {
+        !self.outlined
+    }
+}
 
-        #[cfg(not(test))]
-        unsafe {
-            use core::ffi::c_void;
-            // NOTE(alan): Right now we do allocate one big chunck and give the top half to the outlined codeblock
-            // The start of the top half of the region isn't necessarily a page boundary...
-            let cb_start = self.get_ptr(0).raw_ptr() as *mut c_void;
-            crate::cruby::rb_yjit_mark_executable(cb_start, self.mem_size.try_into().unwrap());
+#[cfg(test)]
+impl CodeBlock {
+    /// Stubbed CodeBlock for testing. Can't execute generated code.
+    pub fn new_dummy(mem_size: usize) -> Self {
+        use crate::virtualmem::*;
+        use crate::virtualmem::tests::TestingAllocator;
+
+        let alloc = TestingAllocator::new(mem_size);
+        let mem_start: *const u8 = alloc.mem_start();
+        let virt_mem = VirtualMem::new(alloc, 1, mem_start as *mut u8, mem_size);
+
+        Self::new(virt_mem, false)
+    }
+}
+
+/// Produce hex string output from the bytes in a code block
+impl fmt::LowerHex for CodeBlock {
+    fn fmt(&self, fmtr: &mut fmt::Formatter) -> fmt::Result {
+        for pos in 0..self.write_pos {
+            let byte = unsafe { self.mem_block.start_ptr().raw_ptr().add(pos).read() };
+            fmtr.write_fmt(format_args!("{:02x}", byte))?;
         }
+        Ok(())
     }
 }
 
@@ -372,5 +324,76 @@ impl OutlinedCb {
 
     pub fn unwrap(&mut self) -> &mut CodeBlock {
         &mut self.cb
+    }
+}
+
+/// Compute the number of bits needed to encode a signed value
+pub fn imm_num_bits(imm: i64) -> u8
+{
+    // Compute the smallest size this immediate fits in
+    if imm >= i8::MIN.into() && imm <= i8::MAX.into() {
+        return 8;
+    }
+    if imm >= i16::MIN.into() && imm <= i16::MAX.into() {
+        return 16;
+    }
+    if imm >= i32::MIN.into() && imm <= i32::MAX.into() {
+        return 32;
+    }
+
+    return 64;
+}
+
+/// Compute the number of bits needed to encode an unsigned value
+pub fn uimm_num_bits(uimm: u64) -> u8
+{
+    // Compute the smallest size this immediate fits in
+    if uimm <= u8::MAX.into() {
+        return 8;
+    }
+    else if uimm <= u16::MAX.into() {
+        return 16;
+    }
+    else if uimm <= u32::MAX.into() {
+        return 32;
+    }
+
+    return 64;
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+
+    #[test]
+    fn test_imm_num_bits()
+    {
+        assert_eq!(imm_num_bits(i8::MIN.into()), 8);
+        assert_eq!(imm_num_bits(i8::MAX.into()), 8);
+
+        assert_eq!(imm_num_bits(i16::MIN.into()), 16);
+        assert_eq!(imm_num_bits(i16::MAX.into()), 16);
+
+        assert_eq!(imm_num_bits(i32::MIN.into()), 32);
+        assert_eq!(imm_num_bits(i32::MAX.into()), 32);
+
+        assert_eq!(imm_num_bits(i64::MIN), 64);
+        assert_eq!(imm_num_bits(i64::MAX), 64);
+    }
+
+    #[test]
+    fn test_uimm_num_bits() {
+        assert_eq!(uimm_num_bits(u8::MIN.into()), 8);
+        assert_eq!(uimm_num_bits(u8::MAX.into()), 8);
+
+        assert_eq!(uimm_num_bits(((u8::MAX as u16) + 1).into()), 16);
+        assert_eq!(uimm_num_bits(u16::MAX.into()), 16);
+
+        assert_eq!(uimm_num_bits(((u16::MAX as u32) + 1).into()), 32);
+        assert_eq!(uimm_num_bits(u32::MAX.into()), 32);
+
+        assert_eq!(uimm_num_bits((u32::MAX as u64) + 1), 64);
+        assert_eq!(uimm_num_bits(u64::MAX), 64);
     }
 }

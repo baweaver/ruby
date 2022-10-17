@@ -312,7 +312,7 @@ class TestIO < Test::Unit::TestCase
       w.print "a\n\nb\n\n"
       w.close
     end, proc do |r|
-      assert_equal "a\n\nb\n", r.gets(nil, chomp: true)
+      assert_equal("a\n\nb\n\n", r.gets(nil, chomp: true), "[Bug #18770]")
       assert_nil r.gets("")
       r.close
     end)
@@ -1441,6 +1441,16 @@ class TestIO < Test::Unit::TestCase
     End
   end
 
+  def test_dup_timeout
+    with_pipe do |r, w|
+      r.timeout = 0.1
+      r2 = r.dup
+      assert_equal(0.1, r2.timeout)
+    ensure
+      r2&.close
+    end
+  end
+
   def test_inspect
     with_pipe do |r, w|
       assert_match(/^#<IO:fd \d+>$/, r.inspect)
@@ -1594,6 +1604,22 @@ class TestIO < Test::Unit::TestCase
     File.open(IO::NULL) do |r|
       assert_empty(r.read_nonblock(0, s = "01234567"))
       assert_empty(s)
+    end
+  end
+
+  def test_read_nonblock_file
+    make_tempfile do |path|
+      File.open(path, 'r') do |file|
+        file.read_nonblock(4)
+      end
+    end
+  end
+
+  def test_write_nonblock_file
+    make_tempfile do |path|
+      File.open(path, 'w') do |file|
+        file.write_nonblock("Ruby")
+      end
     end
   end
 
@@ -1893,6 +1919,20 @@ class TestIO < Test::Unit::TestCase
       assert_equal("bar\n", e.next)
       assert_equal("baz\n", e.next)
       assert_raise(StopIteration) { e.next }
+    end)
+
+    pipe(proc do |w|
+      w.write "foo\n"
+      w.close
+    end, proc do |r|
+      assert_equal(["foo\n"], r.each_line(nil, chomp: true).to_a, "[Bug #18770]")
+    end)
+
+    pipe(proc do |w|
+      w.write "foo\n"
+      w.close
+    end, proc do |r|
+      assert_equal(["fo", "o\n"], r.each_line(nil, 2, chomp: true).to_a, "[Bug #18770]")
     end)
   end
 
@@ -2197,6 +2237,14 @@ class TestIO < Test::Unit::TestCase
       r.sysread( 5, s = "01234567" )
       assert_equal( "foob", s )
     end)
+  end
+
+  def test_sysread_with_negative_length
+    make_tempfile {|t|
+      open(t.path) do |f|
+        assert_raise(ArgumentError) { f.sysread(-1) }
+      end
+    }
   end
 
   def test_flag
@@ -2588,6 +2636,8 @@ class TestIO < Test::Unit::TestCase
       bug = '[ruby-dev:31525]'
       assert_raise(ArgumentError, bug) {IO.foreach}
 
+      assert_raise(ArgumentError, "[Bug #18767] [ruby-core:108499]") {IO.foreach(__FILE__, 0){}}
+
       a = nil
       assert_nothing_raised(ArgumentError, bug) {a = IO.foreach(t.path).to_a}
       assert_equal(["foo\n", "bar\n", "baz\n"], a, bug)
@@ -2596,6 +2646,8 @@ class TestIO < Test::Unit::TestCase
       assert_raise_with_message(IOError, /not opened for reading/, bug6054) do
         IO.foreach(t.path, mode:"w").next
       end
+
+      assert_raise(ArgumentError, "[Bug #18771] [ruby-core:108503]") {IO.foreach(t, "\n", 10, true){}}
     }
   end
 
@@ -2605,6 +2657,7 @@ class TestIO < Test::Unit::TestCase
       assert_equal(["foo\nb", "ar\nb", "az\n"], IO.readlines(t.path, "b"))
       assert_equal(["fo", "o\n", "ba", "r\n", "ba", "z\n"], IO.readlines(t.path, 2))
       assert_equal(["fo", "o\n", "b", "ar", "\nb", "az", "\n"], IO.readlines(t.path, "b", 2))
+      assert_raise(ArgumentError, "[Bug #18771] [ruby-core:108503]") {IO.readlines(t, "\n", 10, true){}}
     }
   end
 
@@ -3097,6 +3150,8 @@ __END__
   end
 
   def test_cross_thread_close_stdio
+    omit "[Bug #18613]" if /freebsd/ =~ RUBY_PLATFORM
+
     assert_separately([], <<-'end;')
       IO.pipe do |r,w|
         $stdin.reopen(r)
@@ -3765,6 +3820,8 @@ __END__
   end
 
   def test_race_closed_stream
+    omit "[Bug #18613]" if /freebsd/ =~ RUBY_PLATFORM
+
     assert_separately([], "#{<<-"begin;"}\n#{<<-"end;"}")
     begin;
       bug13158 = '[ruby-core:79262] [Bug #13158]'
@@ -3859,6 +3916,8 @@ __END__
     end
 
     def test_closed_stream_in_rescue
+      omit "[Bug #18613]" if /freebsd/ =~ RUBY_PLATFORM
+
       assert_separately([], "#{<<-"begin;"}\n#{<<~"end;"}")
       begin;
       10.times do
@@ -3927,6 +3986,9 @@ __END__
       noex = Thread.new do # everything right and never see exceptions :)
         until sig_rd.wait_readable(0)
           IO.pipe do |r, w|
+            assert_nil r.timeout
+            assert_nil w.timeout
+
             th = Thread.new { r.read(1) }
             w.write(dot)
 

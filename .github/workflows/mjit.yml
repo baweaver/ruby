@@ -5,11 +5,13 @@ on:
       - 'doc/**'
       - '**.md'
       - '**.rdoc'
+      - '**/.document'
   pull_request:
     paths-ignore:
       - 'doc/**'
       - '**.md'
       - '**.rdoc'
+      - '**/.document'
 
 concurrency:
   group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
@@ -23,7 +25,7 @@ jobs:
         jit_opts: [ "--mjit", "--mjit-wait" ]
       fail-fast: false
     runs-on: ubuntu-latest
-    if: ${{ !startsWith(github.event.head_commit.message, '[DOC]') && !contains(github.event.pull_request.labels.*.name, 'Documentation') }}
+    if: ${{ !contains(github.event.head_commit.message, '[DOC]') && !contains(github.event.pull_request.labels.*.name, 'Documentation') }}
     env:
       TESTOPTS: '-q --tty=no'
       RUN_OPTS: '--disable-gems ${{ matrix.jit_opts }} --mjit-debug=-ggdb3'

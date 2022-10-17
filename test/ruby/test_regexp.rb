@@ -608,6 +608,38 @@ class TestRegexp < Test::Unit::TestCase
     assert_equal('#<MatchData "foobarbaz" 1:"foo" 2:"bar" 3:"baz" 4:nil>', m.inspect)
   end
 
+  def test_match_data_deconstruct
+    m = /foo.+/.match("foobarbaz")
+    assert_equal([], m.deconstruct)
+
+    m = /(foo).+(baz)/.match("foobarbaz")
+    assert_equal(["foo", "baz"], m.deconstruct)
+
+    m = /(...)(...)(...)(...)?/.match("foobarbaz")
+    assert_equal(["foo", "bar", "baz", nil], m.deconstruct)
+  end
+
+  def test_match_data_deconstruct_keys
+    m = /foo.+/.match("foobarbaz")
+    assert_equal({}, m.deconstruct_keys([:a]))
+
+    m = /(?<a>foo).+(?<b>baz)/.match("foobarbaz")
+    assert_equal({a: "foo", b: "baz"}, m.deconstruct_keys(nil))
+    assert_equal({a: "foo", b: "baz"}, m.deconstruct_keys([:a, :b]))
+    assert_equal({b: "baz"}, m.deconstruct_keys([:b]))
+    assert_equal({}, m.deconstruct_keys([:c, :a]))
+    assert_equal({a: "foo"}, m.deconstruct_keys([:a, :c]))
+    assert_equal({}, m.deconstruct_keys([:a, :b, :c]))
+
+    assert_raise(TypeError) {
+      m.deconstruct_keys(0)
+    }
+
+    assert_raise(TypeError) {
+      m.deconstruct_keys(["a", "b"])
+    }
+  end
+
   def test_initialize
     assert_raise(ArgumentError) { Regexp.new }
     assert_equal(/foo/, assert_warning(/ignored/) {Regexp.new(/foo/, Regexp::IGNORECASE)})
@@ -626,6 +658,29 @@ class TestRegexp < Test::Unit::TestCase
     assert_raise(RegexpError) { Regexp.new('[\\40000000000') }
     assert_raise(RegexpError) { Regexp.new('[\\600000000000.') }
     assert_raise(RegexpError) { Regexp.new("((?<v>))\\g<0>") }
+  end
+
+  def test_initialize_bool_warning
+    assert_warning(/expected true or false as ignorecase/) do
+      Regexp.new("foo", :i)
+    end
+  end
+
+  def test_initialize_option
+    assert_equal(//i, Regexp.new("", "i"))
+    assert_equal(//m, Regexp.new("", "m"))
+    assert_equal(//x, Regexp.new("", "x"))
+    assert_equal(//imx, Regexp.new("", "imx"))
+    assert_equal(//, Regexp.new("", ""))
+    assert_equal(//imx, Regexp.new("", "mimix"))
+
+    assert_raise(ArgumentError) { Regexp.new("", "e") }
+    assert_raise(ArgumentError) { Regexp.new("", "n") }
+    assert_raise(ArgumentError) { Regexp.new("", "s") }
+    assert_raise(ArgumentError) { Regexp.new("", "u") }
+    assert_raise(ArgumentError) { Regexp.new("", "o") }
+    assert_raise(ArgumentError) { Regexp.new("", "j") }
+    assert_raise(ArgumentError) { Regexp.new("", "xmen") }
   end
 
   def test_match_control_meta_escape

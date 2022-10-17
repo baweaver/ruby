@@ -77,6 +77,7 @@ rb_call_inits(void)
     CALL(vm_stack_canary);
     CALL(ast);
     CALL(gc_stress);
+    CALL(shape);
 
     // enable builtin loading
     CALL(builtin);
@@ -98,9 +99,15 @@ rb_call_builtin_inits(void)
     BUILTIN(array);
     BUILTIN(kernel);
     BUILTIN(timev);
+    BUILTIN(thread_sync);
     BUILTIN(yjit);
     BUILTIN(nilclass);
     BUILTIN(marshal);
+#if USE_MJIT
+    BUILTIN(mjit);
+    BUILTIN(mjit_c);
+    BUILTIN(mjit_compiler);
+#endif
     Init_builtin_prelude();
 }
 #undef CALL

@@ -2140,17 +2140,16 @@ CODE
     m2t_q.push 1
     t.join
 
-    assert_equal ["c-return", base_line + 31], events[0]
-    assert_equal ["line", base_line + 32],     events[1]
-    assert_equal ["line", base_line + 33],     events[2]
-    assert_equal ["call", base_line + -6],     events[3]
-    assert_equal ["return", base_line + -4],   events[4]
-    assert_equal ["line", base_line + 34],     events[5]
-    assert_equal ["line", base_line + 35],     events[6]
-    assert_equal ["c-call", base_line + 35],   events[7] # Thread.current
-    assert_equal ["c-return", base_line + 35], events[8] # Thread.current
-    assert_equal ["c-call", base_line + 35],   events[9] # Thread#set_trace_func
-    assert_equal nil,                          events[10]
+    assert_equal ["line", base_line + 32],     events[0]
+    assert_equal ["line", base_line + 33],     events[1]
+    assert_equal ["call", base_line + -6],     events[2]
+    assert_equal ["return", base_line + -4],   events[3]
+    assert_equal ["line", base_line + 34],     events[4]
+    assert_equal ["line", base_line + 35],     events[5]
+    assert_equal ["c-call", base_line + 35],   events[6] # Thread.current
+    assert_equal ["c-return", base_line + 35], events[7] # Thread.current
+    assert_equal ["c-call", base_line + 35],   events[8] # Thread#set_trace_func
+    assert_equal nil,                          events[9]
   end
 
   def test_lineno_in_optimized_insn
@@ -2362,6 +2361,28 @@ CODE
       end
     end
     assert_equal [:tp1, 1, 2, :tp2, 3], events
+  end
+
+  def test_multiple_tracepoints_same_bmethod
+    events = []
+    tp1 = TracePoint.new(:return) do |tp|
+      events << :tp1
+    end
+    tp2 = TracePoint.new(:return) do |tp|
+      events << :tp2
+    end
+
+    obj = Object.new
+    obj.define_singleton_method(:foo) {}
+    bmethod = obj.method(:foo)
+
+    tp1.enable(target: bmethod) do
+      tp2.enable(target: bmethod) do
+        obj.foo
+      end
+    end
+
+    assert_equal([:tp2, :tp1], events, '[Bug #18031]')
   end
 
   def test_script_compiled
@@ -2633,5 +2654,32 @@ CODE
     assert_raise RuntimeError do
       TracePoint.allow_reentry{}
     end
+  end
+
+  def test_raising_from_b_return_tp_tracing_bmethod
+    assert_normal_exit(<<~RUBY, '[Bug #18060]', timeout: 3)
+      class Foo
+        define_singleton_method(:foo) { return } # a bmethod
+      end
+
+      TracePoint.trace(:b_return) do |tp|
+        raise
+      end
+
+      Foo.foo
+    RUBY
+
+    # Same thing but with a target
+    assert_normal_exit(<<~RUBY, '[Bug #18060]', timeout: 3)
+      class Foo
+        define_singleton_method(:foo) { return } # a bmethod
+      end
+
+      TracePoint.new(:b_return) do |tp|
+        raise
+      end.enable(target: Foo.method(:foo))
+
+      Foo.foo
+    RUBY
   end
 end

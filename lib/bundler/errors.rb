@@ -41,19 +41,20 @@ module Bundler
   class GemspecError < BundlerError; status_code(14); end
   class InvalidOption < BundlerError; status_code(15); end
   class ProductionError < BundlerError; status_code(16); end
+
   class HTTPError < BundlerError
     status_code(17)
     def filter_uri(uri)
       URICredentialsFilter.credential_filtered_uri(uri)
     end
   end
+
   class RubyVersionMismatch < BundlerError; status_code(18); end
   class SecurityError < BundlerError; status_code(19); end
   class LockfileError < BundlerError; status_code(20); end
   class CyclicDependencyError < BundlerError; status_code(21); end
   class GemfileLockNotFound < BundlerError; status_code(22); end
   class PluginError < BundlerError; status_code(29); end
-  class SudoNotPermittedError < BundlerError; status_code(30); end
   class ThreadCreationError < BundlerError; status_code(33); end
   class APIResponseMismatchError < BundlerError; status_code(34); end
   class APIResponseInvalidDependenciesError < BundlerError; status_code(35); end
