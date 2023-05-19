@@ -7,11 +7,9 @@
 **********************************************************************/
 
 #include "debug_counter.h"
-#include "gc.h"
 #include "internal.h"
 #include "internal/array.h"
 #include "internal/gc.h"
-#include "internal/hash.h"
 #include "internal/sanitizers.h"
 #include "internal/static_assert.h"
 #include "internal/struct.h"
@@ -169,7 +167,7 @@ ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS(static void transient_heap_ptr_check(struct
 static void
 transient_heap_ptr_check(struct transient_heap *theap, VALUE obj)
 {
-    if (obj != Qundef) {
+    if (!UNDEF_P(obj)) {
         const void *ptr = transient_heap_ptr(obj, FALSE);
         TH_ASSERT(ptr == NULL || transient_header_managed_ptr_p(theap, ptr));
     }
@@ -599,21 +597,13 @@ transient_heap_ptr(VALUE obj, int error)
         break;
       case T_OBJECT:
         if (ROBJ_TRANSIENT_P(obj)) {
+            RUBY_ASSERT(!rb_shape_obj_too_complex(obj));
             ptr = ROBJECT_IVPTR(obj);
         }
         break;
       case T_STRUCT:
         if (RSTRUCT_TRANSIENT_P(obj)) {
             ptr = rb_struct_const_heap_ptr(obj);
-        }
-        break;
-      case T_HASH:
-        if (RHASH_TRANSIENT_P(obj)) {
-            TH_ASSERT(RHASH_AR_TABLE_P(obj));
-            ptr = (VALUE *)(RHASH(obj)->as.ar);
-        }
-        else {
-            ptr = NULL;
         }
         break;
       default:
@@ -735,9 +725,6 @@ transient_heap_block_evacuate(struct transient_heap* theap, struct transient_hea
                 break;
               case T_STRUCT:
                 rb_struct_transient_heap_evacuate(obj, !TRANSIENT_HEAP_DEBUG_DONT_PROMOTE);
-                break;
-              case T_HASH:
-                rb_hash_transient_heap_evacuate(obj, !TRANSIENT_HEAP_DEBUG_DONT_PROMOTE);
                 break;
               default:
                 rb_bug("unsupported: %s\n", rb_obj_info(obj));

@@ -221,10 +221,16 @@ class Complex_Test < Test::Unit::TestCase
     assert_equal([1,2], Complex.polar(1,2).polar)
     assert_equal(Complex.polar(1.0, Math::PI * 2 / 3), Complex.polar(1, Math::PI * 2 / 3))
 
-    assert_in_out_err([], <<-'end;', ['OK'], [])
-      Complex.polar(1, Complex(1, 0))
-      puts :OK
-    end;
+    one = 1+0i
+    c = Complex.polar(0, one)
+    assert_equal(0, c)
+    assert_predicate(c.real, :real?)
+    c = Complex.polar(one, 0)
+    assert_equal(1, c)
+    assert_predicate(c.real, :real?)
+    c = Complex.polar(one)
+    assert_equal(1, c)
+    assert_predicate(c.real, :real?)
   end
 
   def test_uplus
@@ -847,20 +853,42 @@ class Complex_Test < Test::Unit::TestCase
     assert_equal(Complex(0), '_5'.to_c)
     assert_equal(Complex(5), '5_'.to_c)
     assert_equal(Complex(5), '5x'.to_c)
+    assert_equal(Complex(51), '5_1'.to_c)
+    assert_equal(Complex(5), '5__1'.to_c)
     assert_equal(Complex(5), '5+_3i'.to_c)
     assert_equal(Complex(5), '5+3_i'.to_c)
     assert_equal(Complex(5,3), '5+3i_'.to_c)
     assert_equal(Complex(5,3), '5+3ix'.to_c)
+    assert_equal(Complex(5,31), '5+3_1i'.to_c)
+    assert_equal(Complex(5), '5+3__1i'.to_c)
+    assert_equal(Complex(51), Complex('5_1'))
+    assert_equal(Complex(5,31), Complex('5+3_1i'))
+    assert_equal(Complex(5,31), Complex('5+3_1I'))
+    assert_equal(Complex(5,31), Complex('5+3_1j'))
+    assert_equal(Complex(5,31), Complex('5+3_1J'))
+    assert_equal(Complex(0,31), Complex('3_1i'))
+    assert_equal(Complex(0,31), Complex('3_1I'))
+    assert_equal(Complex(0,31), Complex('3_1j'))
+    assert_equal(Complex(0,31), Complex('3_1J'))
     assert_raise(ArgumentError){ Complex('')}
     assert_raise(ArgumentError){ Complex('_')}
     assert_raise(ArgumentError){ Complex("\f\n\r\t\v5\0")}
     assert_raise(ArgumentError){ Complex('_5')}
     assert_raise(ArgumentError){ Complex('5_')}
+    assert_raise(ArgumentError){ Complex('5__1')}
     assert_raise(ArgumentError){ Complex('5x')}
     assert_raise(ArgumentError){ Complex('5+_3i')}
     assert_raise(ArgumentError){ Complex('5+3_i')}
     assert_raise(ArgumentError){ Complex('5+3i_')}
     assert_raise(ArgumentError){ Complex('5+3ix')}
+    assert_raise(ArgumentError){ Complex('5+3__1i')}
+    assert_raise(ArgumentError){ Complex('5+3__1I')}
+    assert_raise(ArgumentError){ Complex('5+3__1j')}
+    assert_raise(ArgumentError){ Complex('5+3__1J')}
+    assert_raise(ArgumentError){ Complex('3__1i')}
+    assert_raise(ArgumentError){ Complex('3__1I')}
+    assert_raise(ArgumentError){ Complex('3__1j')}
+    assert_raise(ArgumentError){ Complex('3__1J')}
 
     assert_equal(Complex(Rational(1,5)), '1/5'.to_c)
     assert_equal(Complex(Rational(-1,5)), '-1/5'.to_c)
@@ -1139,15 +1167,34 @@ class Complex_Test < Test::Unit::TestCase
   end
 
   def test_canonicalize_polar
-    obj = Class.new(Numeric) do
-      def initialize
-        @x = 2
+    error = "not a real"
+    assert_raise_with_message(TypeError, error) do
+      Complex.polar(1i)
+    end
+    assert_raise_with_message(TypeError, error) do
+      Complex.polar(1i, 0)
+    end
+    assert_raise_with_message(TypeError, error) do
+      Complex.polar(0, 1i)
+    end
+    n = Class.new(Numeric) do
+      def initialize(x = 1)
+        @x = x
       end
       def real?
         (@x -= 1) > 0
       end
-    end.new
-    assert_raise(TypeError) do
+    end
+    obj = n.new
+    assert_raise_with_message(TypeError, error) do
+      Complex.polar(obj)
+    end
+    obj = n.new
+    assert_raise_with_message(TypeError, error) do
+      Complex.polar(obj, 0)
+    end
+    obj = n.new
+    assert_raise_with_message(TypeError, error) do
       Complex.polar(1, obj)
     end
   end

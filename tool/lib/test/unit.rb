@@ -89,16 +89,16 @@ module Test
         end
       end
 
-      module MJITFirst
+      module RJITFirst
         def group(list)
-          # MJIT first
-          mjit, others = list.partition {|e| /test_mjit/ =~ e}
-          mjit + others
+          # RJIT first
+          rjit, others = list.partition {|e| /test_rjit/ =~ e}
+          rjit + others
         end
       end
 
       class Alpha < NoSort
-        include MJITFirst
+        include RJITFirst
 
         def sort_by_name(list)
           list.sort_by(&:name)
@@ -112,7 +112,7 @@ module Test
 
       # shuffle test suites based on CRC32 of their names
       Shuffle = Struct.new(:seed, :salt) do
-        include MJITFirst
+        include RJITFirst
 
         def initialize(seed)
           self.class::CRC_TBL ||= (0..255).map {|i|
@@ -286,10 +286,16 @@ module Test
         @jobserver = nil
         makeflags = ENV.delete("MAKEFLAGS")
         if !options[:parallel] and
-          /(?:\A|\s)--jobserver-(?:auth|fds)=(\d+),(\d+)/ =~ makeflags
+          /(?:\A|\s)--jobserver-(?:auth|fds)=(?:(\d+),(\d+)|fifo:((?:\\.|\S)+))/ =~ makeflags
           begin
-            r = IO.for_fd($1.to_i(10), "rb", autoclose: false)
-            w = IO.for_fd($2.to_i(10), "wb", autoclose: false)
+            if fifo = $3
+              fifo.gsub!(/\\(?=.)/, '')
+              r = File.open(fifo, IO::RDONLY|IO::NONBLOCK|IO::BINARY)
+              w = File.open(fifo, IO::WRONLY|IO::NONBLOCK|IO::BINARY)
+            else
+              r = IO.for_fd($1.to_i(10), "rb", autoclose: false)
+              w = IO.for_fd($2.to_i(10), "wb", autoclose: false)
+            end
           rescue
             r.close if r
             nil
@@ -723,7 +729,7 @@ module Test
           return result
         ensure
           if file = @options[:timetable_data]
-            open(file, 'w'){|f|
+            File.open(file, 'w'){|f|
               @records.each{|(worker, suite), (st, ed)|
                 f.puts '[' + [worker.dump, suite.dump, st.to_f * 1_000, ed.to_f * 1_000].join(", ") + '],'
               }
@@ -787,7 +793,7 @@ module Test
           unless rep.empty?
             rep.each do |r|
               if r[:error]
-                puke(*r[:error], Timeout::Error)
+                puke(*r[:error], Timeout::Error.new)
                 next
               end
               r[:report]&.each do |f|
@@ -1583,7 +1589,7 @@ module Test
           puts if @verbose
           $stdout.flush
 
-          unless defined?(RubyVM::MJIT) && RubyVM::MJIT.enabled? # compiler process is wrongly considered as leak
+          unless defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled? # compiler process is wrongly considered as leak
             leakchecker.check("#{inst.class}\##{inst.__name__}")
           end
 
@@ -1742,6 +1748,9 @@ module Test
             when Test::Unit::AssertionFailedError then
               @failures += 1
               "Failure:\n#{klass}##{meth} [#{location e}]:\n#{e.message}\n"
+            when Timeout::Error
+              @errors += 1
+              "Timeout:\n#{klass}##{meth}\n"
             else
               @errors += 1
               bt = Test::filter_backtrace(e.backtrace).join "\n    "

@@ -26,15 +26,19 @@ extern int madvise(caddr_t, size_t, int);
 #include COROUTINE_H
 
 #include "eval_intern.h"
-#include "gc.h"
 #include "internal.h"
 #include "internal/cont.h"
+#include "internal/thread.h"
+#include "internal/error.h"
+#include "internal/gc.h"
 #include "internal/proc.h"
 #include "internal/sanitizers.h"
 #include "internal/warnings.h"
 #include "ruby/fiber/scheduler.h"
-#include "mjit.h"
+#include "rjit.h"
+#include "yjit.h"
 #include "vm_core.h"
+#include "vm_sync.h"
 #include "id_table.h"
 #include "ractor_core.h"
 
@@ -66,6 +70,8 @@ static VALUE rb_cFiberPool;
 #ifdef RB_EXPERIMENTAL_FIBER_POOL
 #define FIBER_POOL_ALLOCATION_FREE
 #endif
+
+#define jit_cont_enabled (rb_rjit_enabled || rb_yjit_enabled_p())
 
 enum context_type {
     CONTINUATION_CONTEXT = 0,
@@ -195,6 +201,15 @@ struct fiber_pool {
     size_t vm_stack_size;
 };
 
+// Continuation contexts used by JITs
+struct rb_jit_cont {
+    rb_execution_context_t *ec; // continuation ec
+    struct rb_jit_cont *prev, *next; // used to form lists
+};
+
+// Doubly linked list for enumerating all on-stack ISEQs.
+static struct rb_jit_cont *first_jit_cont;
+
 typedef struct rb_context_struct {
     enum context_type type;
     int argc;
@@ -212,22 +227,21 @@ typedef struct rb_context_struct {
     rb_execution_context_t saved_ec;
     rb_jmpbuf_t jmpbuf;
     rb_ensure_entry_t *ensure_array;
-    /* Pointer to MJIT info about the continuation.  */
-    struct mjit_cont *mjit_cont;
+    struct rb_jit_cont *jit_cont; // Continuation contexts for JITs
 } rb_context_t;
-
 
 /*
  * Fiber status:
- *    [Fiber.new] ------> FIBER_CREATED
- *                        | [Fiber#resume]
- *                        v
- *                   +--> FIBER_RESUMED ----+
- *    [Fiber#resume] |    | [Fiber.yield]   |
- *                   |    v                 |
- *                   +-- FIBER_SUSPENDED    | [Terminate]
- *                                          |
- *                       FIBER_TERMINATED <-+
+ *    [Fiber.new] ------> FIBER_CREATED ----> [Fiber#kill] --> |
+ *                        | [Fiber#resume]                     |
+ *                        v                                    |
+ *                   +--> FIBER_RESUMED ----> [return] ------> |
+ *    [Fiber#resume] |    | [Fiber.yield/transfer]             |
+ *  [Fiber#transfer] |    v                                    |
+ *                   +--- FIBER_SUSPENDED --> [Fiber#kill] --> |
+ *                                                             |
+ *                                                             |
+ *                        FIBER_TERMINATED <-------------------+
  */
 enum fiber_status {
     FIBER_CREATED,
@@ -253,13 +267,15 @@ struct rb_fiber_struct {
     unsigned int yielding : 1;
     unsigned int blocking : 1;
 
+    unsigned int killed : 1;
+
     struct coroutine_context context;
     struct fiber_pool_stack stack;
 };
 
 static struct fiber_pool shared_fiber_pool = {NULL, NULL, 0, 0, 0, 0};
 
-static ID fiber_initialize_keywords[2] = {0};
+static ID fiber_initialize_keywords[3] = {0};
 
 /*
  * FreeBSD require a first (i.e. addr) argument of mmap(2) is not NULL
@@ -681,21 +697,36 @@ fiber_pool_stack_free(struct fiber_pool_stack * stack)
 
     if (DEBUG) fprintf(stderr, "fiber_pool_stack_free: %p+%"PRIuSIZE" [base=%p, size=%"PRIuSIZE"]\n", base, size, stack->base, stack->size);
 
-#if VM_CHECK_MODE > 0 && defined(MADV_DONTNEED)
+    // The pages being used by the stack can be returned back to the system.
+    // That doesn't change the page mapping, but it does allow the system to
+    // reclaim the physical memory.
+    // Since we no longer care about the data itself, we don't need to page
+    // out to disk, since that is costly. Not all systems support that, so
+    // we try our best to select the most efficient implementation.
+    // In addition, it's actually slightly desirable to not do anything here,
+    // but that results in higher memory usage.
+
+#ifdef __wasi__
+    // WebAssembly doesn't support madvise, so we just don't do anything.
+#elif VM_CHECK_MODE > 0 && defined(MADV_DONTNEED)
     // This immediately discards the pages and the memory is reset to zero.
     madvise(base, size, MADV_DONTNEED);
-#elif defined(POSIX_MADV_DONTNEED)
-    posix_madvise(base, size, POSIX_MADV_DONTNEED);
 #elif defined(MADV_FREE_REUSABLE)
+    // Darwin / macOS / iOS.
     // Acknowledge the kernel down to the task info api we make this
     // page reusable for future use.
     // As for MADV_FREE_REUSE below we ensure in the rare occasions the task was not
     // completed at the time of the call to re-iterate.
     while (madvise(base, size, MADV_FREE_REUSABLE) == -1 && errno == EAGAIN);
 #elif defined(MADV_FREE)
+    // Recent Linux.
     madvise(base, size, MADV_FREE);
 #elif defined(MADV_DONTNEED)
+    // Old Linux.
     madvise(base, size, MADV_DONTNEED);
+#elif defined(POSIX_MADV_DONTNEED)
+    // Solaris?
+    posix_madvise(base, size, POSIX_MADV_DONTNEED);
 #elif defined(_WIN32)
     VirtualAlloc(base, size, MEM_RESET, PAGE_READWRITE);
     // Not available in all versions of Windows.
@@ -1000,6 +1031,8 @@ fiber_is_root_p(const rb_fiber_t *fiber)
 }
 #endif
 
+static void jit_cont_free(struct rb_jit_cont *cont);
+
 static void
 cont_free(void *ptr)
 {
@@ -1020,9 +1053,9 @@ cont_free(void *ptr)
 
     RUBY_FREE_UNLESS_NULL(cont->saved_vm_stack.ptr);
 
-    if (mjit_enabled) {
-        VM_ASSERT(cont->mjit_cont != NULL);
-        mjit_cont_free(cont->mjit_cont);
+    if (jit_cont_enabled) {
+        VM_ASSERT(cont->jit_cont != NULL);
+        jit_cont_free(cont->jit_cont);
     }
     /* free rb_cont_t or rb_fiber_t */
     ruby_xfree(ptr);
@@ -1127,7 +1160,9 @@ fiber_memsize(const void *ptr)
      */
     if (saved_ec->local_storage && fiber != th->root_fiber) {
         size += rb_id_table_memsize(saved_ec->local_storage);
+        size += rb_obj_memsize_of(saved_ec->storage);
     }
+
     size += cont_memsize(&fiber->cont);
     return size;
 }
@@ -1187,12 +1222,103 @@ cont_save_thread(rb_context_t *cont, rb_thread_t *th)
     sec->machine.stack_end = NULL;
 }
 
-static void
-cont_init_mjit_cont(rb_context_t *cont)
+static rb_nativethread_lock_t jit_cont_lock;
+
+// Register a new continuation with execution context `ec`. Return JIT info about
+// the continuation.
+static struct rb_jit_cont *
+jit_cont_new(rb_execution_context_t *ec)
 {
-    VM_ASSERT(cont->mjit_cont == NULL);
-    if (mjit_enabled) {
-        cont->mjit_cont = mjit_cont_new(&(cont->saved_ec));
+    struct rb_jit_cont *cont;
+
+    // We need to use calloc instead of something like ZALLOC to avoid triggering GC here.
+    // When this function is called from rb_thread_alloc through rb_threadptr_root_fiber_setup,
+    // the thread is still being prepared and marking it causes SEGV.
+    cont = calloc(1, sizeof(struct rb_jit_cont));
+    if (cont == NULL)
+        rb_memerror();
+    cont->ec = ec;
+
+    rb_native_mutex_lock(&jit_cont_lock);
+    if (first_jit_cont == NULL) {
+        cont->next = cont->prev = NULL;
+    }
+    else {
+        cont->prev = NULL;
+        cont->next = first_jit_cont;
+        first_jit_cont->prev = cont;
+    }
+    first_jit_cont = cont;
+    rb_native_mutex_unlock(&jit_cont_lock);
+
+    return cont;
+}
+
+// Unregister continuation `cont`.
+static void
+jit_cont_free(struct rb_jit_cont *cont)
+{
+    if (!cont) return;
+
+    rb_native_mutex_lock(&jit_cont_lock);
+    if (cont == first_jit_cont) {
+        first_jit_cont = cont->next;
+        if (first_jit_cont != NULL)
+            first_jit_cont->prev = NULL;
+    }
+    else {
+        cont->prev->next = cont->next;
+        if (cont->next != NULL)
+            cont->next->prev = cont->prev;
+    }
+    rb_native_mutex_unlock(&jit_cont_lock);
+
+    free(cont);
+}
+
+// Call a given callback against all on-stack ISEQs.
+void
+rb_jit_cont_each_iseq(rb_iseq_callback callback, void *data)
+{
+    struct rb_jit_cont *cont;
+    for (cont = first_jit_cont; cont != NULL; cont = cont->next) {
+        if (cont->ec->vm_stack == NULL)
+            continue;
+
+        const rb_control_frame_t *cfp;
+        for (cfp = RUBY_VM_END_CONTROL_FRAME(cont->ec) - 1; ; cfp = RUBY_VM_NEXT_CONTROL_FRAME(cfp)) {
+            const rb_iseq_t *iseq;
+            if (cfp->pc && (iseq = cfp->iseq) != NULL && imemo_type((VALUE)iseq) == imemo_iseq) {
+                callback(iseq, data);
+            }
+
+            if (cfp == cont->ec->cfp)
+                break; // reached the most recent cfp
+        }
+    }
+}
+
+// Finish working with jit_cont.
+void
+rb_jit_cont_finish(void)
+{
+    if (!jit_cont_enabled)
+        return;
+
+    struct rb_jit_cont *cont, *next;
+    for (cont = first_jit_cont; cont != NULL; cont = next) {
+        next = cont->next;
+        free(cont); // Don't use xfree because it's allocated by calloc.
+    }
+    rb_native_mutex_destroy(&jit_cont_lock);
+}
+
+static void
+cont_init_jit_cont(rb_context_t *cont)
+{
+    VM_ASSERT(cont->jit_cont == NULL);
+    if (jit_cont_enabled) {
+        cont->jit_cont = jit_cont_new(&(cont->saved_ec));
     }
 }
 
@@ -1211,7 +1337,7 @@ cont_init(rb_context_t *cont, rb_thread_t *th)
     cont->saved_ec.local_storage = NULL;
     cont->saved_ec.local_storage_recursive_hash = Qnil;
     cont->saved_ec.local_storage_recursive_hash_for_trace = Qnil;
-    cont_init_mjit_cont(cont);
+    cont_init_jit_cont(cont);
 }
 
 static rb_context_t *
@@ -1240,11 +1366,15 @@ rb_fiberptr_blocking(struct rb_fiber_struct *fiber)
     return fiber->blocking;
 }
 
-// This is used for root_fiber because other fibers call cont_init_mjit_cont through cont_new.
+// Start working with jit_cont.
 void
-rb_fiber_init_mjit_cont(struct rb_fiber_struct *fiber)
+rb_jit_cont_init(void)
 {
-    cont_init_mjit_cont(&fiber->cont);
+    if (!jit_cont_enabled)
+        return;
+
+    rb_native_mutex_initialize(&jit_cont_lock);
+    cont_init_jit_cont(&GET_EC()->fiber_ptr->cont);
 }
 
 #if 0
@@ -1454,7 +1584,7 @@ cont_restore_1(rb_context_t *cont)
     cont_restore_thread(cont);
 
     /* restore machine stack */
-#ifdef _M_AMD64
+#if defined(_M_AMD64) && !defined(__MINGW64__)
     {
         /* workaround for x64 SEH */
         jmp_buf buf;
@@ -1709,7 +1839,7 @@ rollback_ensure_stack(VALUE self,rb_ensure_list_t *current,rb_ensure_entry_t *ta
     /* push ensure stack */
     for (j = 0; j < i; j++) {
         func = lookup_rollback_func(target[i - j - 1].e_proc);
-        if ((VALUE)func != Qundef) {
+        if (!UNDEF_P((VALUE)func)) {
             (*func)(target[i - j - 1].data2);
         }
     }
@@ -1834,7 +1964,7 @@ rb_cont_call(int argc, VALUE *argv, VALUE contval)
  *  the current thread, blocking and non-blocking fibers' behavior is identical.
  *
  *  Ruby doesn't provide a scheduler class: it is expected to be implemented by
- *  the user and correspond to Fiber::SchedulerInterface.
+ *  the user and correspond to Fiber::Scheduler.
  *
  *  There is also Fiber.schedule method, which is expected to immediately perform
  *  the given block in a non-blocking manner. Its actual implementation is up to
@@ -1869,6 +1999,7 @@ fiber_t_alloc(VALUE fiber_value, unsigned int blocking)
     fiber->cont.self = fiber_value;
     fiber->cont.type = FIBER_CONTEXT;
     fiber->blocking = blocking;
+    fiber->killed = 0;
     cont_init(&fiber->cont, th);
 
     fiber->cont.saved_ec.fiber_ptr = fiber;
@@ -1885,11 +2016,222 @@ fiber_t_alloc(VALUE fiber_value, unsigned int blocking)
     return fiber;
 }
 
-static VALUE
-fiber_initialize(VALUE self, VALUE proc, struct fiber_pool * fiber_pool, unsigned int blocking)
+static rb_fiber_t *
+root_fiber_alloc(rb_thread_t *th)
 {
+    VALUE fiber_value = fiber_alloc(rb_cFiber);
+    rb_fiber_t *fiber = th->ec->fiber_ptr;
+
+    VM_ASSERT(DATA_PTR(fiber_value) == NULL);
+    VM_ASSERT(fiber->cont.type == FIBER_CONTEXT);
+    VM_ASSERT(FIBER_RESUMED_P(fiber));
+
+    th->root_fiber = fiber;
+    DATA_PTR(fiber_value) = fiber;
+    fiber->cont.self = fiber_value;
+
+    coroutine_initialize_main(&fiber->context);
+
+    return fiber;
+}
+
+static inline rb_fiber_t*
+fiber_current(void)
+{
+    rb_execution_context_t *ec = GET_EC();
+    if (ec->fiber_ptr->cont.self == 0) {
+        root_fiber_alloc(rb_ec_thread_ptr(ec));
+    }
+    return ec->fiber_ptr;
+}
+
+static inline VALUE
+current_fiber_storage(void)
+{
+    rb_execution_context_t *ec = GET_EC();
+    return ec->storage;
+}
+
+static inline VALUE
+inherit_fiber_storage(void)
+{
+    return rb_obj_dup(current_fiber_storage());
+}
+
+static inline void
+fiber_storage_set(struct rb_fiber_struct *fiber, VALUE storage)
+{
+    fiber->cont.saved_ec.storage = storage;
+}
+
+static inline VALUE
+fiber_storage_get(rb_fiber_t *fiber, int allocate)
+{
+    VALUE storage = fiber->cont.saved_ec.storage;
+    if (storage == Qnil && allocate) {
+        storage = rb_hash_new();
+        fiber_storage_set(fiber, storage);
+    }
+    return storage;
+}
+
+static void
+storage_access_must_be_from_same_fiber(VALUE self)
+{
+    rb_fiber_t *fiber = fiber_ptr(self);
+    rb_fiber_t *current = fiber_current();
+    if (fiber != current) {
+        rb_raise(rb_eArgError, "Fiber storage can only be accessed from the Fiber it belongs to");
+    }
+}
+
+/**
+ *  call-seq: fiber.storage -> hash (dup)
+ *
+ *  Returns a copy of the storage hash for the fiber. The method can only be called on the
+ *  Fiber.current.
+ */
+static VALUE
+rb_fiber_storage_get(VALUE self)
+{
+    storage_access_must_be_from_same_fiber(self);
+
+    VALUE storage = fiber_storage_get(fiber_ptr(self), FALSE);
+
+    if (storage == Qnil) {
+        return Qnil;
+    }
+    else {
+        return rb_obj_dup(storage);
+    }
+}
+
+static int
+fiber_storage_validate_each(VALUE key, VALUE value, VALUE _argument)
+{
+    rb_check_id(&key);
+
+    return ST_CONTINUE;
+}
+
+static void
+fiber_storage_validate(VALUE value)
+{
+    // nil is an allowed value and will be lazily initialized.
+    if (value == Qnil) return;
+
+    if (!RB_TYPE_P(value, T_HASH)) {
+        rb_raise(rb_eTypeError, "storage must be a hash");
+    }
+
+    if (RB_OBJ_FROZEN(value)) {
+        rb_raise(rb_eFrozenError, "storage must not be frozen");
+    }
+
+    rb_hash_foreach(value, fiber_storage_validate_each, Qundef);
+}
+
+/**
+ *  call-seq: fiber.storage = hash
+ *
+ *  Sets the storage hash for the fiber. This feature is experimental
+ *  and may change in the future. The method can only be called on the
+ *  Fiber.current.
+ *
+ *  You should be careful about using this method as you may inadvertently clear
+ *  important fiber-storage state. You should mostly prefer to assign specific
+ *  keys in the storage using Fiber::[]=.
+ *
+ *  You can also use <tt>Fiber.new(storage: nil)</tt> to create a fiber with an empty
+ *  storage.
+ *
+ *  Example:
+ *
+ *    while request = request_queue.pop
+ *      # Reset the per-request state:
+ *      Fiber.current.storage = nil
+ *      handle_request(request)
+ *    end
+ */
+static VALUE
+rb_fiber_storage_set(VALUE self, VALUE value)
+{
+    if (rb_warning_category_enabled_p(RB_WARN_CATEGORY_EXPERIMENTAL)) {
+        rb_category_warn(RB_WARN_CATEGORY_EXPERIMENTAL,
+          "Fiber#storage= is experimental and may be removed in the future!");
+    }
+
+    storage_access_must_be_from_same_fiber(self);
+    fiber_storage_validate(value);
+
+    fiber_ptr(self)->cont.saved_ec.storage = rb_obj_dup(value);
+    return value;
+}
+
+/**
+ *  call-seq: Fiber[key] -> value
+ *
+ *  Returns the value of the fiber storage variable identified by +key+.
+ *
+ *  The +key+ must be a symbol, and the value is set by Fiber#[]= or
+ *  Fiber#store.
+ *
+ *  See also Fiber::[]=.
+ */
+static VALUE
+rb_fiber_storage_aref(VALUE class, VALUE key)
+{
+    ID id = rb_check_id(&key);
+    if (!id) return Qnil;
+
+    VALUE storage = fiber_storage_get(fiber_current(), FALSE);
+    if (storage == Qnil) return Qnil;
+
+    return rb_hash_aref(storage, key);
+}
+
+/**
+ *  call-seq: Fiber[key] = value
+ *
+ *  Assign +value+ to the fiber storage variable identified by +key+.
+ *  The variable is created if it doesn't exist.
+ *
+ *  +key+ must be a Symbol, otherwise a TypeError is raised.
+ *
+ *  See also Fiber::[].
+ */
+static VALUE
+rb_fiber_storage_aset(VALUE class, VALUE key, VALUE value)
+{
+    ID id = rb_check_id(&key);
+    if (!id) return Qnil;
+
+    VALUE storage = fiber_storage_get(fiber_current(), value != Qnil);
+    if (storage == Qnil) return Qnil;
+
+    if (value == Qnil) {
+        return rb_hash_delete(storage, key);
+    }
+    else {
+        return rb_hash_aset(storage, key, value);
+    }
+}
+
+static VALUE
+fiber_initialize(VALUE self, VALUE proc, struct fiber_pool * fiber_pool, unsigned int blocking, VALUE storage)
+{
+    if (storage == Qundef || storage == Qtrue) {
+        // The default, inherit storage (dup) from the current fiber:
+        storage = inherit_fiber_storage();
+    }
+    else /* nil, hash, etc. */ {
+        fiber_storage_validate(storage);
+        storage = rb_obj_dup(storage);
+    }
+
     rb_fiber_t *fiber = fiber_t_alloc(self, blocking);
 
+    fiber->cont.saved_ec.storage = storage;
     fiber->first_proc = proc;
     fiber->stack.base = NULL;
     fiber->stack.pool = fiber_pool;
@@ -1922,54 +2264,90 @@ rb_fiber_pool_default(VALUE pool)
     return &shared_fiber_pool;
 }
 
+VALUE rb_fiber_inherit_storage(struct rb_execution_context_struct *ec, struct rb_fiber_struct *fiber)
+{
+    VALUE storage = rb_obj_dup(ec->storage);
+    fiber->cont.saved_ec.storage = storage;
+    return storage;
+}
+
 /* :nodoc: */
 static VALUE
 rb_fiber_initialize_kw(int argc, VALUE* argv, VALUE self, int kw_splat)
 {
     VALUE pool = Qnil;
     VALUE blocking = Qfalse;
+    VALUE storage = Qundef;
 
     if (kw_splat != RB_NO_KEYWORDS) {
         VALUE options = Qnil;
-        VALUE arguments[2] = {Qundef};
+        VALUE arguments[3] = {Qundef};
 
         argc = rb_scan_args_kw(kw_splat, argc, argv, ":", &options);
-        rb_get_kwargs(options, fiber_initialize_keywords, 0, 2, arguments);
+        rb_get_kwargs(options, fiber_initialize_keywords, 0, 3, arguments);
 
-        if (arguments[0] != Qundef) {
+        if (!UNDEF_P(arguments[0])) {
             blocking = arguments[0];
         }
 
-        if (arguments[1] != Qundef) {
+        if (!UNDEF_P(arguments[1])) {
             pool = arguments[1];
         }
+
+        storage = arguments[2];
     }
 
-    return fiber_initialize(self, rb_block_proc(), rb_fiber_pool_default(pool), RTEST(blocking));
+    return fiber_initialize(self, rb_block_proc(), rb_fiber_pool_default(pool), RTEST(blocking), storage);
 }
 
 /*
  *  call-seq:
- *     Fiber.new(blocking: false) { |*args| ... } -> fiber
+ *     Fiber.new(blocking: false, storage: true) { |*args| ... } -> fiber
  *
- *  Creates new Fiber. Initially, the fiber is not running and can be resumed with
- *  #resume. Arguments to the first #resume call will be passed to the block:
+ *  Creates new Fiber. Initially, the fiber is not running and can be resumed
+ *  with #resume. Arguments to the first #resume call will be passed to the
+ *  block:
  *
- *      f = Fiber.new do |initial|
- *         current = initial
- *         loop do
- *           puts "current: #{current.inspect}"
- *           current = Fiber.yield
- *         end
- *      end
- *      f.resume(100)     # prints: current: 100
- *      f.resume(1, 2, 3) # prints: current: [1, 2, 3]
- *      f.resume          # prints: current: nil
- *      # ... and so on ...
+ *    f = Fiber.new do |initial|
+ *       current = initial
+ *       loop do
+ *         puts "current: #{current.inspect}"
+ *         current = Fiber.yield
+ *       end
+ *    end
+ *    f.resume(100)     # prints: current: 100
+ *    f.resume(1, 2, 3) # prints: current: [1, 2, 3]
+ *    f.resume          # prints: current: nil
+ *    # ... and so on ...
  *
- *  If <tt>blocking: false</tt> is passed to <tt>Fiber.new</tt>, _and_ current thread
- *  has a Fiber.scheduler defined, the Fiber becomes non-blocking (see "Non-blocking
- *  Fibers" section in class docs).
+ *  If <tt>blocking: false</tt> is passed to <tt>Fiber.new</tt>, _and_ current
+ *  thread has a Fiber.scheduler defined, the Fiber becomes non-blocking (see
+ *  "Non-blocking Fibers" section in class docs).
+ *
+ *  If the <tt>storage</tt> is unspecified, the default is to inherit a copy of
+ *  the storage from the current fiber. This is the same as specifying
+ *  <tt>storage: true</tt>.
+ *
+ *    Fiber[:x] = 1
+ *    Fiber.new do
+ *      Fiber[:x] # => 1
+ *      Fiber[:x] = 2
+ *    end.resume
+ *    Fiber[:x] # => 1
+ *
+ *  If the given <tt>storage</tt> is <tt>nil</tt>, this function will lazy
+ *  initialize the internal storage, which starts as an empty hash.
+ *
+ *    Fiber[:x] = "Hello World"
+ *    Fiber.new(storage: nil) do
+ *      Fiber[:x] # nil
+ *    end
+ *
+ *  Otherwise, the given <tt>storage</tt> is used as the new fiber's storage,
+ *  and it must be an instance of Hash.
+ *
+ *  Explicitly using <tt>storage: true</tt> is currently experimental and may
+ *  change in the future.
  */
 static VALUE
 rb_fiber_initialize(int argc, VALUE* argv, VALUE self)
@@ -1978,9 +2356,15 @@ rb_fiber_initialize(int argc, VALUE* argv, VALUE self)
 }
 
 VALUE
+rb_fiber_new_storage(rb_block_call_func_t func, VALUE obj, VALUE storage)
+{
+    return fiber_initialize(fiber_alloc(rb_cFiber), rb_proc_new(func, obj), rb_fiber_pool_default(Qnil), 1, storage);
+}
+
+VALUE
 rb_fiber_new(rb_block_call_func_t func, VALUE obj)
 {
-    return fiber_initialize(fiber_alloc(rb_cFiber), rb_proc_new(func, obj), rb_fiber_pool_default(Qnil), 1);
+    return rb_fiber_new_storage(func, obj, Qtrue);
 }
 
 static VALUE
@@ -2034,7 +2418,7 @@ rb_fiber_s_schedule_kw(int argc, VALUE* argv, int kw_splat)
  *
  *  Note that the behavior described above is how the method is <em>expected</em>
  *  to behave, actual behavior is up to the current scheduler's implementation of
- *  Fiber::SchedulerInterface#fiber method. Ruby doesn't enforce this method to
+ *  Fiber::Scheduler#fiber method. Ruby doesn't enforce this method to
  *  behave in any particular way.
  *
  *  If the scheduler is not set, the method raises
@@ -2053,7 +2437,7 @@ rb_fiber_s_schedule(int argc, VALUE *argv, VALUE obj)
  *
  *  Returns the Fiber scheduler, that was last set for the current thread with Fiber.set_scheduler.
  *  Returns +nil+ if no scheduler is set (which is the default), and non-blocking fibers'
- #  behavior is the same as blocking.
+ *  behavior is the same as blocking.
  *  (see "Non-blocking fibers" section in class docs for details about the scheduler concept).
  *
  */
@@ -2087,7 +2471,7 @@ rb_fiber_current_scheduler(VALUE klass)
  *  thread will call scheduler's +close+ method on finalization (allowing the scheduler to
  *  properly manage all non-finished fibers).
  *
- *  +scheduler+ can be an object of any class corresponding to Fiber::SchedulerInterface. Its
+ *  +scheduler+ can be an object of any class corresponding to Fiber::Scheduler. Its
  *  implementation is up to the user.
  *
  *  See also the "Non-blocking fibers" section in class docs.
@@ -2142,37 +2526,22 @@ rb_fiber_start(rb_fiber_t *fiber)
         if (state == TAG_RAISE) {
             // noop...
         }
+        else if (state == TAG_FATAL && err == RUBY_FATAL_FIBER_KILLED) {
+            need_interrupt = FALSE;
+            err = Qfalse;
+        }
         else if (state == TAG_FATAL) {
             rb_threadptr_pending_interrupt_enque(th, err);
         }
         else {
             err = rb_vm_make_jump_tag_but_local_jump(state, err);
         }
-        need_interrupt = TRUE;
     }
 
     rb_fiber_terminate(fiber, need_interrupt, err);
 }
 
-static rb_fiber_t *
-root_fiber_alloc(rb_thread_t *th)
-{
-    VALUE fiber_value = fiber_alloc(rb_cFiber);
-    rb_fiber_t *fiber = th->ec->fiber_ptr;
-
-    VM_ASSERT(DATA_PTR(fiber_value) == NULL);
-    VM_ASSERT(fiber->cont.type == FIBER_CONTEXT);
-    VM_ASSERT(fiber->status == FIBER_RESUMED);
-
-    th->root_fiber = fiber;
-    DATA_PTR(fiber_value) = fiber;
-    fiber->cont.self = fiber_value;
-
-    coroutine_initialize_main(&fiber->context);
-
-    return fiber;
-}
-
+// Set up a "root fiber", which is the fiber that every Ractor has.
 void
 rb_threadptr_root_fiber_setup(rb_thread_t *th)
 {
@@ -2185,11 +2554,14 @@ rb_threadptr_root_fiber_setup(rb_thread_t *th)
     fiber->cont.saved_ec.fiber_ptr = fiber;
     fiber->cont.saved_ec.thread_ptr = th;
     fiber->blocking = 1;
+    fiber->killed = 0;
     fiber_status_set(fiber, FIBER_RESUMED); /* skip CREATED */
     th->ec = &fiber->cont.saved_ec;
-    // This skips mjit_cont_new for the initial thread because mjit_enabled is always false
-    // at this point. mjit_init calls rb_fiber_init_mjit_cont again for this root_fiber.
-    rb_fiber_init_mjit_cont(fiber);
+    // When rb_threadptr_root_fiber_setup is called for the first time, rb_rjit_enabled and
+    // rb_yjit_enabled_p() are still false. So this does nothing and rb_jit_cont_init() that is
+    // called later will take care of it. However, you still have to call cont_init_jit_cont()
+    // here for other Ractors, which are not initialized by rb_jit_cont_init().
+    cont_init_jit_cont(&fiber->cont);
 }
 
 void
@@ -2221,16 +2593,6 @@ rb_threadptr_root_fiber_terminate(rb_thread_t *th)
 
     // The vm_stack is `alloca`ed on the thread stack, so it's gone too:
     rb_ec_clear_vm_stack(th->ec);
-}
-
-static inline rb_fiber_t*
-fiber_current(void)
-{
-    rb_execution_context_t *ec = GET_EC();
-    if (ec->fiber_ptr->cont.self == 0) {
-        root_fiber_alloc(rb_ec_thread_ptr(ec));
-    }
-    return ec->fiber_ptr;
 }
 
 static inline rb_fiber_t*
@@ -2293,6 +2655,19 @@ fiber_store(rb_fiber_t *next_fiber, rb_thread_t *th)
 
     fiber_status_set(next_fiber, FIBER_RESUMED);
     fiber_setcontext(next_fiber, fiber);
+}
+
+static void
+fiber_check_killed(rb_fiber_t *fiber)
+{
+    VM_ASSERT(fiber == fiber_current());
+
+    if (fiber->killed) {
+        rb_thread_t *thread = fiber->cont.saved_ec.thread_ptr;
+
+        thread->ec->errinfo = RUBY_FATAL_FIBER_KILLED;
+        EC_JUMP_TAG(thread->ec, RUBY_TAG_FATAL);
+    }
 }
 
 static inline VALUE
@@ -2383,7 +2758,14 @@ fiber_switch(rb_fiber_t *fiber, int argc, const VALUE *argv, int kw_splat, rb_fi
 
     current_fiber = th->ec->fiber_ptr;
     value = current_fiber->cont.value;
-    if (current_fiber->cont.argc == -1) rb_exc_raise(value);
+
+    fiber_check_killed(current_fiber);
+
+    if (current_fiber->cont.argc == -1) {
+        // Fiber#raise will trigger this path.
+        rb_exc_raise(value);
+    }
+
     return value;
 }
 
@@ -2460,7 +2842,8 @@ rb_fiber_blocking(VALUE class)
     // If we are already blocking, this is essentially a no-op:
     if (fiber->blocking) {
         return rb_yield(fiber_value);
-    } else {
+    }
+    else {
         return rb_ensure(fiber_blocking_yield, fiber_value, fiber_blocking_ensure, fiber_value);
     }
 }
@@ -2820,14 +3203,9 @@ rb_fiber_s_yield(int argc, VALUE *argv, VALUE klass)
 }
 
 static VALUE
-fiber_raise(rb_fiber_t *fiber, int argc, const VALUE *argv)
+fiber_raise(rb_fiber_t *fiber, VALUE exception)
 {
-    VALUE exception = rb_make_exception(argc, argv);
-
-    if (fiber->resuming_fiber) {
-        rb_raise(rb_eFiberError, "attempt to raise a resuming fiber");
-    }
-    else if (FIBER_SUSPENDED_P(fiber) && !fiber->yielding) {
+    if (FIBER_SUSPENDED_P(fiber) && !fiber->yielding) {
         return fiber_transfer_kw(fiber, -1, &exception, RB_NO_KEYWORDS);
     }
     else {
@@ -2838,7 +3216,9 @@ fiber_raise(rb_fiber_t *fiber, int argc, const VALUE *argv)
 VALUE
 rb_fiber_raise(VALUE fiber, int argc, const VALUE *argv)
 {
-    return fiber_raise(fiber_ptr(fiber), argc, argv);
+    VALUE exception = rb_make_exception(argc, argv);
+
+    return fiber_raise(fiber_ptr(fiber), exception);
 }
 
 /*
@@ -2866,6 +3246,39 @@ static VALUE
 rb_fiber_m_raise(int argc, VALUE *argv, VALUE self)
 {
     return rb_fiber_raise(self, argc, argv);
+}
+
+/*
+ *  call-seq:
+ *     fiber.kill -> nil
+ *
+ *  Terminates +fiber+ by raising an uncatchable exception, returning
+ *  the terminated Fiber.
+ *
+ *  If the fiber has not been started, transition directly to the terminated state.
+ *
+ *  If the fiber is already terminated, does nothing.
+ */
+static VALUE
+rb_fiber_m_kill(VALUE self)
+{
+    rb_fiber_t *fiber = fiber_ptr(self);
+
+    if (fiber->killed) return Qfalse;
+    fiber->killed = 1;
+
+    if (fiber->status == FIBER_CREATED) {
+        fiber->status = FIBER_TERMINATED;
+    }
+    else if (fiber->status != FIBER_TERMINATED) {
+        if (fiber_current() == fiber) {
+            fiber_check_killed(fiber);
+        } else {
+            fiber_raise(fiber_ptr(self), Qnil);
+        }
+    }
+
+    return self;
 }
 
 /*
@@ -3021,6 +3434,7 @@ Init_Cont(void)
 
     fiber_initialize_keywords[0] = rb_intern_const("blocking");
     fiber_initialize_keywords[1] = rb_intern_const("pool");
+    fiber_initialize_keywords[2] = rb_intern_const("storage");
 
     const char *fiber_shared_fiber_pool_free_stacks = getenv("RUBY_SHARED_FIBER_POOL_FREE_STACKS");
     if (fiber_shared_fiber_pool_free_stacks) {
@@ -3033,10 +3447,16 @@ Init_Cont(void)
     rb_define_singleton_method(rb_cFiber, "yield", rb_fiber_s_yield, -1);
     rb_define_singleton_method(rb_cFiber, "current", rb_fiber_s_current, 0);
     rb_define_singleton_method(rb_cFiber, "blocking", rb_fiber_blocking, 0);
+    rb_define_singleton_method(rb_cFiber, "[]", rb_fiber_storage_aref, 1);
+    rb_define_singleton_method(rb_cFiber, "[]=", rb_fiber_storage_aset, 2);
+
     rb_define_method(rb_cFiber, "initialize", rb_fiber_initialize, -1);
     rb_define_method(rb_cFiber, "blocking?", rb_fiber_blocking_p, 0);
+    rb_define_method(rb_cFiber, "storage", rb_fiber_storage_get, 0);
+    rb_define_method(rb_cFiber, "storage=", rb_fiber_storage_set, 1);
     rb_define_method(rb_cFiber, "resume", rb_fiber_m_resume, -1);
     rb_define_method(rb_cFiber, "raise", rb_fiber_m_raise, -1);
+    rb_define_method(rb_cFiber, "kill", rb_fiber_m_kill, 0);
     rb_define_method(rb_cFiber, "backtrace", rb_fiber_backtrace, -1);
     rb_define_method(rb_cFiber, "backtrace_locations", rb_fiber_backtrace_locations, -1);
     rb_define_method(rb_cFiber, "to_s", fiber_to_s, 0);

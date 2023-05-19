@@ -77,6 +77,7 @@ static ID id_warn;
 static ID id_category;
 static ID id_deprecated;
 static ID id_experimental;
+static ID id_performance;
 static VALUE sym_category;
 static VALUE sym_highlight;
 static struct {
@@ -125,6 +126,8 @@ err_vcatf(VALUE str, const char *pre, const char *file, int line,
     return str;
 }
 
+static VALUE syntax_error_with_path(VALUE, VALUE, VALUE*, rb_encoding*);
+
 VALUE
 rb_syntax_error_append(VALUE exc, VALUE file, int line, int column,
                        rb_encoding *enc, const char *fmt, va_list args)
@@ -138,15 +141,7 @@ rb_syntax_error_append(VALUE exc, VALUE file, int line, int column,
     }
     else {
         VALUE mesg;
-        if (NIL_P(exc)) {
-            mesg = rb_enc_str_new(0, 0, enc);
-            exc = rb_class_new_instance(1, &mesg, rb_eSyntaxError);
-        }
-        else {
-            mesg = rb_attr_get(exc, idMesg);
-            if (RSTRING_LEN(mesg) > 0 && *(RSTRING_END(mesg)-1) != '\n')
-                rb_str_cat_cstr(mesg, "\n");
-        }
+        exc = syntax_error_with_path(exc, file, &mesg, enc);
         err_vcatf(mesg, NULL, fn, line, fmt, args);
     }
 
@@ -154,8 +149,8 @@ rb_syntax_error_append(VALUE exc, VALUE file, int line, int column,
 }
 
 static unsigned int warning_disabled_categories = (
-    1U << RB_WARN_CATEGORY_DEPRECATED |
-    0);
+    (1U << RB_WARN_CATEGORY_DEPRECATED) |
+    ~RB_WARN_CATEGORY_DEFAULT_BITS);
 
 static unsigned int
 rb_warning_category_mask(VALUE category)
@@ -193,7 +188,7 @@ rb_warning_category_update(unsigned int mask, unsigned int bits)
     warning_disabled_categories |= mask & ~bits;
 }
 
-MJIT_FUNC_EXPORTED bool
+bool
 rb_warning_category_enabled_p(rb_warning_category_t category)
 {
     return !(warning_disabled_categories & (1U << category));
@@ -666,6 +661,11 @@ bug_important_message(FILE *out, const char *const msg, size_t len)
     fwrite(p, 1, endmsg - p, out);
 }
 
+#undef CRASH_REPORTER_MAY_BE_CREATED
+#if defined(__APPLE__) && \
+    (!defined(MAC_OS_X_VERSION_10_6) || MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_6 || defined(__POWERPC__)) /* 10.6 PPC case */
+# define CRASH_REPORTER_MAY_BE_CREATED
+#endif
 static void
 preface_dump(FILE *out)
 {
@@ -674,7 +674,7 @@ preface_dump(FILE *out)
         "-- Crash Report log information "
         "--------------------------------------------\n"
         "   See Crash Report log file in one of the following locations:\n"
-# if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_6
+# ifdef CRASH_REPORTER_MAY_BE_CREATED
         "     * ~/Library/Logs/CrashReporter\n"
         "     * /Library/Logs/CrashReporter\n"
 # endif
@@ -699,7 +699,7 @@ postscript_dump(FILE *out)
         "[IMPORTANT]"
         /*" ------------------------------------------------"*/
         "\n""Don't forget to include the Crash Report log file under\n"
-# if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_6
+# ifdef CRASH_REPORTER_MAY_BE_CREATED
         "CrashReporter or "
 # endif
         "DiagnosticReports directory in bug reports.\n"
@@ -868,7 +868,7 @@ rb_report_bug_valist(VALUE file, int line, const char *fmt, va_list args)
     report_bug_valist(RSTRING_PTR(file), line, fmt, NULL, args);
 }
 
-MJIT_FUNC_EXPORTED void
+void
 rb_assert_failure(const char *file, int line, const char *name, const char *expr)
 {
     FILE *out = stderr;
@@ -1000,7 +1000,7 @@ rb_check_type(VALUE x, int t)
 {
     int xt;
 
-    if (RB_UNLIKELY(x == Qundef)) {
+    if (RB_UNLIKELY(UNDEF_P(x))) {
         rb_bug(UNDEF_LEAKED);
     }
 
@@ -1021,7 +1021,7 @@ rb_check_type(VALUE x, int t)
 void
 rb_unexpected_type(VALUE x, int t)
 {
-    if (RB_UNLIKELY(x == Qundef)) {
+    if (RB_UNLIKELY(UNDEF_P(x))) {
         rb_bug(UNDEF_LEAKED);
     }
 
@@ -1223,7 +1223,7 @@ VALUE
 rb_get_message(VALUE exc)
 {
     VALUE e = rb_check_funcall(exc, id_message, 0, 0);
-    if (e == Qundef) return Qnil;
+    if (UNDEF_P(e)) return Qnil;
     if (!RB_TYPE_P(e, T_STRING)) e = rb_check_string_type(e);
     return e;
 }
@@ -1238,7 +1238,7 @@ rb_get_detailed_message(VALUE exc, VALUE opt)
     else {
         e = rb_check_funcall_kw(exc, id_detailed_message, 1, &opt, 1);
     }
-    if (e == Qundef) return Qnil;
+    if (UNDEF_P(e)) return Qnil;
     if (!RB_TYPE_P(e, T_STRING)) e = rb_check_string_type(e);
     return e;
 }
@@ -1583,7 +1583,7 @@ exc_set_backtrace(VALUE exc, VALUE bt)
     return rb_ivar_set(exc, id_bt, rb_check_backtrace(bt));
 }
 
-MJIT_FUNC_EXPORTED VALUE
+VALUE
 rb_exc_set_backtrace(VALUE exc, VALUE bt)
 {
     return exc_set_backtrace(exc, bt);
@@ -1630,15 +1630,15 @@ exc_equal(VALUE exc, VALUE obj)
         int state;
 
         obj = rb_protect(try_convert_to_exception, obj, &state);
-        if (state || obj == Qundef) {
+        if (state || UNDEF_P(obj)) {
             rb_set_errinfo(Qnil);
             return Qfalse;
         }
         if (rb_obj_class(exc) != rb_obj_class(obj)) return Qfalse;
         mesg = rb_check_funcall(obj, id_message, 0, 0);
-        if (mesg == Qundef) return Qfalse;
+        if (UNDEF_P(mesg)) return Qfalse;
         backtrace = rb_check_funcall(obj, id_backtrace, 0, 0);
-        if (backtrace == Qundef) return Qfalse;
+        if (UNDEF_P(backtrace)) return Qfalse;
     }
     else {
         mesg = rb_attr_get(obj, id_mesg);
@@ -1741,7 +1741,7 @@ exit_success_p(VALUE exc)
 static VALUE
 err_init_recv(VALUE exc, VALUE recv)
 {
-    if (recv != Qundef) rb_ivar_set(exc, id_recv, recv);
+    if (!UNDEF_P(recv)) rb_ivar_set(exc, id_recv, recv);
     return exc;
 }
 
@@ -2066,43 +2066,83 @@ name_err_mesg_to_str(VALUE obj)
     mesg = ptr[NAME_ERR_MESG__MESG];
     if (NIL_P(mesg)) return Qnil;
     else {
-        struct RString s_str, d_str;
-        VALUE c, s, d = 0, args[4];
-        int state = 0, singleton = 0;
+        struct RString s_str, c_str, d_str;
+        VALUE c, s, d = 0, args[4], c2;
+        int state = 0;
         rb_encoding *usascii = rb_usascii_encoding();
 
 #define FAKE_CSTR(v, str) rb_setup_fake_str((v), (str), rb_strlen_lit(str), usascii)
+        c = s = FAKE_CSTR(&s_str, "");
         obj = ptr[NAME_ERR_MESG__RECV];
         switch (obj) {
           case Qnil:
-            d = FAKE_CSTR(&d_str, "nil");
+            c = d = FAKE_CSTR(&d_str, "nil");
             break;
           case Qtrue:
-            d = FAKE_CSTR(&d_str, "true");
+            c = d = FAKE_CSTR(&d_str, "true");
             break;
           case Qfalse:
-            d = FAKE_CSTR(&d_str, "false");
+            c = d = FAKE_CSTR(&d_str, "false");
             break;
           default:
-            d = rb_protect(name_err_mesg_receiver_name, obj, &state);
-            if (state || d == Qundef || NIL_P(d))
-                d = rb_protect(rb_inspect, obj, &state);
+            if (strstr(RSTRING_PTR(mesg), "%2$s")) {
+                d = rb_protect(name_err_mesg_receiver_name, obj, &state);
+                if (state || NIL_OR_UNDEF_P(d))
+                    d = rb_protect(rb_inspect, obj, &state);
+                if (state) {
+                    rb_set_errinfo(Qnil);
+                }
+                d = rb_check_string_type(d);
+                if (NIL_P(d)) {
+                    d = rb_any_to_s(obj);
+                }
+            }
+
+            if (!RB_SPECIAL_CONST_P(obj)) {
+                switch (RB_BUILTIN_TYPE(obj)) {
+                  case T_MODULE:
+                    s = FAKE_CSTR(&s_str, "module ");
+                    c = obj;
+                    break;
+                  case T_CLASS:
+                    s = FAKE_CSTR(&s_str, "class ");
+                    c = obj;
+                    break;
+                  default:
+                    goto object;
+                }
+            }
+            else {
+                VALUE klass;
+              object:
+                klass = CLASS_OF(obj);
+                if (RB_TYPE_P(klass, T_CLASS) && FL_TEST(klass, FL_SINGLETON)) {
+                    s = FAKE_CSTR(&s_str, "");
+                    if (obj == rb_vm_top_self()) {
+                        c = FAKE_CSTR(&c_str, "main");
+                    }
+                    else {
+                        c = rb_any_to_s(obj);
+                    }
+                    break;
+                }
+                else {
+                    s = FAKE_CSTR(&s_str, "an instance of ");
+                    c = rb_class_real(klass);
+                }
+            }
+            c2 = rb_protect(name_err_mesg_receiver_name, c, &state);
+            if (state || NIL_OR_UNDEF_P(c2))
+                c2 = rb_protect(rb_inspect, c, &state);
             if (state) {
                 rb_set_errinfo(Qnil);
             }
-            d = rb_check_string_type(d);
-            if (NIL_P(d)) {
-                d = rb_any_to_s(obj);
+            c2 = rb_check_string_type(c2);
+            if (NIL_P(c2)) {
+                c2 = rb_any_to_s(c);
             }
-            singleton = (RSTRING_LEN(d) > 0 && RSTRING_PTR(d)[0] == '#');
+            c = c2;
             break;
-        }
-        if (!singleton) {
-            s = FAKE_CSTR(&s_str, ":");
-            c = rb_class_name(CLASS_OF(obj));
-        }
-        else {
-            c = s = FAKE_CSTR(&s_str, "");
         }
         args[0] = rb_obj_as_string(ptr[NAME_ERR_MESG__NAME]);
         args[1] = d;
@@ -2140,7 +2180,7 @@ name_err_receiver(VALUE self)
     VALUE *ptr, recv, mesg;
 
     recv = rb_ivar_lookup(self, id_recv, Qundef);
-    if (recv != Qundef) return recv;
+    if (!UNDEF_P(recv)) return recv;
 
     mesg = rb_attr_get(self, id_mesg);
     if (!rb_typeddata_is_kind_of(mesg, &name_err_mesg_data_type)) {
@@ -2198,7 +2238,7 @@ key_err_receiver(VALUE self)
     VALUE recv;
 
     recv = rb_ivar_lookup(self, id_receiver, Qundef);
-    if (recv != Qundef) return recv;
+    if (!UNDEF_P(recv)) return recv;
     rb_raise(rb_eArgError, "no receiver is available");
 }
 
@@ -2215,7 +2255,7 @@ key_err_key(VALUE self)
     VALUE key;
 
     key = rb_ivar_lookup(self, id_key, Qundef);
-    if (key != Qundef) return key;
+    if (!UNDEF_P(key)) return key;
     rb_raise(rb_eArgError, "no key is available");
 }
 
@@ -2253,7 +2293,7 @@ key_err_initialize(int argc, VALUE *argv, VALUE self)
         keywords[1] = id_key;
         rb_get_kwargs(options, keywords, 0, numberof(values), values);
         for (i = 0; i < numberof(values); ++i) {
-            if (values[i] != Qundef) {
+            if (!UNDEF_P(values[i])) {
                 rb_ivar_set(self, keywords[i], values[i]);
             }
         }
@@ -2275,7 +2315,7 @@ no_matching_pattern_key_err_matchee(VALUE self)
     VALUE matchee;
 
     matchee = rb_ivar_lookup(self, id_matchee, Qundef);
-    if (matchee != Qundef) return matchee;
+    if (!UNDEF_P(matchee)) return matchee;
     rb_raise(rb_eArgError, "no matchee is available");
 }
 
@@ -2292,7 +2332,7 @@ no_matching_pattern_key_err_key(VALUE self)
     VALUE key;
 
     key = rb_ivar_lookup(self, id_key, Qundef);
-    if (key != Qundef) return key;
+    if (!UNDEF_P(key)) return key;
     rb_raise(rb_eArgError, "no key is available");
 }
 
@@ -2319,7 +2359,7 @@ no_matching_pattern_key_err_initialize(int argc, VALUE *argv, VALUE self)
         keywords[1] = id_key;
         rb_get_kwargs(options, keywords, 0, numberof(values), values);
         for (i = 0; i < numberof(values); ++i) {
-            if (values[i] != Qundef) {
+            if (!UNDEF_P(values[i])) {
                 rb_ivar_set(self, keywords[i], values[i]);
             }
         }
@@ -2346,6 +2386,25 @@ syntax_error_initialize(int argc, VALUE *argv, VALUE self)
         argv = &mesg;
     }
     return rb_call_super(argc, argv);
+}
+
+static VALUE
+syntax_error_with_path(VALUE exc, VALUE path, VALUE *mesg, rb_encoding *enc)
+{
+    if (NIL_P(exc)) {
+        *mesg = rb_enc_str_new(0, 0, enc);
+        exc = rb_class_new_instance(1, mesg, rb_eSyntaxError);
+        rb_ivar_set(exc, id_i_path, path);
+    }
+    else {
+        if (rb_attr_get(exc, id_i_path) != path) {
+            rb_raise(rb_eArgError, "SyntaxError#path changed");
+        }
+        VALUE s = *mesg = rb_attr_get(exc, idMesg);
+        if (RSTRING_LEN(s) > 0 && *(RSTRING_END(s)-1) != '\n')
+            rb_str_cat_cstr(s, "\n");
+    }
+    return exc;
 }
 
 /*
@@ -2941,6 +3000,8 @@ ivar_copy_i(st_data_t key, st_data_t val, st_data_t exc)
     return ST_CONTINUE;
 }
 
+void rb_exc_check_circular_cause(VALUE exc);
+
 static VALUE
 exception_loader(VALUE exc, VALUE obj)
 {
@@ -2954,6 +3015,8 @@ exception_loader(VALUE exc, VALUE obj)
     if (RB_TYPE_P(exc, T_CLASS)) return obj; // maybe called from Marshal's TYPE_USERDEF
 
     rb_ivar_foreach(obj, ivar_copy_i, exc);
+
+    rb_exc_check_circular_cause(exc);
 
     if (rb_attr_get(exc, id_bt) == rb_attr_get(exc, id_bt_locations)) {
         rb_ivar_set(exc, id_bt_locations, Qnil);
@@ -3006,9 +3069,16 @@ Init_Exception(void)
     rb_eSyntaxError = rb_define_class("SyntaxError", rb_eScriptError);
     rb_define_method(rb_eSyntaxError, "initialize", syntax_error_initialize, -1);
 
+    /* RDoc will use literal name value while parsing rb_attr,
+    *  and will render `idPath` as an attribute name without this trick */
+    ID path = idPath;
+
+    /* the path failed to parse */
+    rb_attr(rb_eSyntaxError, path, TRUE, FALSE, FALSE);
+
     rb_eLoadError   = rb_define_class("LoadError", rb_eScriptError);
     /* the path failed to load */
-    rb_attr(rb_eLoadError, rb_intern_const("path"), TRUE, FALSE, FALSE);
+    rb_attr(rb_eLoadError, path, TRUE, FALSE, FALSE);
 
     rb_eNotImpError = rb_define_class("NotImplementedError", rb_eScriptError);
 
@@ -3078,6 +3148,7 @@ Init_Exception(void)
     id_category = rb_intern_const("category");
     id_deprecated = rb_intern_const("deprecated");
     id_experimental = rb_intern_const("experimental");
+    id_performance = rb_intern_const("performance");
     id_top = rb_intern_const("top");
     id_bottom = rb_intern_const("bottom");
     id_iseq = rb_make_internal_id();
@@ -3089,11 +3160,13 @@ Init_Exception(void)
     warning_categories.id2enum = rb_init_identtable();
     st_add_direct(warning_categories.id2enum, id_deprecated, RB_WARN_CATEGORY_DEPRECATED);
     st_add_direct(warning_categories.id2enum, id_experimental, RB_WARN_CATEGORY_EXPERIMENTAL);
+    st_add_direct(warning_categories.id2enum, id_performance, RB_WARN_CATEGORY_PERFORMANCE);
 
     warning_categories.enum2id = rb_init_identtable();
     st_add_direct(warning_categories.enum2id, RB_WARN_CATEGORY_NONE, 0);
     st_add_direct(warning_categories.enum2id, RB_WARN_CATEGORY_DEPRECATED, id_deprecated);
     st_add_direct(warning_categories.enum2id, RB_WARN_CATEGORY_EXPERIMENTAL, id_experimental);
+    st_add_direct(warning_categories.enum2id, RB_WARN_CATEGORY_PERFORMANCE, id_performance);
 }
 
 void
@@ -3239,12 +3312,14 @@ rb_syserr_fail_str(int e, VALUE mesg)
     rb_exc_raise(rb_syserr_new_str(e, mesg));
 }
 
+#undef rb_sys_fail
 void
 rb_sys_fail(const char *mesg)
 {
     rb_exc_raise(make_errno_exc(mesg));
 }
 
+#undef rb_sys_fail_str
 void
 rb_sys_fail_str(VALUE mesg)
 {

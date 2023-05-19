@@ -37,6 +37,9 @@ enum rb_io_buffer_flags {
     // A non-private mapping is marked as external.
     RB_IO_BUFFER_MAPPED = 4,
 
+    // A mapped buffer that is also shared.
+    RB_IO_BUFFER_SHARED = 8,
+
     // The buffer is locked and cannot be resized.
     // More specifically, it means we can't change the base address or size.
     // A buffer is typically locked before a system call that uses the data.
@@ -72,7 +75,9 @@ VALUE rb_io_buffer_map(VALUE io, size_t size, rb_off_t offset, enum rb_io_buffer
 VALUE rb_io_buffer_lock(VALUE self);
 VALUE rb_io_buffer_unlock(VALUE self);
 int rb_io_buffer_try_unlock(VALUE self);
+
 VALUE rb_io_buffer_free(VALUE self);
+VALUE rb_io_buffer_free_locked(VALUE self);
 
 int rb_io_buffer_get_bytes(VALUE self, void **base, size_t *size);
 void rb_io_buffer_get_bytes_for_reading(VALUE self, const void **base, size_t *size);

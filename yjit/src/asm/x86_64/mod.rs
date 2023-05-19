@@ -111,7 +111,7 @@ impl X86Opnd {
             X86Opnd::Imm(_) => false,
             X86Opnd::UImm(_) => false,
             X86Opnd::Reg(reg) => reg.reg_no > 7 || reg.num_bits == 8 && reg.reg_no >= 4,
-            X86Opnd::Mem(mem) => (mem.base_reg_no > 7 || (mem.idx_reg_no.unwrap_or(0) > 7)),
+            X86Opnd::Mem(mem) => mem.base_reg_no > 7 || (mem.idx_reg_no.unwrap_or(0) > 7),
             X86Opnd::IPRel(_) => false
         }
     }
@@ -555,8 +555,8 @@ fn write_rm_multi(cb: &mut CodeBlock, op_mem_reg8: u8, op_mem_reg_pref: u8, op_r
 
     // Check the size of opnd1
     match opnd1 {
-        X86Opnd::Reg(reg) => assert!(reg.num_bits == opnd_size),
-        X86Opnd::Mem(mem) => assert!(mem.num_bits == opnd_size),
+        X86Opnd::Reg(reg) => assert_eq!(reg.num_bits, opnd_size),
+        X86Opnd::Mem(mem) => assert_eq!(mem.num_bits, opnd_size),
         X86Opnd::Imm(imm) => assert!(imm.num_bits <= opnd_size),
         X86Opnd::UImm(uimm) => assert!(uimm.num_bits <= opnd_size),
         _ => ()
@@ -606,7 +606,14 @@ fn write_rm_multi(cb: &mut CodeBlock, op_mem_reg8: u8, op_mem_reg_pref: u8, op_r
         },
         // R/M + UImm
         (_, X86Opnd::UImm(uimm)) => {
-            let num_bits = imm_num_bits(uimm.value.try_into().unwrap());
+            // If the size of left hand operand equals the number of bits
+            // required to represent the right hand immediate, then we
+            // don't care about sign extension when calculating the immediate
+            let num_bits = if opnd0.num_bits() == uimm_num_bits(uimm.value) {
+                uimm_num_bits(uimm.value)
+            } else {
+                imm_num_bits(uimm.value.try_into().unwrap())
+            };
 
             if num_bits <= 8 {
                 // 8-bit immediate
@@ -625,7 +632,7 @@ fn write_rm_multi(cb: &mut CodeBlock, op_mem_reg8: u8, op_mem_reg_pref: u8, op_r
                 write_rm(cb, sz_pref, rex_w, X86Opnd::None, opnd0, op_ext_imm, &[op_mem_imm_lrg]);
                 cb.write_int(uimm.value, if opnd_size > 32 { 32 } else { opnd_size.into() });
             } else {
-                panic!("immediate value too large (num_bits={})", num_bits);
+                panic!("immediate value too large (num_bits={}, num={uimm:?})", num_bits);
             }
         },
         _ => unreachable!()
@@ -683,6 +690,8 @@ pub fn call_rel32(cb: &mut CodeBlock, rel32: i32) {
 /// call - Call a pointer, encode with a 32-bit offset if possible
 pub fn call_ptr(cb: &mut CodeBlock, scratch_opnd: X86Opnd, dst_ptr: *const u8) {
     if let X86Opnd::Reg(_scratch_reg) = scratch_opnd {
+        use crate::stats::{incr_counter};
+
         // Pointer to the end of this call instruction
         let end_ptr = cb.get_ptr(cb.write_pos + 5);
 
@@ -691,11 +700,13 @@ pub fn call_ptr(cb: &mut CodeBlock, scratch_opnd: X86Opnd, dst_ptr: *const u8) {
 
         // If the offset fits in 32-bit
         if rel64 >= i32::MIN.into() && rel64 <= i32::MAX.into() {
+            incr_counter!(num_send_x86_rel32);
             call_rel32(cb, rel64.try_into().unwrap());
             return;
         }
 
         // Move the pointer into the scratch register and call
+        incr_counter!(num_send_x86_reg);
         mov(cb, scratch_opnd, const_ptr_opnd(dst_ptr));
         call(cb, scratch_opnd);
     } else {
@@ -1032,6 +1043,20 @@ pub fn mov(cb: &mut CodeBlock, dst: X86Opnd, src: X86Opnd) {
             );
         }
     };
+}
+
+/// A variant of mov used for always writing the value in 64 bits for GC offsets.
+pub fn movabs(cb: &mut CodeBlock, dst: X86Opnd, value: u64) {
+    match dst {
+        X86Opnd::Reg(reg) => {
+            assert_eq!(reg.num_bits, 64);
+            write_rex(cb, true, 0, 0, reg.reg_no);
+
+            write_opcode(cb, 0xb8, reg);
+            cb.write_int(value, 64);
+        },
+        _ => unreachable!()
+    }
 }
 
 /// movsx - Move with sign extension (signed integers)

@@ -50,6 +50,9 @@ fn main() {
         // Don't want to copy over C comment
         .generate_comments(false)
 
+        // Makes the output more compact
+        .merge_extern_blocks(true)
+
         // Don't want layout tests as they are platform dependent
         .layout_tests(false)
 
@@ -63,8 +66,8 @@ fn main() {
         // Import YARV bytecode instruction constants
         .allowlist_type("ruby_vminsn_type")
 
-        // From include/ruby/internal/config.h
-        .allowlist_var("USE_RVARGC")
+        // From include/ruby/internal/special_consts.h
+        .allowlist_type("ruby_special_consts")
 
         // From include/ruby/internal/intern/string.h
         .allowlist_function("rb_utf8_str_new")
@@ -74,22 +77,38 @@ fn main() {
         // From encindex.h
         .allowlist_type("ruby_preserved_encindex")
 
+        // From include/ruby/ruby.h
+        .allowlist_function("rb_class2name")
+
         // This struct is public to Ruby C extensions
         // From include/ruby/internal/core/rbasic.h
         .allowlist_type("RBasic")
+
+        .allowlist_type("rstring_offsets")
+        .allowlist_type("ruby_rstring_flags")
 
         // From internal.h
         // This function prints info about a value and is useful for debugging
         .allowlist_function("rb_obj_info_dump")
 
+        // For crashing
+        .allowlist_function("rb_bug")
+
         // From shape.h
         .allowlist_function("rb_shape_get_shape_id")
         .allowlist_function("rb_shape_get_shape_by_id")
-        .allowlist_function("rb_shape_flags_mask")
+        .allowlist_function("rb_shape_id_offset")
         .allowlist_function("rb_shape_get_iv_index")
+        .allowlist_function("rb_shape_get_next")
+        .allowlist_function("rb_shape_id")
+        .allowlist_function("rb_shape_transition_shape_capa")
+        .allowlist_function("rb_shape_obj_too_complex")
+        .allowlist_var("SHAPE_ID_NUM_BITS")
+        .allowlist_var("OBJ_TOO_COMPLEX_SHAPE_ID")
 
         // From ruby/internal/intern/object.h
         .allowlist_function("rb_obj_is_kind_of")
+        .allowlist_function("rb_obj_frozen_p")
 
         // From ruby/internal/encoding/encoding.h
         .allowlist_type("ruby_encoding_consts")
@@ -100,32 +119,43 @@ fn main() {
         // From internal/hash.h
         .allowlist_function("rb_hash_new_with_size")
         .allowlist_function("rb_hash_resurrect")
+        .allowlist_function("rb_hash_stlike_foreach")
+
+        // From include/ruby/st.h
+        .allowlist_type("st_retval")
 
         // From include/ruby/internal/intern/hash.h
         .allowlist_function("rb_hash_aset")
         .allowlist_function("rb_hash_aref")
         .allowlist_function("rb_hash_bulk_insert")
+        .allowlist_function("rb_hash_stlike_lookup")
 
         // From include/ruby/internal/intern/array.h
         .allowlist_function("rb_ary_new_capa")
         .allowlist_function("rb_ary_store")
         .allowlist_function("rb_ary_resurrect")
         .allowlist_function("rb_ary_clear")
+        .allowlist_function("rb_ary_dup")
+        .allowlist_function("rb_ary_push")
+        .allowlist_function("rb_ary_unshift_m")
+        .allowlist_function("rb_yjit_rb_ary_subseq_length")
 
         // From internal/array.h
         .allowlist_function("rb_ec_ary_new_from_values")
         .allowlist_function("rb_ary_tmp_new_from_values")
 
         // From include/ruby/internal/intern/class.h
+        .allowlist_function("rb_class_attached_object")
         .allowlist_function("rb_singleton_class")
 
         // From include/ruby/internal/core/rclass.h
         .allowlist_function("rb_class_get_superclass")
 
-        // From include/ruby/internal/intern/gc.h
+        // From include/ruby/internal/gc.h
         .allowlist_function("rb_gc_mark")
         .allowlist_function("rb_gc_mark_movable")
         .allowlist_function("rb_gc_location")
+        .allowlist_function("rb_gc_writebarrier")
 
         // VALUE variables for Ruby class objects
         // From include/ruby/internal/globals.h
@@ -148,7 +178,6 @@ fn main() {
 
         // From include/ruby/internal/core/robject.h
         .allowlist_type("ruby_robject_flags")
-        // .allowlist_type("ruby_robject_consts") // Removed when USE_RVARGC
         .allowlist_var("ROBJECT_OFFSET_.*")
 
         // From include/ruby/internal/core/rarray.h
@@ -180,8 +209,12 @@ fn main() {
         // From include/ruby/internal/symbol.h
         .allowlist_function("rb_intern")
         .allowlist_function("rb_id2sym")
+        .allowlist_function("rb_id2name")
         .allowlist_function("rb_sym2id")
         .allowlist_function("rb_str_intern")
+
+        // From internal/numeric.h
+        .allowlist_function("rb_fix_aref")
 
         // From internal/string.h
         .allowlist_function("rb_ec_str_resurrect")
@@ -207,6 +240,9 @@ fn main() {
         .translate_enum_integer_types(true) // so we get fixed width Rust types for members
         // From include/ruby/internal/value_type.h
         .allowlist_type("ruby_value_type") // really old C extension API
+
+        // From include/ruby/internal/hash.h
+        .allowlist_type("ruby_rhash_flags") // really old C extension API
 
         // Autogenerated into id.h
         .allowlist_type("ruby_method_ids")
@@ -247,11 +283,13 @@ fn main() {
         .blocklist_type("rb_control_frame_struct")
         .opaque_type("rb_control_frame_struct")
         .allowlist_function("rb_vm_bh_to_procval")
+        .allowlist_function("rb_vm_ep_local_ep")
         .allowlist_type("vm_special_object_type")
         .allowlist_var("VM_ENV_DATA_INDEX_SPECVAL")
         .allowlist_var("VM_ENV_DATA_INDEX_FLAGS")
         .allowlist_var("VM_ENV_DATA_SIZE")
         .allowlist_function("rb_iseq_path")
+        .allowlist_type("rb_builtin_attr")
 
         // From yjit.c
         .allowlist_function("rb_iseq_(get|set)_yjit_payload")
@@ -260,9 +298,10 @@ fn main() {
         .allowlist_function("rb_yjit_reserve_addr_space")
         .allowlist_function("rb_yjit_mark_writable")
         .allowlist_function("rb_yjit_mark_executable")
+        .allowlist_function("rb_yjit_mark_unused")
         .allowlist_function("rb_yjit_get_page_size")
-        .allowlist_function("rb_leaf_invokebuiltin_iseq_p")
-        .allowlist_function("rb_leaf_builtin_function")
+        .allowlist_function("rb_yjit_iseq_builtin_attrs")
+        .allowlist_function("rb_yjit_builtin_function")
         .allowlist_function("rb_set_cfp_(pc|sp)")
         .allowlist_function("rb_cfp_get_iseq")
         .allowlist_function("rb_yjit_multi_ractor_p")
@@ -283,6 +322,8 @@ fn main() {
         .allowlist_function("rb_yjit_get_proc_ptr")
         .allowlist_function("rb_yjit_exit_locations_dict")
         .allowlist_function("rb_yjit_icache_invalidate")
+        .allowlist_function("rb_optimized_call")
+        .allowlist_function("rb_yjit_assert_holding_vm_lock")
 
         // from vm_sync.h
         .allowlist_function("rb_vm_barrier")
@@ -294,19 +335,25 @@ fn main() {
         // From internal/compile.h
         .allowlist_function("rb_vm_insn_decode")
 
+        // from internal/cont.h
+        .allowlist_function("rb_jit_cont_each_iseq")
+
         // From iseq.h
         .allowlist_function("rb_vm_insn_addr2opcode")
         .allowlist_function("rb_iseqw_to_iseq")
-        .allowlist_function("rb_iseq_method_name")
+        .allowlist_function("rb_iseq_label")
+        .allowlist_function("rb_iseq_line_no")
 
         // From builtin.h
         .allowlist_type("rb_builtin_function.*")
 
         // From internal/variable.h
         .allowlist_function("rb_gvar_(get|set)")
+        .allowlist_function("rb_ensure_iv_list_size")
 
         // From include/ruby/internal/intern/variable.h
         .allowlist_function("rb_attr_get")
+        .allowlist_function("rb_ivar_defined")
         .allowlist_function("rb_ivar_get")
 
         // From include/ruby/internal/intern/vm.h
@@ -324,6 +371,7 @@ fn main() {
         .allowlist_function("rb_insn_len")
         .allowlist_function("rb_yarv_class_of")
         .allowlist_function("rb_get_ec_cfp")
+        .allowlist_function("rb_get_cfp_iseq")
         .allowlist_function("rb_get_cfp_pc")
         .allowlist_function("rb_get_cfp_sp")
         .allowlist_function("rb_get_cfp_self")
@@ -343,15 +391,18 @@ fn main() {
         .allowlist_function("rb_get_def_bmethod_proc")
         .allowlist_function("rb_iseq_encoded_size")
         .allowlist_function("rb_get_iseq_body_local_iseq")
+        .allowlist_function("rb_get_iseq_body_parent_iseq")
         .allowlist_function("rb_get_iseq_body_iseq_encoded")
         .allowlist_function("rb_get_iseq_body_stack_max")
+        .allowlist_function("rb_get_iseq_flags_has_lead")
         .allowlist_function("rb_get_iseq_flags_has_opt")
         .allowlist_function("rb_get_iseq_flags_has_kw")
         .allowlist_function("rb_get_iseq_flags_has_rest")
         .allowlist_function("rb_get_iseq_flags_has_post")
         .allowlist_function("rb_get_iseq_flags_has_kwrest")
         .allowlist_function("rb_get_iseq_flags_has_block")
-        .allowlist_function("rb_get_iseq_flags_has_accepts_no_kwarg")
+        .allowlist_function("rb_get_iseq_flags_ambiguous_param0")
+        .allowlist_function("rb_get_iseq_flags_accepts_no_kwarg")
         .allowlist_function("rb_get_iseq_flags_ruby2_keywords")
         .allowlist_function("rb_get_iseq_body_local_table_size")
         .allowlist_function("rb_get_iseq_body_param_keyword")
@@ -363,8 +414,11 @@ fn main() {
         .allowlist_function("rb_get_cikw_keywords_idx")
         .allowlist_function("rb_get_call_data_ci")
         .allowlist_function("rb_yarv_str_eql_internal")
+        .allowlist_function("rb_str_neq_internal")
         .allowlist_function("rb_yarv_ary_entry_internal")
-        .allowlist_function("rb_yarv_fix_mod_fix")
+        .allowlist_function("rb_yjit_fix_div_fix")
+        .allowlist_function("rb_yjit_fix_mod_fix")
+        .allowlist_function("rb_yjit_fix_mul_fix")
         .allowlist_function("rb_FL_TEST")
         .allowlist_function("rb_FL_TEST_RAW")
         .allowlist_function("rb_RB_TYPE_P")
@@ -378,6 +432,8 @@ fn main() {
         .allowlist_function("rb_METHOD_ENTRY_VISI")
         .allowlist_function("rb_RCLASS_ORIGIN")
         .allowlist_function("rb_method_basic_definition_p")
+        .allowlist_function("rb_yjit_array_len")
+        .allowlist_function("rb_obj_class")
 
         // We define VALUE manually, don't import it
         .blocklist_type("VALUE")

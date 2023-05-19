@@ -8,13 +8,14 @@ class TestGemCommandsSetupCommand < Gem::TestCase
   if File.exist?(bundler_gemspec)
     BUNDLER_VERS = File.read(bundler_gemspec).match(/VERSION = "(#{Gem::Version::VERSION_PATTERN})"/)[1]
   else
-    BUNDLER_VERS = "2.0.1".freeze
+    BUNDLER_VERS = "2.0.1"
   end
 
   def setup
     super
 
     @cmd = Gem::Commands::SetupCommand.new
+    @cmd.options[:document] = []
 
     filelist = %w[
       bin/gem
@@ -35,12 +36,10 @@ class TestGemCommandsSetupCommand < Gem::TestCase
 
     create_dummy_files(filelist)
 
-    gemspec = Gem::Specification.new
-    gemspec.author = "Us"
-    gemspec.name = "bundler"
-    gemspec.version = BUNDLER_VERS
-    gemspec.bindir = "exe"
-    gemspec.executables = ["bundle", "bundler"]
+    gemspec = util_spec "bundler", BUNDLER_VERS do |s|
+      s.bindir = "exe"
+      s.executables = ["bundle", "bundler"]
+    end
 
     File.open "bundler/bundler.gemspec", "w" do |io|
       io.puts gemspec.to_ruby
@@ -66,10 +65,9 @@ class TestGemCommandsSetupCommand < Gem::TestCase
       io.puts "I changed it!"
     end
 
-    @cmd.options[:document] = []
     @cmd.execute
 
-    assert_match %r{\A#!}, File.read(gem_bin_path)
+    assert_match(/\A#!/, File.read(gem_bin_path))
   end
 
   def test_execute_no_regenerate_binstubs
@@ -78,7 +76,6 @@ class TestGemCommandsSetupCommand < Gem::TestCase
       io.puts "I changed it!"
     end
 
-    @cmd.options[:document] = []
     @cmd.options[:regenerate_binstubs] = false
     @cmd.execute
 
@@ -91,10 +88,9 @@ class TestGemCommandsSetupCommand < Gem::TestCase
       io.puts "I changed it!"
     end
 
-    @cmd.options[:document] = []
     @cmd.execute
 
-    assert_match %r{\Arequire}, File.read(gem_plugin_path)
+    assert_match(/\Arequire/, File.read(gem_plugin_path))
   end
 
   def test_execute_no_regenerate_plugins
@@ -103,7 +99,6 @@ class TestGemCommandsSetupCommand < Gem::TestCase
       io.puts "I changed it!"
     end
 
-    @cmd.options[:document] = []
     @cmd.options[:regenerate_plugins] = false
     @cmd.execute
 
@@ -116,15 +111,12 @@ class TestGemCommandsSetupCommand < Gem::TestCase
     # Simulate gem installed with an older rubygems without a plugins layout
     FileUtils.rm_rf Gem.plugindir
 
-    @cmd.options[:document] = []
     @cmd.execute
 
-    assert_match %r{\Arequire}, File.read(gem_plugin_path)
+    assert_match(/\Arequire/, File.read(gem_plugin_path))
   end
 
   def test_execute_informs_about_installed_executables
-    @cmd.options[:document] = []
-
     use_ui @ui do
       @cmd.execute
     end
@@ -143,17 +135,16 @@ class TestGemCommandsSetupCommand < Gem::TestCase
       io.puts "I changed it!"
     end
 
-    @cmd.options[:document] = []
     @cmd.options[:env_shebang] = true
     @cmd.execute
 
-    ruby_exec = sprintf Gem.default_exec_format, "ruby"
+    ruby_exec = format Gem.default_exec_format, "ruby"
 
-    bin_env = win_platform? ? "" : %w[/usr/bin/env /bin/env].find {|f| File.executable?(f) } + " "
-    assert_match %r{\A#!\s*#{bin_env}#{ruby_exec}}, File.read(default_gem_bin_path)
-    assert_match %r{\A#!\s*#{bin_env}#{ruby_exec}}, File.read(default_bundle_bin_path)
-    assert_match %r{\A#!\s*#{bin_env}#{ruby_exec}}, File.read(default_bundler_bin_path)
-    assert_match %r{\A#!\s*#{bin_env}#{ruby_exec}}, File.read(gem_bin_path)
+    bin_env = Gem.win_platform? ? "" : %w[/usr/bin/env /bin/env].find {|f| File.executable?(f) } + " "
+    assert_match(/\A#!\s*#{bin_env}#{ruby_exec}/, File.read(default_gem_bin_path))
+    assert_match(/\A#!\s*#{bin_env}#{ruby_exec}/, File.read(default_bundle_bin_path))
+    assert_match(/\A#!\s*#{bin_env}#{ruby_exec}/, File.read(default_bundler_bin_path))
+    assert_match(/\A#!\s*#{bin_env}#{ruby_exec}/, File.read(gem_bin_path))
   end
 
   def test_destdir_flag_does_not_try_to_write_to_the_default_gem_home

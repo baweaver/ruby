@@ -1,14 +1,9 @@
 # frozen_string_literal: false
 #
 #   irb.rb - irb main module
-#       $Release Version: 0.9.6 $
-#       $Revision$
 #       by Keiju ISHITSUKA(keiju@ruby-lang.org)
 #
-# --
-#
-#
-#
+
 require "ripper"
 require "reline"
 
@@ -53,6 +48,52 @@ require_relative "irb/easter-egg"
 #
 #   :include: ./irb/lc/help-message
 #
+# == Commands
+#
+# The following commands are available on IRB.
+#
+# * cwws
+#   * Show the current workspace.
+# * cb, cws, chws
+#   * Change the current workspace to an object.
+# * bindings, workspaces
+#   * Show workspaces.
+# * pushb, pushws
+#   * Push an object to the workspace stack.
+# * popb, popws
+#   * Pop a workspace from the workspace stack.
+# * load
+#   * Load a Ruby file.
+# * require
+#   * Require a Ruby file.
+# * source
+#   * Loads a given file in the current session.
+# * irb
+#   * Start a child IRB.
+# * jobs
+#   * List of current sessions.
+# * fg
+#   * Switches to the session of the given number.
+# * kill
+#   * Kills the session with the given number.
+# * help
+#   * Enter the mode to look up RI documents.
+# * irb_info
+#   * Show information about IRB.
+# * ls
+#   * Show methods, constants, and variables.
+#     -g [query] or -G [query] allows you to filter out the output.
+# * measure
+#   * measure enables the mode to measure processing time. measure :off disables it.
+# * $, show_source
+#   * Show the source code of a given method or constant.
+# * @, whereami
+#   * Show the source code around binding.irb again.
+# * debug
+#   * Start the debugger of debug.gem.
+# * break, delete, next, step, continue, finish, backtrace, info, catch
+#   * Start the debugger of debug.gem and run the command on it.
+#
 # == Configuration
 #
 # IRB reads a personal initialization file when it's invoked.
@@ -93,9 +134,9 @@ require_relative "irb/easter-egg"
 #
 # === Autocompletion
 #
-# To enable autocompletion for irb, add the following to your +.irbrc+:
+# To disable autocompletion for irb, add the following to your +.irbrc+:
 #
-#     require 'irb/completion'
+#     IRB.conf[:USE_AUTOCOMPLETE] = false
 #
 # === History
 #
@@ -375,11 +416,6 @@ module IRB
     irb.run(@CONF)
   end
 
-  # Calls each event hook of <code>IRB.conf[:AT_EXIT]</code> when the current session quits.
-  def IRB.irb_at_exit
-    @CONF[:AT_EXIT].each{|hook| hook.call}
-  end
-
   # Quits irb
   def IRB.irb_exit(irb, ret)
     throw :IRB_EXIT, ret
@@ -422,12 +458,27 @@ module IRB
     # be parsed as :assign and echo will be suppressed, but the latter is
     # parsed as a :method_add_arg and the output won't be suppressed
 
+    PROMPT_MAIN_TRUNCATE_LENGTH = 32
+    PROMPT_MAIN_TRUNCATE_OMISSION = '...'.freeze
+    CONTROL_CHARACTERS_PATTERN = "\x00-\x1F".freeze
+
     # Creates a new irb session
     def initialize(workspace = nil, input_method = nil)
       @context = Context.new(self, workspace, input_method)
       @context.main.extend ExtendCommandBundle
       @signal_status = :IN_IRB
-      @scanner = RubyLex.new
+      @scanner = RubyLex.new(@context)
+    end
+
+    # A hook point for `debug` command's TracePoint after :IRB_EXIT as well as its clean-up
+    def debug_break
+      # it means the debug command is executed
+      if defined?(DEBUGGER__) && DEBUGGER__.respond_to?(:capture_frames_without_irb)
+        # after leaving this initial breakpoint, revert the capture_frames patch
+        DEBUGGER__.singleton_class.send(:alias_method, :capture_frames, :capture_frames_without_irb)
+        # and remove the redundant method
+        DEBUGGER__.singleton_class.send(:undef_method, :capture_frames_without_irb)
+      end
     end
 
     def run(conf = IRB.conf)
@@ -486,7 +537,7 @@ module IRB
         @context.io.prompt
       end
 
-      @scanner.set_input(@context.io, context: @context) do
+      @scanner.set_input do
         signal_status(:IN_INPUT) do
           if l = @context.io.gets
             print l if @context.verbose?
@@ -504,15 +555,16 @@ module IRB
         end
       end
 
-      @scanner.set_auto_indent(@context) if @context.auto_indent_mode
+      @scanner.configure_io(@context.io)
 
       @scanner.each_top_level_statement do |line, line_no|
         signal_status(:IN_EVAL) do
           begin
-            line.untaint if RUBY_VERSION < '2.7'
             if IRB.conf[:MEASURE] && IRB.conf[:MEASURE_CALLBACKS].empty?
               IRB.set_measure_callback
             end
+            # Assignment expression check should be done before @context.evaluate to handle code like `a /2#/ if false; a = 1`
+            is_assignment = assignment_expression?(line)
             if IRB.conf[:MEASURE] && !IRB.conf[:MEASURE_CALLBACKS].empty?
               result = nil
               last_proc = proc{ result = @context.evaluate(line, line_no, exception: exc) }
@@ -529,7 +581,7 @@ module IRB
               @context.evaluate(line, line_no, exception: exc)
             end
             if @context.echo?
-              if assignment_expression?(line)
+              if is_assignment
                 if @context.echo_on_assignment?
                   output_value(@context.echo_on_assignment? == :truncate)
                 end
@@ -592,11 +644,7 @@ module IRB
 
       if exc.backtrace
         order = nil
-        if '2.5.0' == RUBY_VERSION
-          # Exception#full_message doesn't have keyword arguments.
-          message = exc.full_message # the same of (highlight: true, order: bottom)
-          order = :bottom
-        elsif '2.5.1' <= RUBY_VERSION && RUBY_VERSION < '3.0.0'
+        if RUBY_VERSION < '3.0.0'
           if STDOUT.tty?
             message = exc.full_message(order: :bottom)
             order = :bottom
@@ -725,6 +773,15 @@ module IRB
       end
     end
 
+    def truncate_prompt_main(str) # :nodoc:
+      str = str.tr(CONTROL_CHARACTERS_PATTERN, ' ')
+      if str.size <= PROMPT_MAIN_TRUNCATE_LENGTH
+        str
+      else
+        str[0, PROMPT_MAIN_TRUNCATE_LENGTH - PROMPT_MAIN_TRUNCATE_OMISSION.size] + PROMPT_MAIN_TRUNCATE_OMISSION
+      end
+    end
+
     def prompt(prompt, ltype, indent, line_no) # :nodoc:
       p = prompt.dup
       p.gsub!(/%([0-9]+)?([a-zA-Z])/) do
@@ -732,9 +789,9 @@ module IRB
         when "N"
           @context.irb_name
         when "m"
-          @context.main.to_s
+          truncate_prompt_main(@context.main.to_s)
         when "M"
-          @context.main.inspect
+          truncate_prompt_main(@context.main.inspect)
         when "l"
           ltype
         when "i"
@@ -827,15 +884,13 @@ module IRB
       # array of parsed expressions. The first element of each expression is the
       # expression's type.
       verbose, $VERBOSE = $VERBOSE, nil
-      result = ASSIGNMENT_NODE_TYPES.include?(Ripper.sexp(line)&.dig(1,-1,0))
+      code = "#{RubyLex.generate_local_variables_assign_code(@context.local_variables) || 'nil;'}\n#{line}"
+      # Get the last node_type of the line. drop(1) is to ignore the local_variables_assign_code part.
+      node_type = Ripper.sexp(code)&.dig(1)&.drop(1)&.dig(-1, 0)
+      ASSIGNMENT_NODE_TYPES.include?(node_type)
+    ensure
       $VERBOSE = verbose
-      result
     end
-
-    ATTR_TTY = "\e[%sm"
-    def ATTR_TTY.[](*a) self % a.join(";"); end
-    ATTR_PLAIN = ""
-    def ATTR_PLAIN.[](*) self; end
   end
 
   def @CONF.inspect
@@ -919,12 +974,13 @@ class Binding
   #
   #
   # See IRB@IRB+Usage for more information.
-  def irb
+  def irb(show_code: true)
     IRB.setup(source_location[0], argv: [])
     workspace = IRB::WorkSpace.new(self)
-    STDOUT.print(workspace.code_around_binding)
+    STDOUT.print(workspace.code_around_binding) if show_code
     binding_irb = IRB::Irb.new(workspace)
     binding_irb.context.irb_path = File.expand_path(source_location[0])
     binding_irb.run(IRB.conf)
+    binding_irb.debug_break
   end
 end

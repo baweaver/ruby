@@ -8,6 +8,9 @@
 #       by Keiju ISHITSUKA (Nippon Rational Inc.)
 #
 
+require 'ripper'
+require_relative 'ripper_state_lex'
+
 ##
 # Extracts code elements from a source file returning a TopLevel object
 # containing the constituent file elements.
@@ -138,9 +141,6 @@
 # Note that by default, the :method: directive will be ignored if there is a
 # standard rdocable item following it.
 
-require 'ripper'
-require_relative 'ripper_state_lex'
-
 class RDoc::Parser::Ruby < RDoc::Parser
 
   parse_files_matching(/\.rbw?$/)
@@ -164,15 +164,7 @@ class RDoc::Parser::Ruby < RDoc::Parser
   def initialize(top_level, file_name, content, options, stats)
     super
 
-    if /\t/ =~ content then
-      tab_width = @options.tab_width
-      content = content.split(/\n/).map do |line|
-        1 while line.gsub!(/\t+/) {
-          ' ' * (tab_width*$&.length - $`.length % tab_width)
-        }  && $~
-        line
-      end.join("\n")
-    end
+    content = handle_tab_width(content)
 
     @size = 0
     @token_listeners = nil
@@ -2142,7 +2134,7 @@ class RDoc::Parser::Ruby < RDoc::Parser
       if :on_nl == tk[:kind] or (:on_kw == tk[:kind] && 'def' == tk[:text]) then
         return
       elsif :on_comment == tk[:kind] or :on_embdoc == tk[:kind] then
-        return unless tk[:text] =~ /\s*:?([\w-]+):\s*(.*)/
+        return unless tk[:text] =~ /:?\b([\w-]+):\s*(.*)/
 
         directive = $1.downcase
 

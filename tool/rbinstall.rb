@@ -143,7 +143,7 @@ def parse_args(argv = ARGV)
 
   if $installed_list ||= $mflags.defined?('INSTALLED_LIST')
     RbConfig.expand($installed_list, RbConfig::CONFIG)
-    $installed_list = open($installed_list, "ab")
+    $installed_list = File.open($installed_list, "ab")
     $installed_list.sync = true
   end
 
@@ -291,11 +291,11 @@ def install_recursive(srcdir, dest, options = {})
 end
 
 def open_for_install(path, mode)
-  data = open(realpath = with_destdir(path), "rb") {|f| f.read} rescue nil
+  data = File.binread(realpath = with_destdir(path)) rescue nil
   newdata = yield
   unless $dryrun
     unless newdata == data
-      open(realpath, "wb", mode) {|f| f.write newdata}
+      File.open(realpath, "wb", mode) {|f| f.write newdata}
     end
     File.chmod(mode, realpath)
   end
@@ -436,8 +436,8 @@ end
 install?(:ext, :arch, :hdr, :'arch-hdr', :'hdr-arch') do
   prepare "extension headers", archhdrdir
   install_recursive("#{$extout}/include/#{CONFIG['arch']}", archhdrdir, :glob => "*.h", :mode => $data_mode)
-  install_recursive("#{$extout}/include/#{CONFIG['arch']}", archhdrdir, :glob => "rb_mjit_header-*.obj", :mode => $data_mode)
-  install_recursive("#{$extout}/include/#{CONFIG['arch']}", archhdrdir, :glob => "rb_mjit_header-*.pch", :mode => $data_mode)
+  install_recursive("#{$extout}/include/#{CONFIG['arch']}", archhdrdir, :glob => "rb_rjit_header-*.obj", :mode => $data_mode)
+  install_recursive("#{$extout}/include/#{CONFIG['arch']}", archhdrdir, :glob => "rb_rjit_header-*.pch", :mode => $data_mode)
 end
 install?(:ext, :comm, :'ext-comm') do
   prepare "extension scripts", rubylibdir
@@ -550,7 +550,7 @@ $script_installer = Class.new(installer) do
   def install(src, cmd)
     cmd = cmd.sub(/[^\/]*\z/m) {|n| transform(n)}
 
-    shebang, body = open(src, "rb") do |f|
+    shebang, body = File.open(src, "rb") do |f|
       next f.gets, f.read
     end
     shebang or raise "empty file - #{src}"
@@ -622,7 +622,7 @@ install?(:local, :comm, :man) do
   has_goruby = File.exist?(goruby_install_name+exeext)
   require File.join(srcdir, "tool/mdoc2man.rb") if /\Adoc\b/ !~ $mantype
   mdocs.each do |mdoc|
-    next unless File.file?(mdoc) and open(mdoc){|fh| fh.read(1) == '.'}
+    next unless File.file?(mdoc) and File.read(mdoc, 1) == '.'
     base = File.basename(mdoc)
     if base == "goruby.1"
       next unless has_goruby
@@ -634,17 +634,14 @@ install?(:local, :comm, :man) do
 
     if /\Adoc\b/ =~ $mantype
       if compress
-        w = open(mdoc) {|f|
-          stdin = STDIN.dup
-          STDIN.reopen(f)
-          begin
-            destfile << suffix
-            IO.popen(compress, &:read)
-          ensure
-            STDIN.reopen(stdin)
-            stdin.close
-          end
-        }
+        begin
+          w = IO.popen(compress, "rb", in: mdoc, &:read)
+        rescue
+        else
+          destfile << suffix
+        end
+      end
+      if w
         open_for_install(destfile, $data_mode) {w}
       else
         install mdoc, destfile, :mode => $data_mode
@@ -657,19 +654,19 @@ install?(:local, :comm, :man) do
          File.basename(mdoc).start_with?('gemfile')
         w = File.read(mdoc)
       else
-        open(mdoc) {|r| Mdoc2Man.mdoc2man(r, w)}
+        File.open(mdoc) {|r| Mdoc2Man.mdoc2man(r, w)}
         w = w.join("")
       end
       if compress
-        require 'tmpdir'
-        Dir.mktmpdir("man") {|d|
-          dest = File.join(d, File.basename(destfile))
-          File.open(dest, "wb") {|f| f.write w}
-          if system(compress, dest)
-            w = File.open(dest+suffix, "rb") {|f| f.read}
-            destfile << suffix
+        begin
+          w = IO.popen(compress, "r+b") do |f|
+            Thread.start {f.write w; f.close_write}
+            f.read
           end
-        }
+        rescue
+        else
+          destfile << suffix
+        end
       end
       open_for_install(destfile, $data_mode) {w}
     end
@@ -1002,6 +999,7 @@ install?(:ext, :comm, :gem, :'bundled-gems') do
   end
 
   installed_gems = {}
+  skipped = {}
   options = {
     :install_dir => install_dir,
     :bin_dir => with_destdir(bindir),
@@ -1029,14 +1027,26 @@ install?(:ext, :comm, :gem, :'bundled-gems') do
     next if /^\s*(?:#|$)/ =~ name
     next unless /^(\S+)\s+(\S+).*/ =~ name
     gem_name = "#$1-#$2"
-    path = "#{srcdir}/.bundle/specifications/#{gem_name}.gemspec"
+    # Try to find the gemspec file for C ext gems
+    # ex .bundle/gems/debug-1.7.1/debug-1.7.1.gemspec
+    # This gemspec keep the original dependencies
+    path = "#{srcdir}/.bundle/gems/#{gem_name}/#{gem_name}.gemspec"
     unless File.exist?(path)
-      path = "#{srcdir}/.bundle/gems/#{gem_name}/#{gem_name}.gemspec"
-      next unless File.exist?(path)
+      path = "#{srcdir}/.bundle/specifications/#{gem_name}.gemspec"
+      unless File.exist?(path)
+         skipped[gem_name] = "gemspec not found"
+         next
+      end
     end
     spec = load_gemspec(path, "#{srcdir}/.bundle/gems/#{gem_name}")
-    next unless spec.platform == Gem::Platform::RUBY
-    next unless spec.full_name == gem_name
+    unless spec.platform == Gem::Platform::RUBY
+      skipped[gem_name] = "not ruby platform (#{spec.platform})"
+      next
+    end
+    unless spec.full_name == gem_name
+      skipped[gem_name] = "full name unmatch #{spec.full_name}"
+      next
+    end
     spec.extension_dir = "#{extensions_dir}/#{spec.full_name}"
     package = RbInstall::DirPackage.new spec
     ins = RbInstall::UnpackedInstaller.new(package, options)
@@ -1054,7 +1064,11 @@ install?(:ext, :comm, :gem, :'bundled-gems') do
     install installed_gems, gem_dir+"/cache"
   end
   unless gems.empty?
-    puts "skipped bundled gems: #{gems.join(' ')}"
+    skipped.default = "not found in bundled_gems"
+    puts "skipped bundled gems:"
+    gems.each do |gem|
+      printf "    %-32s%s\n", File.basename(gem), skipped[gem]
+    end
   end
 end
 
@@ -1074,6 +1088,7 @@ installs = $install.map do |inst|
 end
 installs.flatten!
 installs -= $exclude.map {|exc| $install_procs[exc]}.flatten
+puts "Installing to #$destdir" unless installs.empty?
 installs.each do |block|
   dir = Dir.pwd
   begin

@@ -49,6 +49,9 @@
 #ifdef __MINGW32__
 #include <mswsock.h>
 #endif
+#ifdef HAVE_AFUNIX_H
+# include <afunix.h>
+#endif
 #include "ruby/win32.h"
 #include "ruby/vm.h"
 #include "win32/dir.h"
@@ -541,7 +544,7 @@ rb_w32_system_tmpdir(WCHAR *path, UINT len)
   afterwards with xfree.
 
   Try:
-  HOME, HOMEDRIVE + HOMEPATH and USERPROFILE environment variables
+  HOME, USERPROFILE, HOMEDRIVE + HOMEPATH environment variables
   Special Folders - Profile and Personal
 */
 WCHAR *
@@ -550,12 +553,16 @@ rb_w32_home_dir(void)
     WCHAR *buffer = NULL;
     size_t buffer_len = MAX_PATH, len = 0;
     enum {
-        HOME_NONE, ENV_HOME, ENV_DRIVEPATH, ENV_USERPROFILE
+        HOME_NONE, ENV_HOME, ENV_USERPROFILE, ENV_DRIVEPATH
     } home_type = HOME_NONE;
 
     if ((len = GetEnvironmentVariableW(L"HOME", NULL, 0)) != 0) {
         buffer_len = len;
         home_type = ENV_HOME;
+    }
+    else if ((len = GetEnvironmentVariableW(L"USERPROFILE", NULL, 0)) != 0) {
+        buffer_len = len;
+        home_type = ENV_USERPROFILE;
     }
     else if ((len = GetEnvironmentVariableW(L"HOMEDRIVE", NULL, 0)) != 0) {
         buffer_len = len;
@@ -563,10 +570,6 @@ rb_w32_home_dir(void)
             buffer_len += len;
             home_type = ENV_DRIVEPATH;
         }
-    }
-    else if ((len = GetEnvironmentVariableW(L"USERPROFILE", NULL, 0)) != 0) {
-        buffer_len = len;
-        home_type = ENV_USERPROFILE;
     }
 
     /* allocate buffer */
@@ -576,12 +579,12 @@ rb_w32_home_dir(void)
       case ENV_HOME:
         GetEnvironmentVariableW(L"HOME", buffer, buffer_len);
         break;
+      case ENV_USERPROFILE:
+        GetEnvironmentVariableW(L"USERPROFILE", buffer, buffer_len);
+        break;
       case ENV_DRIVEPATH:
         len = GetEnvironmentVariableW(L"HOMEDRIVE", buffer, buffer_len);
         GetEnvironmentVariableW(L"HOMEPATH", buffer + len, buffer_len - len);
-        break;
-      case ENV_USERPROFILE:
-        GetEnvironmentVariableW(L"USERPROFILE", buffer, buffer_len);
         break;
       default:
         if (!get_special_folder(CSIDL_PROFILE, buffer, buffer_len) &&
@@ -678,7 +681,10 @@ invalid_parameter(const wchar_t *expr, const wchar_t *func, const wchar_t *file,
 
 int ruby_w32_rtc_error;
 
+# ifndef __MINGW32__
 /* License: Ruby's */
+RBIMPL_ATTR_NONNULL((5))
+RBIMPL_ATTR_FORMAT(RBIMPL_PRINTF_FORMAT, 5, 6)
 static int __cdecl
 rtc_error_handler(int e, const char *src, int line, const char *exe, const char *fmt, ...)
 {
@@ -694,6 +700,7 @@ rtc_error_handler(int e, const char *src, int line, const char *exe, const char 
     rb_write_error2(RSTRING_PTR(str), RSTRING_LEN(str));
     return 0;
 }
+# endif
 #endif
 
 static CRITICAL_SECTION select_mutex;
@@ -1345,10 +1352,10 @@ is_batch(const char *cmd)
 #define wstr_to_utf8(str, plen) wstr_to_mbstr(CP_UTF8, str, -1, plen)
 
 /* License: Ruby's */
-MJIT_FUNC_EXPORTED HANDLE
+HANDLE
 rb_w32_start_process(const char *abspath, char *const *argv, int out_fd)
 {
-    /* NOTE: This function is used by MJIT worker, so it can be used parallelly with
+    /* NOTE: This function is used by RJIT worker, so it can be used parallelly with
        Ruby's main thread. So functions touching things shared with main thread can't
        be used, like `ALLOCV` that may trigger GC or `FindFreeChildSlot` that finds
        a slot from shared memory without atomic locks. */
@@ -1416,18 +1423,20 @@ w32_spawn(int mode, const char *cmd, const char *prog, UINT cp)
         while (ISSPACE(*cmd)) cmd++;
         if ((shell = w32_getenv("RUBYSHELL", cp)) && (redir = has_redirection(cmd, cp))) {
             size_t shell_len = strlen(shell);
-            char *tmp = ALLOCV(v, shell_len + strlen(cmd) + sizeof(" -c ") + 2);
+            size_t cmd_len = strlen(cmd) + sizeof(" -c ") + 2;
+            char *tmp = ALLOCV(v, shell_len + cmd_len);
             memcpy(tmp, shell, shell_len + 1);
             translate_char(tmp, '/', '\\', cp);
-            sprintf(tmp + shell_len, " -c \"%s\"", cmd);
+            snprintf(tmp + shell_len, cmd_len, " -c \"%s\"", cmd);
             cmd = tmp;
         }
         else if ((shell = w32_getenv("COMSPEC", cp)) &&
                  (nt = !is_command_com(shell),
                   (redir < 0 ? has_redirection(cmd, cp) : redir) ||
                   is_internal_cmd(cmd, nt))) {
-            char *tmp = ALLOCV(v, strlen(shell) + strlen(cmd) + sizeof(" /c ") + (nt ? 2 : 0));
-            sprintf(tmp, nt ? "%s /c \"%s\"" : "%s /c %s", shell, cmd);
+            size_t cmd_len = strlen(shell) + strlen(cmd) + sizeof(" /c ") + (nt ? 2 : 0);
+            char *tmp = ALLOCV(v, cmd_len);
+            snprintf(tmp, cmd_len, nt ? "%s /c \"%s\"" : "%s /c %s", shell, cmd);
             cmd = tmp;
         }
         else {
@@ -2213,7 +2222,7 @@ rb_w32_wstr_to_mbstr(UINT cp, const WCHAR *wstr, int clen, long *plen)
 WCHAR *
 rb_w32_mbstr_to_wstr(UINT cp, const char *str, int clen, long *plen)
 {
-    /* This is used by MJIT worker. Do not trigger GC or call Ruby method here. */
+    /* This is used by RJIT worker. Do not trigger GC or call Ruby method here. */
     WCHAR *ptr;
     int len = MultiByteToWideChar(cp, 0, str, clen, NULL, 0);
     if (!(ptr = malloc(sizeof(WCHAR) * len))) return 0;
@@ -2575,6 +2584,18 @@ set_pioinfo_extra(void)
 #  define UCRTBASE "ucrtbase.dll"
 # endif
     /* get __pioinfo addr with _isatty */
+    /*
+     * Why Ruby depends to _pioinfo is
+     * * to associate socket and fd: CRuby creates fd with dummy file handle
+     *   and set socket to emulate Unix-like behavior. Without __pioinfo
+     *   we need something which manages the fd number allocation
+     * * to implement overlapped I/O for Windows 2000/XP
+     * * to emulate fcntl(2)
+     *
+     * see also
+     * * https://bugs.ruby-lang.org/issues/11118
+     * * https://bugs.ruby-lang.org/issues/18605
+     */
     char *p = (char*)get_proc_address(UCRTBASE, "_isatty", NULL);
     char *pend = p;
     /* _osfile(fh) & FDEV */
@@ -4018,15 +4039,93 @@ rb_w32_getservbyport(int port, const char *proto)
     return r;
 }
 
+#ifdef HAVE_AFUNIX_H
+
+/* License: Ruby's */
+static size_t
+socketpair_unix_path(struct sockaddr_un *sock_un)
+{
+    SOCKET listener;
+    WCHAR wpath[sizeof(sock_un->sun_path)/sizeof(*sock_un->sun_path)] = L"";
+
+    /* AF_UNIX/SOCK_STREAM became available in Windows 10
+     * See https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows
+     */
+    listener = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listener == INVALID_SOCKET)
+        return 0;
+
+    memset(sock_un, 0, sizeof(*sock_un));
+    sock_un->sun_family = AF_UNIX;
+
+    /* Abstract sockets (filesystem-independent) don't work, contrary to
+     * the claims of the aforementioned blog post:
+     * https://github.com/microsoft/WSL/issues/4240#issuecomment-549663217
+     *
+     * So we must use a named path, and that comes with all the attendant
+     * problems of permissions and collisions. Trying various temporary
+     * directories and putting high-res time and PID in the filename.
+     */
+    for (int try = 0; ; try++) {
+        LARGE_INTEGER ticks;
+        size_t path_len = 0;
+        const size_t maxpath = sizeof(sock_un->sun_path)/sizeof(*sock_un->sun_path);
+
+        switch (try) {
+        case 0:
+            /* user temp dir from TMP or TEMP env var, it ends with a backslash */
+            path_len = GetTempPathW(maxpath, wpath);
+            break;
+        case 1:
+            wcsncpy(wpath, L"C:/Temp/", maxpath);
+            path_len = lstrlenW(wpath);
+            break;
+        case 2:
+            /* Current directory */
+            path_len = 0;
+            break;
+        case 3:
+            closesocket(listener);
+            return 0;
+        }
+
+        /* Windows UNIXSocket implementation expects UTF-8 instead of UTF16 */
+        path_len = WideCharToMultiByte(CP_UTF8, 0, wpath, path_len, sock_un->sun_path, maxpath, NULL, NULL);
+        QueryPerformanceCounter(&ticks);
+        path_len += snprintf(sock_un->sun_path + path_len,
+                 maxpath - path_len,
+                 "%lld-%ld.($)",
+                 ticks.QuadPart,
+                 GetCurrentProcessId());
+
+        /* Convert to UTF16 for DeleteFileW */
+        MultiByteToWideChar(CP_UTF8, 0, sock_un->sun_path, -1, wpath, sizeof(wpath)/sizeof(*wpath));
+
+        if (bind(listener, (struct sockaddr *)sock_un, sizeof(*sock_un)) != SOCKET_ERROR)
+            break;
+    }
+    closesocket(listener);
+    DeleteFileW(wpath);
+    return sizeof(*sock_un);
+}
+#endif
+
 /* License: Ruby's */
 static int
 socketpair_internal(int af, int type, int protocol, SOCKET *sv)
 {
     SOCKET svr = INVALID_SOCKET, r = INVALID_SOCKET, w = INVALID_SOCKET;
     struct sockaddr_in sock_in4;
+
 #ifdef INET6
     struct sockaddr_in6 sock_in6;
 #endif
+
+#ifdef HAVE_AFUNIX_H
+    struct sockaddr_un sock_un = {0, {0}};
+    WCHAR wpath[sizeof(sock_un.sun_path)/sizeof(*sock_un.sun_path)] = L"";
+#endif
+
     struct sockaddr *addr;
     int ret = -1;
     int len;
@@ -4050,6 +4149,15 @@ socketpair_internal(int af, int type, int protocol, SOCKET *sv)
         addr = (struct sockaddr *)&sock_in6;
         len = sizeof(sock_in6);
         break;
+#endif
+#ifdef HAVE_AFUNIX_H
+      case AF_UNIX:
+        addr = (struct sockaddr *)&sock_un;
+        len = socketpair_unix_path(&sock_un);
+        MultiByteToWideChar(CP_UTF8, 0, sock_un.sun_path, -1, wpath, sizeof(wpath)/sizeof(*wpath));
+        if (len)
+            break;
+        /* fall through */
 #endif
       default:
         errno = EAFNOSUPPORT;
@@ -4101,6 +4209,10 @@ socketpair_internal(int af, int type, int protocol, SOCKET *sv)
         }
         if (svr != INVALID_SOCKET)
             closesocket(svr);
+#ifdef HAVE_AFUNIX_H
+        if (sock_un.sun_family == AF_UNIX)
+            DeleteFileW(wpath);
+#endif
     }
 
     return ret;
@@ -5144,31 +5256,34 @@ rb_w32_read_reparse_point(const WCHAR *path, rb_w32_reparse_buffer_t *rp,
 static ssize_t
 w32_readlink(UINT cp, const char *path, char *buf, size_t bufsize)
 {
-    VALUE wtmp;
+    VALUE rp_buf, rp_buf_bigger = 0;
     DWORD len = MultiByteToWideChar(cp, 0, path, -1, NULL, 0);
-    size_t size = rb_w32_reparse_buffer_size(len);
-    WCHAR *wname, *wpath = ALLOCV(wtmp, size + sizeof(WCHAR) * len);
+    size_t size = rb_w32_reparse_buffer_size(bufsize);
+    WCHAR *wname;
+    WCHAR *wpath = ALLOCV(rp_buf, sizeof(WCHAR) * len + size);
     rb_w32_reparse_buffer_t *rp = (void *)(wpath + len);
     ssize_t ret;
     int e;
 
     MultiByteToWideChar(cp, 0, path, -1, wpath, len);
     e = rb_w32_read_reparse_point(wpath, rp, size, &wname, &len);
-    if (e && e != ERROR_MORE_DATA) {
-        ALLOCV_END(wtmp);
-        errno = map_errno(e);
+    if (e == ERROR_MORE_DATA) {
+        size = rb_w32_reparse_buffer_size(len + 1);
+        rp = ALLOCV(rp_buf_bigger, size);
+        e = rb_w32_read_reparse_point(wpath, rp, size, &wname, &len);
+    }
+    if (e) {
+        ALLOCV_END(rp_buf);
+        ALLOCV_END(rp_buf_bigger);
+        errno = e == -1 ? EINVAL : map_errno(e);
         return -1;
     }
-    len = lstrlenW(wname) + 1;
+    len = lstrlenW(wname);
     ret = WideCharToMultiByte(cp, 0, wname, len, buf, bufsize, NULL, NULL);
-    ALLOCV_END(wtmp);
-    if (e) {
+    ALLOCV_END(rp_buf);
+    ALLOCV_END(rp_buf_bigger);
+    if (!ret) {
         ret = bufsize;
-    }
-    else if (!ret) {
-        e = GetLastError();
-        errno = map_errno(e);
-        ret = -1;
     }
     return ret;
 }
@@ -5629,10 +5744,8 @@ fileattr_to_unixmode(DWORD attr, const WCHAR *path, unsigned mode)
         /* format is already set */
     }
     else if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
-        if (rb_w32_reparse_symlink_p(path))
-            mode |= S_IFLNK | S_IEXEC;
-        else
-            mode |= S_IFDIR | S_IEXEC;
+        /* Only used by stat_by_find in the case the file can not be opened.
+         * In this case we can't get more details. */
     }
     else if (attr & FILE_ATTRIBUTE_DIRECTORY) {
         mode |= S_IFDIR | S_IEXEC;
@@ -5707,14 +5820,6 @@ stat_by_find(const WCHAR *path, struct stati128 *st)
 {
     HANDLE h;
     WIN32_FIND_DATAW wfd;
-    /* GetFileAttributesEx failed; check why. */
-    int e = GetLastError();
-
-    if ((e == ERROR_FILE_NOT_FOUND) || (e == ERROR_INVALID_NAME)
-        || (e == ERROR_PATH_NOT_FOUND || (e == ERROR_BAD_NETPATH))) {
-        errno = map_errno(e);
-        return -1;
-    }
 
     /* Fall back to FindFirstFile for ERROR_SHARING_VIOLATION */
     h = FindFirstFileW(path, &wfd);
@@ -5750,9 +5855,24 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
     DWORD flags = lstat ? FILE_FLAG_OPEN_REPARSE_POINT : 0;
     HANDLE f;
     WCHAR finalname[PATH_MAX];
+    int open_error;
 
     memset(st, 0, sizeof(*st));
     f = open_special(path, 0, flags);
+    open_error = GetLastError();
+    if (f == INVALID_HANDLE_VALUE && !lstat) {
+        /* Support stat (not only lstat) of UNIXSocket */
+        FILE_ATTRIBUTE_TAG_INFO attr_info;
+        DWORD e;
+
+        f = open_special(path, 0, FILE_FLAG_OPEN_REPARSE_POINT);
+        e = GetFileInformationByHandleEx( f, FileAttributeTagInfo,
+                &attr_info, sizeof(attr_info));
+        if (!e || attr_info.ReparseTag != IO_REPARSE_TAG_AF_UNIX) {
+            CloseHandle(f);
+            f = INVALID_HANDLE_VALUE;
+        }
+    }
     if (f != INVALID_HANDLE_VALUE) {
         DWORD attr = stati128_handle(f, st);
         const DWORD len = get_final_path(f, finalname, numberof(finalname), 0);
@@ -5764,15 +5884,28 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
           case FILE_TYPE_PIPE:
             mode = S_IFIFO;
             break;
+          default:
+            if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
+                FILE_ATTRIBUTE_TAG_INFO attr_info;
+                DWORD e;
+
+                e = GetFileInformationByHandleEx( f, FileAttributeTagInfo,
+                        &attr_info, sizeof(attr_info));
+                if (e && attr_info.ReparseTag == IO_REPARSE_TAG_AF_UNIX) {
+                    st->st_size = 0;
+                    mode |= S_IFSOCK;
+                }
+                else if (rb_w32_reparse_symlink_p(path)) {
+                    /* TODO: size in which encoding? */
+                    st->st_size = 0;
+                    mode |= S_IFLNK | S_IEXEC;
+                }
+                else {
+                    mode |= S_IFDIR | S_IEXEC;
+                }
+            }
         }
         CloseHandle(f);
-        if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
-            /* TODO: size in which encoding? */
-            if (rb_w32_reparse_symlink_p(path))
-                st->st_size = 0;
-            else
-                attr &= ~FILE_ATTRIBUTE_REPARSE_POINT;
-        }
         if (attr & FILE_ATTRIBUTE_DIRECTORY) {
             if (check_valid_dir(path)) return -1;
         }
@@ -5785,6 +5918,12 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
         }
     }
     else {
+        if ((open_error == ERROR_FILE_NOT_FOUND) || (open_error == ERROR_INVALID_NAME)
+            || (open_error == ERROR_PATH_NOT_FOUND || (open_error == ERROR_BAD_NETPATH))) {
+            errno = map_errno(open_error);
+            return -1;
+        }
+
         if (stat_by_find(path, st)) return -1;
     }
 

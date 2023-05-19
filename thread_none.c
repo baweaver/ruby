@@ -15,6 +15,10 @@
 
 #include <time.h>
 
+#if defined(__wasm__) && !defined(__EMSCRIPTEN__)
+# include "wasm/machine.h"
+#endif
+
 #define TIME_QUANTUM_MSEC (100)
 #define TIME_QUANTUM_USEC (TIME_QUANTUM_MSEC * 1000)
 #define TIME_QUANTUM_NSEC (TIME_QUANTUM_USEC * 1000)
@@ -26,9 +30,11 @@ thread_sched_to_running(struct rb_thread_sched *sched, rb_thread_t *th)
 }
 
 static void
-thread_sched_to_waiting(struct rb_thread_sched *sched)
+thread_sched_to_waiting(struct rb_thread_sched *sched, rb_thread_t *th)
 {
 }
+
+#define thread_sched_to_dead thread_sched_to_waiting
 
 static void
 thread_sched_yield(struct rb_thread_sched *sched, rb_thread_t *th)
@@ -143,6 +149,9 @@ ruby_init_stack(volatile VALUE *addr)
 static int
 native_thread_init_stack(rb_thread_t *th)
 {
+#if defined(__wasm__) && !defined(__EMSCRIPTEN__)
+    th->ec->machine.stack_start = (VALUE *)rb_wasm_stack_get_base();
+#endif
     return 0; // success
 }
 

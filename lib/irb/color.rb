@@ -123,13 +123,15 @@ module IRB # :nodoc:
       # If `complete` is false (code is incomplete), this does not warn compile_error.
       # This option is needed to avoid warning a user when the compile_error is happening
       # because the input is not wrong but just incomplete.
-      def colorize_code(code, complete: true, ignore_error: false, colorable: colorable?)
+      def colorize_code(code, complete: true, ignore_error: false, colorable: colorable?, local_variables: [])
         return code unless colorable
 
         symbol_state = SymbolState.new
         colored = +''
+        lvars_code = RubyLex.generate_local_variables_assign_code(local_variables)
+        code_with_lvars = lvars_code ? "#{lvars_code}\n#{code}" : code
 
-        scan(code, allow_last_error: !complete) do |token, str, expr|
+        scan(code_with_lvars, allow_last_error: !complete) do |token, str, expr|
           # handle uncolorable code
           if token.nil?
             colored << Reline::Unicode.escape_for_print(str)
@@ -151,6 +153,11 @@ module IRB # :nodoc:
               colored << line
             end
           end
+        end
+
+        if lvars_code
+          raise "#{lvars_code.dump} should have no \\n" if lvars_code.include?("\n")
+          colored.sub!(/\A.+\n/, '') # delete_prefix lvars_code with colors
         end
         colored
       end
@@ -190,15 +197,9 @@ module IRB # :nodoc:
             end
           end
 
-          if lexer.respond_to?(:scan) # Ruby 2.7+
-            lexer.scan.each do |elem|
-              next if allow_last_error and /meets end of file|unexpected end-of-input/ =~ elem.message
-              on_scan.call(elem)
-            end
-          else
-            lexer.parse.sort_by(&:pos).each do |elem|
-              on_scan.call(elem)
-            end
+          lexer.scan.each do |elem|
+            next if allow_last_error and /meets end of file|unexpected end-of-input/ =~ elem.message
+            on_scan.call(elem)
           end
           # yield uncolorable DATA section
           yield(nil, inner_code.byteslice(byte_pos...inner_code.bytesize), nil) if byte_pos < inner_code.bytesize
@@ -235,7 +236,7 @@ module IRB # :nodoc:
         case token
         when :on_symbeg, :on_symbols_beg, :on_qsymbols_beg
           @stack << true
-        when :on_ident, :on_op, :on_const, :on_ivar, :on_cvar, :on_gvar, :on_kw
+        when :on_ident, :on_op, :on_const, :on_ivar, :on_cvar, :on_gvar, :on_kw, :on_backtick
           if @stack.last # Pop only when it's Symbol
             @stack.pop
             return prev_state

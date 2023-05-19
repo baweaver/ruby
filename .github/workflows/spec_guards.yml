@@ -2,21 +2,24 @@ name: Rubyspec Version Guards Check
 
 on:
   push:
-    paths-ignore:
-      - 'doc/**'
-      - '**.md'
-      - '**.rdoc'
-      - '**/.document'
+    paths:
+      - 'spec/**'
+      - '!spec/*.md'
   pull_request:
     paths-ignore:
-      - 'doc/**'
-      - '**.md'
-      - '**.rdoc'
-      - '**/.document'
+      - 'spec/**'
+      - '!spec/*.md'
+  merge_group:
+    paths-ignore:
+      - 'spec/**'
+      - '!spec/*.md'
 
 concurrency:
   group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
   cancel-in-progress: ${{ startsWith(github.event_name, 'pull') }}
+
+permissions:
+  contents: read
 
 jobs:
   rubyspec:
@@ -30,10 +33,11 @@ jobs:
         ruby:
           - ruby-2.7
           - ruby-3.1
+          - ruby-3.2
 
     steps:
-      - uses: actions/checkout@v3
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+      - uses: ruby/setup-ruby@7d546f4868fb108ed378764d873683f920672ae2 # v1.149.0
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler: none
@@ -42,7 +46,7 @@ jobs:
         working-directory: spec/ruby
         env:
           CHECK_LEAKS: true
-      - uses: k0kubun/action-slack@v2.0.0
+      - uses: ruby/action-slack@0bd85c72233cdbb6a0fe01d37aaeff1d21b5fce1 # v3.2.1
         with:
           payload: |
             {
@@ -50,7 +54,7 @@ jobs:
               "env": "${{ github.workflow }} / rubyspec @ ${{ matrix.ruby }}",
               "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
               "commit": "${{ github.sha }}",
-              "branch": "${{ github.ref }}".split('/').reverse()[0]
+              "branch": "${{ github.ref_name }}"
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SIMPLER_ALERTS_URL }} # ruby-lang slack: ruby/simpler-alerts-bot

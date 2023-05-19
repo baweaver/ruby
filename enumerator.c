@@ -20,6 +20,7 @@
 
 #include "id.h"
 #include "internal.h"
+#include "internal/class.h"
 #include "internal/enumerator.h"
 #include "internal/error.h"
 #include "internal/hash.h"
@@ -72,6 +73,8 @@
  *   puts %w[foo bar baz].map.with_index { |w, i| "#{i}:#{w}" }
  *   # => ["0:foo", "1:bar", "2:baz"]
  *
+ * == External Iteration
+ *
  * An Enumerator can also be used as an external iterator.
  * For example, Enumerator#next returns the next value of the iterator
  * or raises StopIteration if the Enumerator is at the end.
@@ -82,15 +85,45 @@
  *   puts e.next   # => 3
  *   puts e.next   # raises StopIteration
  *
- * Note that enumeration sequence by +next+, +next_values+, +peek+ and
- * +peek_values+ do not affect other non-external
- * enumeration methods, unless the underlying iteration method itself has
- * side-effect, e.g. IO#each_line.
+ * +next+, +next_values+, +peek+ and +peek_values+ are the only methods
+ * which use external iteration (and Array#zip(Enumerable-not-Array) which uses +next+).
  *
- * Moreover, implementation typically uses fibers so performance could be
- * slower and exception stacktraces different than expected.
+ * These methods do not affect other internal enumeration methods,
+ * unless the underlying iteration method itself has side-effect, e.g. IO#each_line.
  *
- * You can use this to implement an internal iterator as follows:
+ * External iteration differs *significantly* from internal iteration
+ * due to using a Fiber:
+ * - The Fiber adds some overhead compared to internal enumeration.
+ * - The stacktrace will only include the stack from the Enumerator, not above.
+ * - Fiber-local variables are *not* inherited inside the Enumerator Fiber,
+ *   which instead starts with no Fiber-local variables.
+ * - Fiber storage variables *are* inherited and are designed
+ *   to handle Enumerator Fibers. Assigning to a Fiber storage variable
+ *   only affects the current Fiber, so if you want to change state
+ *   in the caller Fiber of the Enumerator Fiber, you need to use an
+ *   extra indirection (e.g., use some object in the Fiber storage
+ *   variable and mutate some ivar of it).
+ *
+ * Concretely:
+ *
+ *   Thread.current[:fiber_local] = 1
+ *   Fiber[:storage_var] = 1
+ *   e = Enumerator.new do |y|
+ *     p Thread.current[:fiber_local] # for external iteration: nil, for internal iteration: 1
+ *     p Fiber[:storage_var] # => 1, inherited
+ *     Fiber[:storage_var] += 1
+ *     y << 42
+ *   end
+ *
+ *   p e.next # => 42
+ *   p Fiber[:storage_var] # => 1 (it ran in a different Fiber)
+ *
+ *   e.each { p _1 }
+ *   p Fiber[:storage_var] # => 2 (it ran in the same Fiber/"stack" as the current Fiber)
+ *
+ * == Convert External Iteration to Internal Iteration
+ *
+ * You can use an external iterator to implement an internal iterator as follows:
  *
  *   def ext_each(e)
  *     while true
@@ -155,6 +188,18 @@ struct enumerator {
     int kw_splat;
 };
 
+RUBY_REFERENCES_START(enumerator_refs)
+    REF_EDGE(enumerator, obj),
+    REF_EDGE(enumerator, args),
+    REF_EDGE(enumerator, fib),
+    REF_EDGE(enumerator, dst),
+    REF_EDGE(enumerator, lookahead),
+    REF_EDGE(enumerator, feedvalue),
+    REF_EDGE(enumerator, stop_exc),
+    REF_EDGE(enumerator, size),
+    REF_EDGE(enumerator, procs),
+RUBY_REFERENCES_END
+
 static VALUE rb_cGenerator, rb_cYielder, rb_cEnumProducer;
 
 struct generator {
@@ -173,9 +218,11 @@ struct producer {
 
 typedef struct MEMO *lazyenum_proc_func(VALUE, struct MEMO *, VALUE, long);
 typedef VALUE lazyenum_size_func(VALUE, VALUE);
+typedef int lazyenum_precheck_func(VALUE proc_entry);
 typedef struct {
     lazyenum_proc_func *proc;
     lazyenum_size_func *size;
+    lazyenum_precheck_func *precheck;
 } lazyenum_funcs;
 
 struct proc_entry {
@@ -202,39 +249,6 @@ struct enum_product {
 
 VALUE rb_cArithSeq;
 
-/*
- * Enumerator
- */
-static void
-enumerator_mark(void *p)
-{
-    struct enumerator *ptr = p;
-    rb_gc_mark_movable(ptr->obj);
-    rb_gc_mark_movable(ptr->args);
-    rb_gc_mark_movable(ptr->fib);
-    rb_gc_mark_movable(ptr->dst);
-    rb_gc_mark_movable(ptr->lookahead);
-    rb_gc_mark_movable(ptr->feedvalue);
-    rb_gc_mark_movable(ptr->stop_exc);
-    rb_gc_mark_movable(ptr->size);
-    rb_gc_mark_movable(ptr->procs);
-}
-
-static void
-enumerator_compact(void *p)
-{
-    struct enumerator *ptr = p;
-    ptr->obj = rb_gc_location(ptr->obj);
-    ptr->args = rb_gc_location(ptr->args);
-    ptr->fib = rb_gc_location(ptr->fib);
-    ptr->dst = rb_gc_location(ptr->dst);
-    ptr->lookahead = rb_gc_location(ptr->lookahead);
-    ptr->feedvalue = rb_gc_location(ptr->feedvalue);
-    ptr->stop_exc = rb_gc_location(ptr->stop_exc);
-    ptr->size = rb_gc_location(ptr->size);
-    ptr->procs = rb_gc_location(ptr->procs);
-}
-
 #define enumerator_free RUBY_TYPED_DEFAULT_FREE
 
 static size_t
@@ -246,12 +260,12 @@ enumerator_memsize(const void *p)
 static const rb_data_type_t enumerator_data_type = {
     "enumerator",
     {
-        enumerator_mark,
+        REFS_LIST_PTR(enumerator_refs),
         enumerator_free,
         enumerator_memsize,
-        enumerator_compact,
+        NULL,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+    0, NULL, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_DECL_MARKING
 };
 
 static struct enumerator *
@@ -260,7 +274,7 @@ enumerator_ptr(VALUE obj)
     struct enumerator *ptr;
 
     TypedData_Get_Struct(obj, struct enumerator, &enumerator_data_type, ptr);
-    if (!ptr || ptr->obj == Qundef) {
+    if (!ptr || UNDEF_P(ptr->obj)) {
         rb_raise(rb_eArgError, "uninitialized enumerator");
     }
     return ptr;
@@ -519,8 +533,8 @@ rb_enumeratorize(VALUE obj, VALUE meth, int argc, const VALUE *argv)
     return rb_enumeratorize_with_size(obj, meth, argc, argv, 0);
 }
 
-static VALUE
-lazy_to_enum_i(VALUE self, VALUE meth, int argc, const VALUE *argv, rb_enumerator_size_func *size_fn, int kw_splat);
+static VALUE lazy_to_enum_i(VALUE self, VALUE meth, int argc, const VALUE *argv, rb_enumerator_size_func *size_fn, int kw_splat);
+static int lazy_precheck(VALUE procs);
 
 VALUE
 rb_enumeratorize_with_size_kw(VALUE obj, VALUE meth, int argc, const VALUE *argv, rb_enumerator_size_func *size_fn, int kw_splat)
@@ -598,9 +612,10 @@ enumerator_block_call(VALUE obj, rb_block_call_func *func, VALUE arg)
 static VALUE
 enumerator_each(int argc, VALUE *argv, VALUE obj)
 {
+    struct enumerator *e = enumerator_ptr(obj);
+
     if (argc > 0) {
-        struct enumerator *e = enumerator_ptr(obj = rb_obj_dup(obj));
-        VALUE args = e->args;
+        VALUE args = (e = enumerator_ptr(obj = rb_obj_dup(obj)))->args;
         if (args) {
 #if SIZEOF_INT < SIZEOF_LONG
             /* check int range overflow */
@@ -617,6 +632,9 @@ enumerator_each(int argc, VALUE *argv, VALUE obj)
         e->size_fn = 0;
     }
     if (!rb_block_given_p()) return obj;
+
+    if (!lazy_precheck(e->procs)) return Qnil;
+
     return enumerator_block_call(obj, 0, obj);
 }
 
@@ -735,7 +753,7 @@ next_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, obj))
     VALUE feedvalue = Qnil;
     VALUE args = rb_ary_new4(argc, argv);
     rb_fiber_yield(1, &args);
-    if (e->feedvalue != Qundef) {
+    if (!UNDEF_P(e->feedvalue)) {
         feedvalue = e->feedvalue;
         e->feedvalue = Qundef;
     }
@@ -840,7 +858,7 @@ enumerator_next_values(VALUE obj)
     struct enumerator *e = enumerator_ptr(obj);
     VALUE vs;
 
-    if (e->lookahead != Qundef) {
+    if (!UNDEF_P(e->lookahead)) {
         vs = e->lookahead;
         e->lookahead = Qundef;
         return vs;
@@ -901,7 +919,7 @@ enumerator_peek_values(VALUE obj)
 {
     struct enumerator *e = enumerator_ptr(obj);
 
-    if (e->lookahead == Qundef) {
+    if (UNDEF_P(e->lookahead)) {
         e->lookahead = get_next_values(obj, e);
     }
     return e->lookahead;
@@ -1025,7 +1043,7 @@ enumerator_feed(VALUE obj, VALUE v)
 {
     struct enumerator *e = enumerator_ptr(obj);
 
-    if (e->feedvalue != Qundef) {
+    if (!UNDEF_P(e->feedvalue)) {
         rb_raise(rb_eTypeError, "feed value already set");
     }
     e->feedvalue = v;
@@ -1070,7 +1088,7 @@ inspect_enumerator(VALUE obj, VALUE dummy, int recur)
 
     cname = rb_obj_class(obj);
 
-    if (!e || e->obj == Qundef) {
+    if (!e || UNDEF_P(e->obj)) {
         return rb_sprintf("#<%"PRIsVALUE": uninitialized>", rb_class_path(cname));
     }
 
@@ -1239,7 +1257,7 @@ enumerator_size(VALUE obj)
         argv = RARRAY_CONST_PTR(e->args);
     }
     size = rb_check_funcall_kw(e->size, id_call, argc, argv, e->kw_splat);
-    if (size != Qundef) return size;
+    if (!UNDEF_P(size)) return size;
     return e->size;
 }
 
@@ -1285,7 +1303,7 @@ yielder_ptr(VALUE obj)
     struct yielder *ptr;
 
     TypedData_Get_Struct(obj, struct yielder, &yielder_data_type, ptr);
-    if (!ptr || ptr->proc == Qundef) {
+    if (!ptr || UNDEF_P(ptr->proc)) {
         rb_raise(rb_eArgError, "uninitialized yielder");
     }
     return ptr;
@@ -1425,7 +1443,7 @@ generator_ptr(VALUE obj)
     struct generator *ptr;
 
     TypedData_Get_Struct(obj, struct generator, &generator_data_type, ptr);
-    if (!ptr || ptr->proc == Qundef) {
+    if (!ptr || UNDEF_P(ptr->proc)) {
         rb_raise(rb_eArgError, "uninitialized generator");
     }
     return ptr;
@@ -1529,7 +1547,7 @@ static VALUE
 enum_size(VALUE self)
 {
     VALUE r = rb_check_funcall(self, id_size, 0, 0);
-    return (r == Qundef) ? Qnil : r;
+    return UNDEF_P(r) ? Qnil : r;
 }
 
 static VALUE
@@ -1562,7 +1580,7 @@ lazy_init_iterator(RB_BLOCK_CALL_FUNC_ARGLIST(val, m))
         result = rb_yield_values2(len, nargv);
         ALLOCV_END(args);
     }
-    if (result == Qundef) rb_iter_break();
+    if (UNDEF_P(result)) rb_iter_break();
     return Qnil;
 }
 
@@ -1674,6 +1692,22 @@ lazy_generator_init(VALUE enumerator, VALUE procs)
     gen_ptr->obj = obj;
 
     return generator;
+}
+
+static int
+lazy_precheck(VALUE procs)
+{
+    if (RTEST(procs)) {
+        long num_procs = RARRAY_LEN(procs), i = num_procs;
+        while (i-- > 0) {
+            VALUE proc = RARRAY_AREF(procs, i);
+            struct proc_entry *entry = proc_entry_ptr(proc);
+            lazyenum_precheck_func *precheck = entry->fn->precheck;
+            if (precheck && !precheck(proc)) return FALSE;
+        }
+    }
+
+    return TRUE;
 }
 
 /*
@@ -2425,13 +2459,8 @@ lazy_take_proc(VALUE proc_entry, struct MEMO *result, VALUE memos, long memo_ind
     }
 
     remain = NUM2LONG(memo);
-    if (remain == 0) {
-        LAZY_MEMO_SET_BREAK(result);
-    }
-    else {
-        if (--remain == 0) LAZY_MEMO_SET_BREAK(result);
-        rb_ary_store(memos, memo_index, LONG2NUM(remain));
-    }
+    if (--remain == 0) LAZY_MEMO_SET_BREAK(result);
+    rb_ary_store(memos, memo_index, LONG2NUM(remain));
     return result;
 }
 
@@ -2444,8 +2473,15 @@ lazy_take_size(VALUE entry, VALUE receiver)
     return LONG2NUM(len);
 }
 
+static int
+lazy_take_precheck(VALUE proc_entry)
+{
+    struct proc_entry *entry = proc_entry_ptr(proc_entry);
+    return entry->memo != INT2FIX(0);
+}
+
 static const lazyenum_funcs lazy_take_funcs = {
-    lazy_take_proc, lazy_take_size,
+    lazy_take_proc, lazy_take_size, lazy_take_precheck,
 };
 
 /*
@@ -2459,20 +2495,14 @@ static VALUE
 lazy_take(VALUE obj, VALUE n)
 {
     long len = NUM2LONG(n);
-    int argc = 0;
-    VALUE argv[2];
 
     if (len < 0) {
         rb_raise(rb_eArgError, "attempt to take negative size");
     }
 
-    if (len == 0) {
-       argv[0] = sym_cycle;
-       argv[1] = INT2NUM(0);
-       argc = 2;
-    }
+    n = LONG2NUM(len);          /* no more conversion */
 
-    return lazy_add_method(obj, argc, argv, n, rb_ary_new3(1, n), &lazy_take_funcs);
+    return lazy_add_method(obj, 0, 0, n, rb_ary_new3(1, n), &lazy_take_funcs);
 }
 
 static struct MEMO *
@@ -2923,7 +2953,7 @@ producer_ptr(VALUE obj)
     struct producer *ptr;
 
     TypedData_Get_Struct(obj, struct producer, &producer_data_type, ptr);
-    if (!ptr || ptr->proc == Qundef) {
+    if (!ptr || UNDEF_P(ptr->proc)) {
         rb_raise(rb_eArgError, "uninitialized producer");
     }
     return ptr;
@@ -2978,7 +3008,7 @@ producer_each_i(VALUE obj)
     init = ptr->init;
     proc = ptr->proc;
 
-    if (init == Qundef) {
+    if (UNDEF_P(init)) {
         curr = Qnil;
     }
     else {
@@ -3109,7 +3139,7 @@ enum_chain_ptr(VALUE obj)
     struct enum_chain *ptr;
 
     TypedData_Get_Struct(obj, struct enum_chain, &enum_chain_data_type, ptr);
-    if (!ptr || ptr->enums == Qundef) {
+    if (!ptr || UNDEF_P(ptr->enums)) {
         rb_raise(rb_eArgError, "uninitialized chain");
     }
     return ptr;
@@ -3302,7 +3332,7 @@ inspect_enum_chain(VALUE obj, VALUE dummy, int recur)
 
     TypedData_Get_Struct(obj, struct enum_chain, &enum_chain_data_type, ptr);
 
-    if (!ptr || ptr->enums == Qundef) {
+    if (!ptr || UNDEF_P(ptr->enums)) {
         return rb_sprintf("#<%"PRIsVALUE": uninitialized>", rb_class_path(klass));
     }
 
@@ -3384,7 +3414,7 @@ enumerator_plus(VALUE obj, VALUE eobj)
  *
  * The method used against each enumerable object is `each_entry`
  * instead of `each` so that the product of N enumerable objects
- * yields exactly N arguments in each iteration.
+ * yields an array of exactly N elements in each iteration.
  *
  * When no enumerator is given, it calls a given block once yielding
  * an empty argument list.
@@ -3431,7 +3461,7 @@ enum_product_ptr(VALUE obj)
     struct enum_product *ptr;
 
     TypedData_Get_Struct(obj, struct enum_product, &enum_product_data_type, ptr);
-    if (!ptr || ptr->enums == Qundef) {
+    if (!ptr || UNDEF_P(ptr->enums)) {
         rb_raise(rb_eArgError, "uninitialized product");
     }
     return ptr;
@@ -3462,9 +3492,16 @@ enum_product_allocate(VALUE klass)
  *   e.size #=> 6
  */
 static VALUE
-enum_product_initialize(VALUE obj, VALUE enums)
+enum_product_initialize(int argc, VALUE *argv, VALUE obj)
 {
     struct enum_product *ptr;
+    VALUE enums = Qnil, options = Qnil;
+
+    rb_scan_args(argc, argv, "*:", &enums, &options);
+
+    if (!NIL_P(options) && !RHASH_EMPTY_P(options)) {
+        rb_exc_raise(rb_keyword_error_new("unknown", rb_hash_keys(options)));
+    }
 
     rb_check_frozen(obj);
     TypedData_Get_Struct(obj, struct enum_product, &enum_product_data_type, ptr);
@@ -3570,7 +3607,7 @@ product_each(VALUE obj, struct product_state *pstate)
         rb_block_call(eobj, id_each_entry, 0, NULL, product_each_i, (VALUE)pstate);
     }
     else {
-        rb_funcallv(pstate->block, id_call, pstate->argc, pstate->argv);
+        rb_funcall(pstate->block, id_call, 1, rb_ary_new_from_values(pstate->argc, pstate->argv));
     }
 
     return obj;
@@ -3642,7 +3679,7 @@ inspect_enum_product(VALUE obj, VALUE dummy, int recur)
 
     TypedData_Get_Struct(obj, struct enum_product, &enum_product_data_type, ptr);
 
-    if (!ptr || ptr->enums == Qundef) {
+    if (!ptr || UNDEF_P(ptr->enums)) {
         return rb_sprintf("#<%"PRIsVALUE": uninitialized>", rb_class_path(klass));
     }
 
@@ -3668,6 +3705,7 @@ enum_product_inspect(VALUE obj)
 /*
  * call-seq:
  *   Enumerator.product(*enums) -> enumerator
+ *   Enumerator.product(*enums) { |elts| ... } -> enumerator
  *
  * Generates a new enumerator object that generates a Cartesian
  * product of given enumerable objects.  This is equivalent to
@@ -3676,18 +3714,29 @@ enum_product_inspect(VALUE obj)
  *   e = Enumerator.product(1..3, [4, 5])
  *   e.to_a #=> [[1, 4], [1, 5], [2, 4], [2, 5], [3, 4], [3, 5]]
  *   e.size #=> 6
+ *
+ * When a block is given, calls the block with each N-element array
+ * generated and returns +nil+.
  */
 static VALUE
-enumerator_s_product(VALUE klass, VALUE enums)
+enumerator_s_product(int argc, VALUE *argv, VALUE klass)
 {
-    VALUE obj = enum_product_initialize(enum_product_allocate(rb_cEnumProduct), enums);
+    VALUE enums = Qnil, options = Qnil, block = Qnil;
 
-    if (rb_block_given_p()) {
-        return enum_product_run(obj, rb_block_proc());
+    rb_scan_args(argc, argv, "*:&", &enums, &options, &block);
+
+    if (!NIL_P(options) && !RHASH_EMPTY_P(options)) {
+        rb_exc_raise(rb_keyword_error_new("unknown", rb_hash_keys(options)));
     }
-    else {
-        return obj;
+
+    VALUE obj = enum_product_initialize(argc, argv, enum_product_allocate(rb_cEnumProduct));
+
+    if (!NIL_P(block)) {
+        enum_product_run(obj, block);
+        return Qnil;
     }
+
+    return obj;
 }
 
 /*
@@ -4567,7 +4616,7 @@ InitVM_Enumerator(void)
     /* Product */
     rb_cEnumProduct = rb_define_class_under(rb_cEnumerator, "Product", rb_cEnumerator);
     rb_define_alloc_func(rb_cEnumProduct, enum_product_allocate);
-    rb_define_method(rb_cEnumProduct, "initialize", enum_product_initialize, -2);
+    rb_define_method(rb_cEnumProduct, "initialize", enum_product_initialize, -1);
     rb_define_method(rb_cEnumProduct, "initialize_copy", enum_product_init_copy, 1);
     rb_define_method(rb_cEnumProduct, "each", enum_product_each, 0);
     rb_define_method(rb_cEnumProduct, "size", enum_product_size, 0);
@@ -4578,7 +4627,7 @@ InitVM_Enumerator(void)
     rb_undef_method(rb_cEnumProduct, "next_values");
     rb_undef_method(rb_cEnumProduct, "peek");
     rb_undef_method(rb_cEnumProduct, "peek_values");
-    rb_define_singleton_method(rb_cEnumerator, "product", enumerator_s_product, -2);
+    rb_define_singleton_method(rb_cEnumerator, "product", enumerator_s_product, -1);
 
     /* ArithmeticSequence */
     rb_cArithSeq = rb_define_class_under(rb_cEnumerator, "ArithmeticSequence", rb_cEnumerator);

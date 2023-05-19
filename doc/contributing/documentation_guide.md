@@ -27,7 +27,7 @@ Then you can preview your changes by opening
 ## Goal
 
 The goal of Ruby documentation is to impart the most important
-and relevant in the shortest time.
+and relevant information in the shortest time.
 The reader should be able to quickly understand the usefulness
 of the subject code and how to use it.
 
@@ -137,6 +137,19 @@ or [list](rdoc-ref:RDoc::Markup@Simple+Lists)
 should be preceded by and followed by a blank line.
 This is unnecessary for the HTML output, but helps in the `ri` output.
 
+### \Method Names
+
+For a method name in text:
+
+- For a method in the current class or module,
+  use a double-colon for a singleton method,
+  or a hash mark for an instance method:
+  <tt>::bar</tt>, <tt>#baz</tt>.
+- Otherwise, include the class or module name
+  and use a dot for a singleton method,
+  or a hash mark for an instance method:
+  <tt>Foo.bar</tt>, <tt>Foo#baz</tt>.
+
 ### Auto-Linking
 
 In general, \RDoc's auto-linking should not be suppressed.
@@ -228,7 +241,6 @@ The general structure of the method documentation should be:
 - Details and examples.
 - Argument description (if necessary).
 - Corner cases and exceptions.
-- Aliases.
 - Related methods (optional).
 
 ### Calling Sequence (for methods written in C)
@@ -315,7 +327,11 @@ Return types:
 
 Aliases:
 
-- Omit aliases from the `call-seq`, but mention them near the end (see below).
+- Omit aliases from the `call-seq`, unless the alias is an
+  operator method. If listing both a regular method and an
+  operator method in the `call-seq`, explain in the details and
+  examples section when it is recommended to use the regular method
+  and when it is recommended to use the operator method.
 
 ### Synopsis
 
@@ -384,14 +400,6 @@ if you have stated earlier than an argument type must be an integer,
 you do not need to document that a `TypeError` is raised if a non-integer
 is passed.  Do not provide examples of exceptions being raised unless
 that is a common case, such as `Hash#fetch` raising a `KeyError`.
-
-### Aliases
-
-Mention aliases in the form
-
-```
-// Array#find_index is an alias for Array#index.
-```
 
 ### Related Methods (optional)
 

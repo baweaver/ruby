@@ -1,6 +1,7 @@
 # frozen_string_literal: true
+
 module Gem
-  DEFAULT_HOST = "https://rubygems.org".freeze
+  DEFAULT_HOST = "https://rubygems.org"
 
   @post_install_hooks ||= []
   @done_installing_hooks ||= []
@@ -79,7 +80,7 @@ module Gem
 
   def self.find_home
     Dir.home.dup
-  rescue
+  rescue StandardError
     if Gem.win_platform?
       File.expand_path File.join(ENV["HOMEDRIVE"] || ENV["SystemDrive"], "/")
     else
@@ -134,6 +135,13 @@ module Gem
   end
 
   ##
+  # The path to standard location of the user's state file.
+
+  def self.state_file
+    @state_file ||= File.join(Gem.state_home, "gem", "last_update_check").tap(&Gem::UNTAINT)
+  end
+
+  ##
   # The path to standard location of the user's cache directory.
 
   def self.cache_home
@@ -145,6 +153,13 @@ module Gem
 
   def self.data_home
     @data_home ||= (ENV["XDG_DATA_HOME"] || File.join(Gem.user_home, ".local", "share"))
+  end
+
+  ##
+  # The path to standard location of the user's state directory.
+
+  def self.state_home
+    @state_home ||= (ENV["XDG_STATE_HOME"] || File.join(Gem.user_home, ".local", "state"))
   end
 
   ##
@@ -169,7 +184,11 @@ module Gem
   # Deduce Ruby's --program-prefix and --program-suffix from its install name
 
   def self.default_exec_format
-    exec_format = RbConfig::CONFIG["ruby_install_name"].sub("ruby", "%s") rescue "%s"
+    exec_format = begin
+                    RbConfig::CONFIG["ruby_install_name"].sub("ruby", "%s")
+                  rescue StandardError
+                    "%s"
+                  end
 
     unless exec_format.include?("%s")
       raise Gem::Exception,

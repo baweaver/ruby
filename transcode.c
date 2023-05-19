@@ -2352,7 +2352,7 @@ transcode_loop(const unsigned char **in_pos, unsigned char **out_pos,
                 ec->last_error.error_bytes_len,
                 rb_enc_find(ec->last_error.source_encoding));
         rep = (*fallback_func)(fallback, rep);
-        if (rep != Qundef && !NIL_P(rep)) {
+        if (!UNDEF_P(rep) && !NIL_P(rep)) {
             StringValue(rep);
             ret = rb_econv_insert_output(ec, (const unsigned char *)RSTRING_PTR(rep),
                     RSTRING_LEN(rep), rb_enc_name(rb_enc_get(rep)));
@@ -2871,6 +2871,15 @@ str_encode_bang(int argc, VALUE *argv, VALUE str)
 }
 
 static VALUE encoded_dup(VALUE newstr, VALUE str, int encidx);
+
+/*
+ *  call-seq:
+ *    encode(dst_encoding = Encoding.default_internal, **enc_opts) -> string
+ *    encode(dst_encoding, src_encoding, **enc_opts)   -> string
+ *
+ *  :include: doc/string/encode.rdoc
+ *
+ */
 
 static VALUE
 str_encode(int argc, VALUE *argv, VALUE str)
@@ -3759,11 +3768,8 @@ econv_primitive_convert(int argc, VALUE *argv, VALUE self)
     rb_str_modify(output);
 
     if (NIL_P(output_bytesize_v)) {
-#if USE_RVARGC
         output_bytesize = rb_str_capacity(output);
-#else
-        output_bytesize = RSTRING_EMBED_LEN_MAX;
-#endif
+
         if (!NIL_P(input) && output_bytesize < RSTRING_LEN(input))
             output_bytesize = RSTRING_LEN(input);
     }

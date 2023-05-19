@@ -3,7 +3,6 @@
 require 'test/unit'
 require 'tempfile'
 require 'timeout'
-require 'io/wait'
 require 'rbconfig'
 
 class TestProcess < Test::Unit::TestCase
@@ -273,7 +272,7 @@ class TestProcess < Test::Unit::TestCase
     end;
   end
 
-  MANDATORY_ENVS = %w[RUBYLIB MJIT_SEARCH_BUILD_DIR]
+  MANDATORY_ENVS = %w[RUBYLIB RJIT_SEARCH_BUILD_DIR]
   case RbConfig::CONFIG['target_os']
   when /linux/
     MANDATORY_ENVS << 'LD_PRELOAD'
@@ -1425,6 +1424,11 @@ class TestProcess < Test::Unit::TestCase
     REPRO
   end
 
+  def test_argv0_frozen
+    assert_predicate Process.argv0, :frozen?
+    assert_predicate $0, :frozen?
+  end
+
   def test_status
     with_tmpchdir do
       s = run_in_child("exit 1")
@@ -1544,9 +1548,12 @@ class TestProcess < Test::Unit::TestCase
       end
       t1 = Time.now
       diff = t1 - t0
+      sec *= 3 if RUBY_PLATFORM =~ /freebsd/
       assert_operator(diff, :<, sec,
                   ->{"#{bug11340}: #{diff} seconds to interrupt Process.wait"})
       f.puts
+    rescue Errno::EPIPE
+      omit "child process exited already in #{diff} seconds"
     end
   end
 
@@ -1695,11 +1702,6 @@ class TestProcess < Test::Unit::TestCase
   end
 
   def test_wait_and_sigchild
-    if /freebsd|openbsd/ =~ RUBY_PLATFORM
-      # this relates #4173
-      # When ruby can use 2 cores, signal and wait4 may miss the signal.
-      omit "this fails on FreeBSD and OpenBSD on multithreaded environment"
-    end
     signal_received = []
     IO.pipe do |sig_r, sig_w|
       Signal.trap(:CHLD) do
@@ -1718,7 +1720,7 @@ class TestProcess < Test::Unit::TestCase
       Process.wait pid
       assert_send [sig_r, :wait_readable, 5], 'self-pipe not readable'
     end
-    if defined?(RubyVM::MJIT) && RubyVM::MJIT.enabled? # checking -DMJIT_FORCE_ENABLE. It may trigger extra SIGCHLD.
+    if defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled? # checking -DRJIT_FORCE_ENABLE. It may trigger extra SIGCHLD.
       assert_equal [true], signal_received.uniq, "[ruby-core:19744]"
     else
       assert_equal [true], signal_received, "[ruby-core:19744]"
@@ -1817,7 +1819,7 @@ class TestProcess < Test::Unit::TestCase
 
     with_tmpchdir do
       assert_nothing_raised('[ruby-dev:12261]') do
-        EnvUtil.timeout(3) do
+        EnvUtil.timeout(10) do
           pid = spawn('yes | ls')
           Process.waitpid pid
         end
@@ -2156,7 +2158,9 @@ EOS
     t3 = Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond)
     assert_operator(t1, :<=, t2)
     assert_operator(t2, :<=, t3)
-    assert_raise(Errno::EINVAL) { Process.clock_gettime(:foo) }
+    assert_raise_with_message(Errno::EINVAL, /:foo/) do
+      Process.clock_gettime(:foo)
+    end
   end
 
   def test_clock_gettime_unit
@@ -2261,7 +2265,9 @@ EOS
   rescue Errno::EINVAL
   else
     assert_kind_of(Integer, r)
-    assert_raise(Errno::EINVAL) { Process.clock_getres(:foo) }
+    assert_raise_with_message(Errno::EINVAL, /:foo/) do
+      Process.clock_getres(:foo)
+    end
   end
 
   def test_clock_getres_constants
@@ -2575,6 +2581,26 @@ EOS
       begin
         r.close
         w << "ok: #$$"
+        w.close
+      ensure
+        exit!
+      end
+    else
+      w.close
+      assert_equal("ok: #{pid}", r.read)
+      r.close
+      Process.waitpid(pid)
+    end
+  end if Process.respond_to?(:_fork)
+
+  def test__fork_pid_cache
+    _parent_pid = Process.pid
+    r, w = IO.pipe
+    pid = Process._fork
+    if pid == 0
+      begin
+        r.close
+        w << "ok: #{Process.pid}"
         w.close
       ensure
         exit!

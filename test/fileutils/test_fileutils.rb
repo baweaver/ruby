@@ -472,10 +472,14 @@ class TestFileUtils < Test::Unit::TestCase
   else
     def test_cp_r_socket
       pend "Skipping socket test on JRuby" if RUBY_ENGINE == 'jruby'
+
       Dir.mkdir('tmp/cpr_src')
       UNIXServer.new('tmp/cpr_src/socket').close
       cp_r 'tmp/cpr_src', 'tmp/cpr_dest'
       assert_equal(true, File.socket?('tmp/cpr_dest/socket'))
+    rescue Errno::EINVAL => error
+      # On some platforms (windows) sockets cannot be copied by FileUtils.
+      omit error.message
     end if defined?(UNIXServer)
   end
 
@@ -998,6 +1002,43 @@ class TestFileUtils < Test::Unit::TestCase
     }
   end if have_symlink?
 
+  def test_ln_sr
+    check_singleton :ln_sr
+
+    TARGETS.each do |fname|
+      begin
+        lnfname = 'tmp/lnsdest'
+        ln_sr fname, lnfname
+        assert FileTest.symlink?(lnfname), 'not symlink'
+        assert_equal "../#{fname}", File.readlink(lnfname), fname
+      ensure
+        rm_f lnfname
+      end
+    end
+    mkdir 'data/src'
+    File.write('data/src/xxx', 'ok')
+    File.symlink '../data/src', 'tmp/src'
+    ln_sr 'tmp/src/xxx', 'data'
+    assert File.symlink?('data/xxx')
+    assert_equal 'ok', File.read('data/xxx')
+  end if have_symlink?
+
+  def test_ln_sr_broken_symlink
+    assert_nothing_raised {
+      ln_sr 'tmp/symlink', 'tmp/symlink'
+    }
+  end if have_symlink? and !no_broken_symlink?
+
+  def test_ln_sr_pathname
+    # pathname
+    touch 'tmp/lns_dest'
+    assert_nothing_raised {
+      ln_sr Pathname.new('tmp/lns_dest'), 'tmp/symlink_tmp1'
+      ln_sr 'tmp/lns_dest', Pathname.new('tmp/symlink_tmp2')
+      ln_sr Pathname.new('tmp/lns_dest'), Pathname.new('tmp/symlink_tmp3')
+    }
+  end if have_symlink?
+
   def test_mkdir
     check_singleton :mkdir
 
@@ -1196,6 +1237,14 @@ class TestFileUtils < Test::Unit::TestCase
       install Pathname.new('tmp/a'), 'tmp/b'
       rm_f 'tmp/a'; touch 'tmp/a'
       install Pathname.new('tmp/a'), Pathname.new('tmp/b')
+      my_rm_rf 'tmp/new_dir_end_with_slash'
+      install Pathname.new('tmp/a'), 'tmp/new_dir_end_with_slash/'
+      my_rm_rf 'tmp/new_dir_end_with_slash'
+      my_rm_rf 'tmp/new_dir'
+      install Pathname.new('tmp/a'), 'tmp/new_dir/a'
+      my_rm_rf 'tmp/new_dir'
+      install Pathname.new('tmp/a'), 'tmp/new_dir/new_dir_end_with_slash/'
+      my_rm_rf 'tmp/new_dir'
       rm_f 'tmp/a'
       touch 'tmp/a'
       touch 'tmp/b'
@@ -1820,26 +1869,6 @@ cd -
     rm_rf 'tmpdatadir'
 
     assert_file_not_exist 'tmpdatadir'
-  end
-
-  def test_rm_rf_no_permissions
-    check_singleton :rm_rf
-
-    return if /mswin|mingw/ =~ RUBY_PLATFORM
-
-    mkdir 'tmpdatadir'
-    touch 'tmpdatadir/tmpdata'
-    chmod "-x", 'tmpdatadir'
-
-    begin
-      assert_raise Errno::EACCES do
-        rm_rf 'tmpdatadir'
-      end
-
-      assert_file_exist 'tmpdatadir'
-    ensure
-      chmod "+x", 'tmpdatadir'
-    end
   end
 
   def test_rmdir

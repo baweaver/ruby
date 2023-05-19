@@ -132,6 +132,34 @@ class TestAst < Test::Unit::TestCase
     end
   end
 
+  Dir.glob("test/**/*.rb", base: SRCDIR).each do |path|
+    define_method("test_all_tokens:#{path}") do
+      node = RubyVM::AbstractSyntaxTree.parse_file("#{SRCDIR}/#{path}", keep_tokens: true)
+      tokens = node.all_tokens.sort_by { [_1.last[0], _1.last[1]] }
+      tokens_bytes = tokens.map { _1[2]}.join.bytes
+      source_bytes = File.read("#{SRCDIR}/#{path}").bytes
+
+      assert_equal(source_bytes, tokens_bytes)
+
+      (tokens.count - 1).times do |i|
+        token_0 = tokens[i]
+        token_1 = tokens[i + 1]
+        end_pos = token_0.last[2..3]
+        beg_pos = token_1.last[0..1]
+
+        if end_pos[0] == beg_pos[0]
+          # When both tokens are same line, column should be consecutives
+          assert_equal(beg_pos[1], end_pos[1], "#{token_0}. #{token_1}")
+        else
+          # Line should be next
+          assert_equal(beg_pos[0], end_pos[0] + 1, "#{token_0}. #{token_1}")
+          # It should be on the beginning of the line
+          assert_equal(0, beg_pos[1], "#{token_0}. #{token_1}")
+        end
+      end
+    end
+  end
+
   private def parse(src)
     EnvUtil.suppress_warning {
       RubyVM::AbstractSyntaxTree.parse(src)
@@ -184,6 +212,25 @@ class TestAst < Test::Unit::TestCase
         RubyVM::AbstractSyntaxTree.parse_file(f.path)
       end
     end
+  end
+
+  def test_node_id_for_location
+    exception = begin
+                  raise
+                rescue => e
+                  e
+                end
+    loc = exception.backtrace_locations.first
+    node_id = RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location(loc)
+    node = RubyVM::AbstractSyntaxTree.of(loc, keep_script_lines: true)
+
+    assert_equal node.node_id, node_id
+  end
+
+  def test_node_id_for_backtrace_location_raises_argument_error
+    bug19262 = '[ruby-core:111435]'
+
+    assert_raise(TypeError, bug19262) { RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location(1) }
   end
 
   def test_of_proc_and_method
@@ -448,6 +495,30 @@ class TestAst < Test::Unit::TestCase
     assert_not_equal(type1, type2)
   end
 
+  def test_rest_arg
+    rest_arg = lambda do |arg_str|
+      node = RubyVM::AbstractSyntaxTree.parse("def a(#{arg_str}) end")
+      node = node.children.last.children.last.children[1].children[-4]
+    end
+
+    assert_equal(nil, rest_arg.call(''))
+    assert_equal(:r, rest_arg.call('*r'))
+    assert_equal(:r, rest_arg.call('a, *r'))
+    assert_equal(:*, rest_arg.call('*'))
+    assert_equal(:*, rest_arg.call('a, *'))
+  end
+
+  def test_block_arg
+    block_arg = lambda do |arg_str|
+      node = RubyVM::AbstractSyntaxTree.parse("def a(#{arg_str}) end")
+      node = node.children.last.children.last.children[1].children[-1]
+    end
+
+    assert_equal(nil, block_arg.call(''))
+    assert_equal(:block, block_arg.call('&block'))
+    assert_equal(:&, block_arg.call('&'))
+  end
+
   def test_keyword_rest
     kwrest = lambda do |arg_str|
       node = RubyVM::AbstractSyntaxTree.parse("def a(#{arg_str}) end")
@@ -456,9 +527,19 @@ class TestAst < Test::Unit::TestCase
     end
 
     assert_equal(nil, kwrest.call(''))
-    assert_equal([nil], kwrest.call('**'))
+    assert_equal([:**], kwrest.call('**'))
     assert_equal(false, kwrest.call('**nil'))
     assert_equal([:a], kwrest.call('**a'))
+  end
+
+  def test_argument_forwarding
+    forwarding = lambda do |arg_str|
+      node = RubyVM::AbstractSyntaxTree.parse("def a(#{arg_str}) end")
+      node = node.children.last.children.last.children[1]
+      node ? [node.children[-4], node.children[-2]&.children, node.children[-1]] : []
+    end
+
+    assert_equal([:*, nil, :&], forwarding.call('...'))
   end
 
   def test_ranges_numbered_parameter
@@ -541,6 +622,33 @@ dummy
 
     assert_equal("{ 1 + 2 }", node_proc.source)
     assert_equal("def test_keep_script_lines_for_of\n", node_method.source.lines.first)
+  end
+
+  def test_keep_tokens_for_parse
+    node = RubyVM::AbstractSyntaxTree.parse(<<~END, keep_tokens: true)
+    1.times do
+    end
+    __END__
+    dummy
+    END
+
+    expected = [
+      [:tINTEGER, "1"],
+      [:".", "."],
+      [:tIDENTIFIER, "times"],
+      [:tSP, " "],
+      [:keyword_do, "do"],
+      [:tIGNORED_NL, "\n"],
+      [:keyword_end, "end"],
+      [:nl, "\n"],
+    ]
+    assert_equal(expected, node.all_tokens.map { [_2, _3]})
+  end
+
+  def test_keep_tokens_unexpected_backslash
+    assert_raise_with_message(SyntaxError, /unexpected backslash/) do
+      RubyVM::AbstractSyntaxTree.parse("\\", keep_tokens: true)
+    end
   end
 
   def test_encoding_with_keep_script_lines
@@ -668,11 +776,11 @@ dummy
         a = 1
       else
     STR
-      (SCOPE@1:0-3:5
+      (SCOPE@1:0-3:4
        tbl: [:a]
        args: nil
        body:
-         (IF@1:0-3:5 (VCALL@1:3-1:7 :cond) (LASGN@2:2-2:7 :a (LIT@2:6-2:7 1))
+         (IF@1:0-3:4 (VCALL@1:3-1:7 :cond) (LASGN@2:2-2:7 :a (LIT@2:6-2:7 1))
             (BEGIN@3:4-3:4 nil)))
     EXP
   end
@@ -695,11 +803,11 @@ dummy
         a = 1
       else
     STR
-      (SCOPE@1:0-3:5
+      (SCOPE@1:0-3:4
        tbl: [:a]
        args: nil
        body:
-         (UNLESS@1:0-3:5 (VCALL@1:7-1:11 :cond) (LASGN@2:2-2:7 :a (LIT@2:6-2:7 1))
+         (UNLESS@1:0-3:4 (VCALL@1:7-1:11 :cond) (LASGN@2:2-2:7 :a (LIT@2:6-2:7 1))
             (BEGIN@3:4-3:4 nil)))
     EXP
   end
@@ -967,10 +1075,17 @@ dummy
     EXP
   end
 
-  def assert_error_tolerant(src, expected)
+  def test_error_tolerant_unexpected_backslash
+    node = assert_error_tolerant("\\", <<~EXP, keep_tokens: true)
+      (SCOPE@1:0-1:1 tbl: [] args: nil body: (ERROR@1:0-1:1))
+    EXP
+    assert_equal([[0, :backslash, "\\", [1, 0, 1, 1]]], node.children.last.tokens)
+  end
+
+  def assert_error_tolerant(src, expected, keep_tokens: false)
     begin
       verbose_bak, $VERBOSE = $VERBOSE, false
-      node = RubyVM::AbstractSyntaxTree.parse(src, error_tolerant: true)
+      node = RubyVM::AbstractSyntaxTree.parse(src, error_tolerant: true, keep_tokens: keep_tokens)
     ensure
       $VERBOSE = verbose_bak
     end
@@ -978,5 +1093,6 @@ dummy
     str = ""
     PP.pp(node, str, 80)
     assert_equal(expected, str)
+    node
   end
 end

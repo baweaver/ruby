@@ -3,6 +3,7 @@ use super::super::arg::truncate_imm;
 /// The size of the operands being operated on.
 enum Size {
     Size8 = 0b00,
+    Size16 = 0b01,
     Size32 = 0b10,
     Size64 = 0b11,
 }
@@ -82,6 +83,12 @@ impl LoadStore {
         Self { rt, rn, idx: Index::None, imm9, opc: Opc::LDR, size: num_bits.into() }
     }
 
+    /// LDURH Load Register Halfword (unscaled)
+    /// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/LDURH--Load-Register-Halfword--unscaled--?lang=en
+    pub fn ldurh(rt: u8, rn: u8, imm9: i16) -> Self {
+        Self { rt, rn, idx: Index::None, imm9, opc: Opc::LDR, size: Size::Size16 }
+    }
+
     /// LDURB (load register, byte, unscaled)
     /// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/LDURB--Load-Register-Byte--unscaled--?lang=en
     pub fn ldurb(rt: u8, rn: u8, imm9: i16) -> Self {
@@ -110,6 +117,12 @@ impl LoadStore {
     /// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/STUR--Store-Register--unscaled--?lang=en
     pub fn stur(rt: u8, rn: u8, imm9: i16, num_bits: u8) -> Self {
         Self { rt, rn, idx: Index::None, imm9, opc: Opc::STR, size: num_bits.into() }
+    }
+
+    /// STURH (store register, halfword, unscaled)
+    /// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/STURH--Store-Register-Halfword--unscaled--?lang=en
+    pub fn sturh(rt: u8, rn: u8, imm9: i16) -> Self {
+        Self { rt, rn, idx: Index::None, imm9, opc: Opc::STR, size: Size::Size16 }
     }
 }
 
@@ -169,6 +182,13 @@ mod tests {
         let inst = LoadStore::ldurb(0, 1, 0);
         let result: u32 = inst.into();
         assert_eq!(0x38400020, result);
+    }
+
+    #[test]
+    fn test_ldurh() {
+        let inst = LoadStore::ldurh(0, 1, 0);
+        let result: u32 = inst.into();
+        assert_eq!(0x78400020, result);
     }
 
     #[test]

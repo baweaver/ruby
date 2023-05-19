@@ -155,21 +155,32 @@ RSpec.describe "Resolving platform craziness" do
     end
   end
 
-  it "takes the latest ruby gem if the platform specific gem doesn't match the required_ruby_version" do
-    @index = build_index do
-      gem "foo", "1.0.0"
-      gem "foo", "1.0.0", "x64-mingw32"
-      gem "foo", "1.1.0"
-      gem "foo", "1.1.0", "x64-mingw32" do |s|
-        s.required_ruby_version = [">= 2.0", "< 2.4"]
+  context "when the platform specific gem doesn't match the required_ruby_version" do
+    before do
+      @index = build_index do
+        gem "foo", "1.0.0"
+        gem "foo", "1.0.0", "x64-mingw32"
+        gem "foo", "1.1.0"
+        gem "foo", "1.1.0", "x64-mingw32" do |s|
+          s.required_ruby_version = [">= 2.0", "< 2.4"]
+        end
+        gem "Ruby\0", "2.5.1"
       end
-      gem "Ruby\0", "2.5.1"
+      dep "Ruby\0", "2.5.1"
+      platforms "x64-mingw32"
     end
-    dep "foo"
-    dep "Ruby\0", "2.5.1"
-    platforms "x64-mingw32"
 
-    should_resolve_as %w[foo-1.1.0]
+    it "takes the latest ruby gem" do
+      dep "foo"
+
+      should_resolve_as %w[foo-1.1.0]
+    end
+
+    it "takes the latest ruby gem, even if requirement does not match previous versions with the same ruby requirement" do
+      dep "foo", "1.1.0"
+
+      should_resolve_as %w[foo-1.1.0]
+    end
   end
 
   it "takes the latest ruby gem with required_ruby_version if the platform specific gem doesn't match the required_ruby_version" do
@@ -208,39 +219,6 @@ RSpec.describe "Resolving platform craziness" do
     platforms "x86_64-linux", "x64-mingw32"
 
     should_resolve_as %w[foo-1.1.0]
-  end
-
-  it "doesn't include gems not needed for none of the platforms" do
-    @index = build_index do
-      gem "empyrean", "0.1.0"
-      gem "coderay", "1.1.2"
-      gem "method_source", "0.9.0"
-
-      gem "spoon", "0.0.6" do
-        dep "ffi", ">= 0"
-      end
-
-      gem "pry", "0.11.3", "java" do
-        dep "coderay", "~> 1.1.0"
-        dep "method_source", "~> 0.9.0"
-        dep "spoon", "~> 0.0"
-      end
-
-      gem "pry", "0.11.3" do
-        dep "coderay", "~> 1.1.0"
-        dep "method_source", "~> 0.9.0"
-      end
-
-      gem "ffi", "1.9.23", "java"
-      gem "ffi", "1.9.23"
-    end
-
-    dep "empyrean", "0.1.0"
-    dep "pry"
-
-    platforms "ruby", "java"
-
-    should_resolve_as %w[coderay-1.1.2 empyrean-0.1.0 ffi-1.9.23-java method_source-0.9.0 pry-0.11.3 pry-0.11.3-java spoon-0.0.6]
   end
 
   it "includes gems needed for at least one platform" do

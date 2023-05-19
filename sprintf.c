@@ -97,7 +97,7 @@ sign_bits(int base, const char *p)
     blen += (l);\
 } while (0)
 
-#define GETARG() (nextvalue != Qundef ? nextvalue : \
+#define GETARG() (!UNDEF_P(nextvalue) ? nextvalue : \
                   GETNEXTARG())
 
 #define GETNEXTARG() ( \
@@ -193,7 +193,7 @@ get_hash(volatile VALUE *hash, int argc, const VALUE *argv)
 {
     VALUE tmp;
 
-    if (*hash != Qundef) return *hash;
+    if (!UNDEF_P(*hash)) return *hash;
     if (argc != 2) {
         rb_raise(rb_eArgError, "one hash required");
     }
@@ -336,7 +336,7 @@ rb_str_format(int argc, const VALUE *argv, VALUE fmt)
             n = 0;
             GETNUM(n, width);
             if (*p == '$') {
-                if (nextvalue != Qundef) {
+                if (!UNDEF_P(nextvalue)) {
                     rb_raise(rb_eArgError, "value given twice - %d$", n);
                 }
                 nextvalue = GETPOSARG(n);
@@ -381,7 +381,7 @@ rb_str_format(int argc, const VALUE *argv, VALUE fmt)
                                            len - 2 /* without parenthesis */,
                                            enc);
                 if (!NIL_P(sym)) nextvalue = rb_hash_lookup2(hash, sym, Qundef);
-                if (nextvalue == Qundef) {
+                if (UNDEF_P(nextvalue)) {
                     if (NIL_P(sym)) {
                         sym = rb_sym_intern(start + 1,
                                             len - 2 /* without parenthesis */,
@@ -1106,26 +1106,16 @@ ruby__sfvextra(rb_printf_buffer *fp, size_t valsize, void *valp, long *sz, int s
         rb_raise(rb_eRuntimeError, "rb_vsprintf reentered");
     }
     if (sign == '+') {
-        if (RB_TYPE_P(value, T_CLASS)) {
 # define LITERAL(str) (*sz = rb_strlen_lit(str), str)
-
-            if (value == rb_cNilClass) {
-                return LITERAL("nil");
-            }
-            else if (value == rb_cInteger) {
-                return LITERAL("Integer");
-            }
-            else if (value == rb_cSymbol) {
-                return LITERAL("Symbol");
-            }
-            else if (value == rb_cTrueClass) {
-                return LITERAL("true");
-            }
-            else if (value == rb_cFalseClass) {
-                return LITERAL("false");
-            }
-# undef LITERAL
+        /* optimize special const cases */
+        switch (value) {
+# define LITERAL_CASE(x) case Q##x: return LITERAL(#x)
+          LITERAL_CASE(nil);
+          LITERAL_CASE(true);
+          LITERAL_CASE(false);
+# undef LITERAL_CASE
         }
+# undef LITERAL
         value = rb_inspect(value);
     }
     else if (SYMBOL_P(value)) {

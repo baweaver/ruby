@@ -14,6 +14,8 @@ require 'pathname.so'
 
 class Pathname
 
+  VERSION = "0.2.1"
+
   # :stopdoc:
 
   # to_path is implemented so Pathname objects are usable with File.open, etc.
@@ -338,6 +340,8 @@ class Pathname
 
   #
   # Appends a pathname fragment to +self+ to produce a new Pathname object.
+  # Since +other+ is considered as a path relative to +self+, if +other+ is
+  # an absolute path, the new Pathname object is created from just +other+.
   #
   #   p1 = Pathname.new("/usr")      # Pathname:/usr
   #   p2 = p1 + "bin/ruby"           # Pathname:/usr/bin/ruby
@@ -399,6 +403,8 @@ class Pathname
 
   #
   # Joins the given pathnames onto +self+ to create a new Pathname object.
+  # This is effectively the same as using Pathname#+ to append +self+ and
+  # all arguments sequentially.
   #
   #   path0 = Pathname.new("/usr")                # Pathname:/usr
   #   path0 = path0.join("bin/ruby")              # Pathname:/usr/bin/ruby

@@ -36,7 +36,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
       end
 
       it "fails", :bundler => "3" do
-        bundle :instal, :artifice => "compact_index", :raise_on_error => false
+        bundle :install, :artifice => "compact_index", :raise_on_error => false
         expect(err).to include("Each source after the first must include a block")
         expect(exitstatus).to eq(4)
       end
@@ -262,7 +262,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
                   rack
 
             PLATFORMS
-              #{specific_local_platform}
+              #{local_platform}
 
             DEPENDENCIES
               depends_on_rack!
@@ -371,7 +371,15 @@ RSpec.describe "bundle install with gems on multiple sources" do
 
       it "fails" do
         bundle :install, :artifice => "compact_index", :raise_on_error => false
-        expect(err).to include("Could not find gem 'missing', which is required by gem 'depends_on_missing', in any of the sources.")
+        expect(err).to end_with <<~E.strip
+          Could not find compatible versions
+
+          Because every version of depends_on_missing depends on missing >= 0
+            and missing >= 0 could not be found in any of the sources,
+            depends_on_missing cannot be used.
+          So, because Gemfile depends on depends_on_missing >= 0,
+            version solving has failed.
+        E
       end
     end
 
@@ -425,9 +433,15 @@ RSpec.describe "bundle install with gems on multiple sources" do
 
         it "does not find the dependency" do
           bundle :install, :artifice => "compact_index", :raise_on_error => false
-          expect(err).to include(
-            "Could not find gem 'rack', which is required by gem 'depends_on_rack', in rubygems repository https://gem.repo2/ or installed locally."
-          )
+          expect(err).to end_with <<~E.strip
+            Could not find compatible versions
+
+            Because every version of depends_on_rack depends on rack >= 0
+              and rack >= 0 could not be found in rubygems repository https://gem.repo2/ or installed locally,
+              depends_on_rack cannot be used.
+            So, because Gemfile depends on depends_on_rack >= 0,
+              version solving has failed.
+          E
         end
       end
 
@@ -626,7 +640,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
               zeitwerk (2.4.2)
 
           PLATFORMS
-            #{specific_local_platform}
+            #{local_platform}
 
           DEPENDENCIES
             activesupport
@@ -682,7 +696,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
                 sidekiq (>= 6.1.0)
 
           PLATFORMS
-            #{specific_local_platform}
+            #{local_platform}
 
           DEPENDENCIES
             activesupport
@@ -766,7 +780,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
                 sidekiq (>= 6.1.0)
 
           PLATFORMS
-            #{specific_local_platform}
+            #{local_platform}
 
           DEPENDENCIES
             activesupport
@@ -822,7 +836,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
                 sidekiq (>= 6.1.0)
 
           PLATFORMS
-            #{specific_local_platform}
+            #{local_platform}
 
           DEPENDENCIES
             activesupport
@@ -910,7 +924,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
                 nokogiri (>= 1.2.3)
 
           PLATFORMS
-            #{specific_local_platform}
+            #{local_platform}
 
           DEPENDENCIES
             handsoap!
@@ -970,7 +984,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
               rack (0.9.1)
 
           PLATFORMS
-            #{specific_local_platform}
+            #{local_platform}
 
           DEPENDENCIES
             rack!
@@ -1000,7 +1014,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
               rack (0.9.1)
 
           PLATFORMS
-            #{specific_local_platform}
+            #{local_platform}
 
           DEPENDENCIES
             rack!
@@ -1022,7 +1036,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
               rack (0.9.1)
 
           PLATFORMS
-            #{specific_local_platform}
+            #{local_platform}
 
           DEPENDENCIES
             rack!
@@ -1060,7 +1074,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
       it "refuses to install the existing lockfile and prints an error", :bundler => "3" do
         bundle "config set --local deployment true"
 
-        bundle "install", :artifice => "compact_index", :raise_on_error =>false
+        bundle "install", :artifice => "compact_index", :raise_on_error => false
 
         expect(lockfile).to eq(aggregate_gem_section_lockfile)
         expect(err).to include("Your lockfile contains a single rubygems source section with multiple remotes, which is insecure.")
@@ -1306,7 +1320,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
     expect(out).to include("Using example 0.1.0")
   end
 
-  it "fails inmmediately with a helpful error when a rubygems source does not exist and bundler/setup is required" do
+  it "fails immediately with a helpful error when a rubygems source does not exist and bundler/setup is required" do
     gemfile <<-G
       source "https://gem.repo1"
 
@@ -1325,7 +1339,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
     expect(err).to include("Could not find gem 'example' in locally installed gems.")
   end
 
-  it "fails inmmediately with a helpful error when a non retriable network error happens while resolving sources" do
+  it "fails immediately with a helpful error when a non retriable network error happens while resolving sources" do
     gemfile <<-G
       source "https://gem.repo1"
 
@@ -1434,7 +1448,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
             mime-types (3.3.1)
 
         PLATFORMS
-          #{specific_local_platform}
+          #{local_platform}
 
         DEPENDENCIES
           capybara (~> 2.5.0)
@@ -1458,7 +1472,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
             mime-types (3.0.0)
 
         PLATFORMS
-          #{specific_local_platform}
+          #{local_platform}
 
         DEPENDENCIES
           capybara (~> 2.5.0)
@@ -1512,7 +1526,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
               pdf-writer (= 1.1.8)
 
         PLATFORMS
-          #{specific_local_platform}
+          #{local_platform}
 
         DEPENDENCIES
           ruport (= 1.7.0.3)!
@@ -1565,7 +1579,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
               pdf-writer (= 1.1.8)
 
         PLATFORMS
-          #{specific_local_platform}
+          #{local_platform}
 
         DEPENDENCIES
           ruport (= 1.7.0.3)!
@@ -1606,7 +1620,7 @@ RSpec.describe "bundle install with gems on multiple sources" do
             pdf-writer (1.1.8)
 
         PLATFORMS
-          #{specific_local_platform}
+          #{local_platform}
 
         DEPENDENCIES
           pdf-writer (= 1.1.8)

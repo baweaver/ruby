@@ -41,7 +41,6 @@ module Bundler
 
   autoload :Definition,             File.expand_path("bundler/definition", __dir__)
   autoload :Dependency,             File.expand_path("bundler/dependency", __dir__)
-  autoload :DepProxy,               File.expand_path("bundler/dep_proxy", __dir__)
   autoload :Deprecate,              File.expand_path("bundler/deprecate", __dir__)
   autoload :Digest,                 File.expand_path("bundler/digest", __dir__)
   autoload :Dsl,                    File.expand_path("bundler/dsl", __dir__)
@@ -76,11 +75,12 @@ module Bundler
   autoload :StubSpecification,      File.expand_path("bundler/stub_specification", __dir__)
   autoload :UI,                     File.expand_path("bundler/ui", __dir__)
   autoload :URICredentialsFilter,   File.expand_path("bundler/uri_credentials_filter", __dir__)
-  autoload :VersionRanges,          File.expand_path("bundler/version_ranges", __dir__)
+  autoload :URINormalizer,          File.expand_path("bundler/uri_normalizer", __dir__)
+  autoload :SafeMarshal,            File.expand_path("bundler/safe_marshal", __dir__)
 
   class << self
     def configure
-      @configured ||= configure_gem_home_and_path
+      @configure ||= configure_gem_home_and_path
     end
 
     def ui
@@ -455,7 +455,7 @@ EOF
     end
 
     def local_platform
-      return Gem::Platform::RUBY if settings[:force_ruby_platform] || Gem.platforms == [Gem::Platform::RUBY]
+      return Gem::Platform::RUBY if settings[:force_ruby_platform]
       Gem::Platform.local
     end
 
@@ -498,7 +498,7 @@ EOF
       if File.file?(executable) && File.executable?(executable)
         executable
       elsif paths = ENV["PATH"]
-        quote = '"'.freeze
+        quote = '"'
         paths.split(File::PATH_SEPARATOR).find do |path|
           path = path[1..-2] if path.start_with?(quote) && path.end_with?(quote)
           executable_path = File.expand_path(executable, path)
@@ -513,10 +513,8 @@ EOF
       end
     end
 
-    def load_marshal(data)
-      Marshal.load(data)
-    rescue TypeError => e
-      raise MarshalError, "#{e.class}: #{e.message}"
+    def safe_load_marshal(data)
+      load_marshal(data, :marshal_proc => SafeMarshal.proc)
     end
 
     def load_gemspec(file, validate = false)
@@ -525,7 +523,7 @@ EOF
       @gemspec_cache[key] ||= load_gemspec_uncached(file, validate)
       # Protect against caching side-effected gemspecs by returning a
       # new instance each time.
-      @gemspec_cache[key].dup if @gemspec_cache[key]
+      @gemspec_cache[key]&.dup
     end
 
     def load_gemspec_uncached(file, validate = false)
@@ -552,7 +550,7 @@ EOF
 
     def git_present?
       return @git_present if defined?(@git_present)
-      @git_present = Bundler.which("git") || Bundler.which("git.exe")
+      @git_present = Bundler.which("git#{RbConfig::CONFIG["EXEEXT"]}")
     end
 
     def feature_flag
@@ -574,7 +572,7 @@ EOF
       @bin_path = nil
       @bundler_major_version = nil
       @bundle_path = nil
-      @configured = nil
+      @configure = nil
       @configured_bundle_path = nil
       @definition = nil
       @load = nil
@@ -606,6 +604,12 @@ EOF
     end
 
     private
+
+    def load_marshal(data, marshal_proc: nil)
+      Marshal.load(data, marshal_proc)
+    rescue TypeError => e
+      raise MarshalError, "#{e.class}: #{e.message}"
+    end
 
     def eval_yaml_gemspec(path, contents)
       Kernel.require "psych"

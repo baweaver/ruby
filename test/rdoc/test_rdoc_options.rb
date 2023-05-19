@@ -83,6 +83,7 @@ class TestRDocOptions < RDoc::TestCase
       'title'                => nil,
       'visibility'           => :protected,
       'webcvs'               => nil,
+      'skip_tests'           => true,
     }
 
     assert_equal expected, coder
@@ -208,6 +209,13 @@ rdoc_include:
     assert @options.force_update
   end
 
+  def test_parse_coverage_C
+    @options.parse %w[-C]
+
+    assert @options.coverage_report
+    assert @options.force_update
+  end
+
   def test_parse_coverage_no
     @options.parse %w[--no-dcov]
 
@@ -218,6 +226,19 @@ rdoc_include:
     @options.parse %w[--dcov=1]
 
     assert_equal 1, @options.coverage_report
+  end
+
+  def test_parse_coverage_C_level_1
+    @options.parse %w[-C1]
+
+    assert_equal 1, @options.coverage_report
+  end
+
+  def test_parse_coverage_C_level_0
+    @options.parse %w[-C0]
+
+    assert_equal 0, @options.coverage_report
+    assert @options.force_update
   end
 
   def test_parse_dash_p
@@ -869,6 +890,16 @@ rdoc_include:
 
       assert_kind_of RDoc::Options, options
     end
+  end
+
+  def test_skip_test_default_value
+    @options.parse %w[]
+    assert_equal true, @options.skip_tests
+  end
+
+  def test_no_skip_test_value
+    @options.parse %w[--no-skipping-tests]
+    assert_equal false, @options.skip_tests
   end
 
   class DummyCoder < Hash

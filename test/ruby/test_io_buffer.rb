@@ -124,6 +124,20 @@ class TestIOBuffer < Test::Unit::TestCase
     end
   end
 
+  def test_string
+    result = IO::Buffer.string(12) do |buffer|
+      buffer.set_string("Hello World!")
+    end
+
+    assert_equal "Hello World!", result
+  end
+
+  def test_string_negative
+    assert_raise ArgumentError do
+      IO::Buffer.string(-1)
+    end
+  end
+
   def test_resize_mapped
     buffer = IO::Buffer.new
 
@@ -140,6 +154,24 @@ class TestIOBuffer < Test::Unit::TestCase
     buffer.set_string(message)
     buffer.resize(2048)
     assert_equal message, buffer.get_string(0, message.bytesize)
+  end
+
+  def test_resize_zero_internal
+    buffer = IO::Buffer.new(1)
+
+    buffer.resize(0)
+    assert_equal 0, buffer.size
+
+    buffer.resize(1)
+    assert_equal 1, buffer.size
+  end
+
+  def test_resize_zero_external
+    buffer = IO::Buffer.for('1')
+
+    assert_raise IO::Buffer::AccessError do
+      buffer.resize(0)
+    end
   end
 
   def test_compare_same_size
@@ -330,6 +362,10 @@ class TestIOBuffer < Test::Unit::TestCase
   end
 
   def test_read
+    # This is currently a bug in IO:Buffer [#19084] which affects extended
+    # strings. On 32 bit machines, the example below becomes extended, so
+    # we omit this test until the bug is fixed.
+    omit if GC::INTERNAL_CONSTANTS[:SIZE_POOL_COUNT] == 1
     io = Tempfile.new
     io.write("Hello World")
     io.seek(0)
@@ -339,7 +375,7 @@ class TestIOBuffer < Test::Unit::TestCase
 
     assert_equal "Hello", buffer.get_string(0, 5)
   ensure
-    io.close!
+    io.close! if io
   end
 
   def test_write
@@ -369,12 +405,41 @@ class TestIOBuffer < Test::Unit::TestCase
     io.close!
   end
 
+  def test_pread_offset
+    io = Tempfile.new
+    io.write("Hello World")
+    io.seek(0)
+
+    buffer = IO::Buffer.new(128)
+    buffer.pread(io, 6, 5, 6)
+
+    assert_equal "World", buffer.get_string(6, 5)
+    assert_equal 0, io.tell
+  ensure
+    io.close!
+  end
+
   def test_pwrite
     io = Tempfile.new
 
     buffer = IO::Buffer.new(128)
     buffer.set_string("World")
     buffer.pwrite(io, 6, 5)
+
+    assert_equal 0, io.tell
+
+    io.seek(6)
+    assert_equal "World", io.read(5)
+  ensure
+    io.close!
+  end
+
+  def test_pwrite_offset
+    io = Tempfile.new
+
+    buffer = IO::Buffer.new(128)
+    buffer.set_string("Hello World")
+    buffer.pwrite(io, 6, 5, 6)
 
     assert_equal 0, io.tell
 
@@ -402,5 +467,20 @@ class TestIOBuffer < Test::Unit::TestCase
     assert_equal IO::Buffer.for("1334133413"), source.dup.or!(mask)
     assert_equal IO::Buffer.for("\x00\x01\x004\x00\x01\x004\x00\x01"), source.dup.xor!(mask)
     assert_equal IO::Buffer.for("\xce\xcd\xcc\xcb\xce\xcd\xcc\xcb\xce\xcd"), source.dup.not!
+  end
+
+  def test_shared
+    message = "Hello World"
+    buffer = IO::Buffer.new(64, IO::Buffer::MAPPED | IO::Buffer::SHARED)
+
+    pid = fork do
+      buffer.set_string(message)
+    end
+
+    Process.wait(pid)
+    string = buffer.get_string(0, message.bytesize)
+    assert_equal message, string
+  rescue NotImplementedError
+    omit "Fork/shared memory is not supported."
   end
 end

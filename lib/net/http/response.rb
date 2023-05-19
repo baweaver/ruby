@@ -1,20 +1,136 @@
 # frozen_string_literal: false
-# HTTP response class.
+
+# This class is the base class for \Net::HTTP response classes.
 #
-# This class wraps together the response header and the response body (the
-# entity requested).
+# == About the Examples
 #
-# It mixes in the HTTPHeader module, which provides access to response
-# header values both via hash-like methods and via individual readers.
+# :include: doc/net-http/examples.rdoc
 #
-# Note that each possible HTTP response code defines its own
-# HTTPResponse subclass. All classes are defined under the Net module.
-# Indentation indicates inheritance.  For a list of the classes see Net::HTTP.
+# == Returned Responses
 #
-# Correspondence <code>HTTP code => class</code> is stored in CODE_TO_OBJ
-# constant:
+# \Method Net::HTTP.get_response returns
+# an instance of one of the subclasses of \Net::HTTPResponse:
 #
-#    Net::HTTPResponse::CODE_TO_OBJ['404'] #=> Net::HTTPNotFound
+#   Net::HTTP.get_response(uri)
+#   # => #<Net::HTTPOK 200 OK readbody=true>
+#   Net::HTTP.get_response(hostname, '/nosuch')
+#   # => #<Net::HTTPNotFound 404 Not Found readbody=true>
+#
+# As does method Net::HTTP#request:
+#
+#   req = Net::HTTP::Get.new(uri)
+#   Net::HTTP.start(hostname) do |http|
+#     http.request(req)
+#   end # => #<Net::HTTPOK 200 OK readbody=true>
+#
+# \Class \Net::HTTPResponse includes module Net::HTTPHeader,
+# which provides access to response header values via (among others):
+#
+# - \Hash-like method <tt>[]</tt>.
+# - Specific reader methods, such as +content_type+.
+#
+# Examples:
+#
+#   res = Net::HTTP.get_response(uri) # => #<Net::HTTPOK 200 OK readbody=true>
+#   res['Content-Type']               # => "text/html; charset=UTF-8"
+#   res.content_type                  # => "text/html"
+#
+# == Response Subclasses
+#
+# \Class \Net::HTTPResponse has a subclass for each
+# {HTTP status code}[https://en.wikipedia.org/wiki/List_of_HTTP_status_codes].
+# You can look up the response class for a given code:
+#
+#   Net::HTTPResponse::CODE_TO_OBJ['200'] # => Net::HTTPOK
+#   Net::HTTPResponse::CODE_TO_OBJ['400'] # => Net::HTTPBadRequest
+#   Net::HTTPResponse::CODE_TO_OBJ['404'] # => Net::HTTPNotFound
+#
+# And you can retrieve the status code for a response object:
+#
+#   Net::HTTP.get_response(uri).code                 # => "200"
+#   Net::HTTP.get_response(hostname, '/nosuch').code # => "404"
+#
+# The response subclasses (indentation shows class hierarchy):
+#
+# - Net::HTTPUnknownResponse (for unhandled \HTTP extensions).
+#
+# - Net::HTTPInformation:
+#
+#   - Net::HTTPContinue (100)
+#   - Net::HTTPSwitchProtocol (101)
+#   - Net::HTTPProcessing (102)
+#   - Net::HTTPEarlyHints (103)
+#
+# - Net::HTTPSuccess:
+#
+#   - Net::HTTPOK (200)
+#   - Net::HTTPCreated (201)
+#   - Net::HTTPAccepted (202)
+#   - Net::HTTPNonAuthoritativeInformation (203)
+#   - Net::HTTPNoContent (204)
+#   - Net::HTTPResetContent (205)
+#   - Net::HTTPPartialContent (206)
+#   - Net::HTTPMultiStatus (207)
+#   - Net::HTTPAlreadyReported (208)
+#   - Net::HTTPIMUsed (226)
+#
+# - Net::HTTPRedirection:
+#
+#   - Net::HTTPMultipleChoices (300)
+#   - Net::HTTPMovedPermanently (301)
+#   - Net::HTTPFound (302)
+#   - Net::HTTPSeeOther (303)
+#   - Net::HTTPNotModified (304)
+#   - Net::HTTPUseProxy (305)
+#   - Net::HTTPTemporaryRedirect (307)
+#   - Net::HTTPPermanentRedirect (308)
+#
+# - Net::HTTPClientError:
+#
+#   - Net::HTTPBadRequest (400)
+#   - Net::HTTPUnauthorized (401)
+#   - Net::HTTPPaymentRequired (402)
+#   - Net::HTTPForbidden (403)
+#   - Net::HTTPNotFound (404)
+#   - Net::HTTPMethodNotAllowed (405)
+#   - Net::HTTPNotAcceptable (406)
+#   - Net::HTTPProxyAuthenticationRequired (407)
+#   - Net::HTTPRequestTimeOut (408)
+#   - Net::HTTPConflict (409)
+#   - Net::HTTPGone (410)
+#   - Net::HTTPLengthRequired (411)
+#   - Net::HTTPPreconditionFailed (412)
+#   - Net::HTTPRequestEntityTooLarge (413)
+#   - Net::HTTPRequestURITooLong (414)
+#   - Net::HTTPUnsupportedMediaType (415)
+#   - Net::HTTPRequestedRangeNotSatisfiable (416)
+#   - Net::HTTPExpectationFailed (417)
+#   - Net::HTTPMisdirectedRequest (421)
+#   - Net::HTTPUnprocessableEntity (422)
+#   - Net::HTTPLocked (423)
+#   - Net::HTTPFailedDependency (424)
+#   - Net::HTTPUpgradeRequired (426)
+#   - Net::HTTPPreconditionRequired (428)
+#   - Net::HTTPTooManyRequests (429)
+#   - Net::HTTPRequestHeaderFieldsTooLarge (431)
+#   - Net::HTTPUnavailableForLegalReasons (451)
+#
+# - Net::HTTPServerError:
+#
+#   - Net::HTTPInternalServerError (500)
+#   - Net::HTTPNotImplemented (501)
+#   - Net::HTTPBadGateway (502)
+#   - Net::HTTPServiceUnavailable (503)
+#   - Net::HTTPGatewayTimeOut (504)
+#   - Net::HTTPVersionNotSupported (505)
+#   - Net::HTTPVariantAlsoNegotiates (506)
+#   - Net::HTTPInsufficientStorage (507)
+#   - Net::HTTPLoopDetected (508)
+#   - Net::HTTPNotExtended (510)
+#   - Net::HTTPNetworkAuthenticationRequired (511)
+#
+# There is also the Net::HTTPBadResponse exception which is raised when
+# there is a protocol error.
 #
 class Net::HTTPResponse
   class << self
@@ -108,13 +224,32 @@ class Net::HTTPResponse
   # Accept-Encoding header from the user.
   attr_accessor :decode_content
 
-  # The encoding to use for the response body. If Encoding, use that encoding.
-  # If other true value, attempt to detect the appropriate encoding, and use
-  # that.
+  # Returns the value set by body_encoding=, or +false+ if none;
+  # see #body_encoding=.
   attr_reader :body_encoding
 
-  # Set the encoding to use for the response body.  If given a String, find
-  # the related Encoding.
+  # Sets the encoding that should be used when reading the body:
+  #
+  # - If the given value is an Encoding object, that encoding will be used.
+  # - Otherwise if the value is a string, the value of
+  #   {Encoding#find(value)}[rdoc-ref:Encoding.find]
+  #   will be used.
+  # - Otherwise an encoding will be deduced from the body itself.
+  #
+  # Examples:
+  #
+  #   http = Net::HTTP.new(hostname)
+  #   req = Net::HTTP::Get.new('/')
+  #
+  #   http.request(req) do |res|
+  #     p res.body.encoding # => #<Encoding:ASCII-8BIT>
+  #   end
+  #
+  #   http.request(req) do |res|
+  #     res.body_encoding = "UTF-8"
+  #     p res.body.encoding # => #<Encoding:UTF-8>
+  #   end
+  #
   def body_encoding=(value)
     value = Encoding.find(value) if value.is_a?(String)
     @body_encoding = value
@@ -246,26 +381,26 @@ class Net::HTTPResponse
     @body
   end
 
-  # Returns the full entity body.
+  # Returns the string response body;
+  # note that repeated calls for the unmodified body return a cached string:
   #
-  # Calling this method a second or subsequent time will return the
-  # string already read.
+  #   path = '/todos/1'
+  #   Net::HTTP.start(hostname) do |http|
+  #     res = http.get(path)
+  #     p res.body
+  #     p http.head(path).body # No body.
+  #   end
   #
-  #   http.request_get('/index.html') {|res|
-  #     puts res.body
-  #   }
+  # Output:
   #
-  #   http.request_get('/index.html') {|res|
-  #     p res.body.object_id   # 538149362
-  #     p res.body.object_id   # 538149362
-  #   }
+  #   "{\n  \"userId\": 1,\n  \"id\": 1,\n  \"title\": \"delectus aut autem\",\n  \"completed\": false\n}"
+  #   nil
   #
   def body
     read_body()
   end
 
-  # Because it may be necessary to modify the body, Eg, decompression
-  # this method facilitates that.
+  # Sets the body of the response to the given value.
   def body=(value)
     @body = value
   end

@@ -154,6 +154,7 @@ associated_pointer(VALUE associates, const char *t)
     UNREACHABLE_RETURN(Qnil);
 }
 
+RBIMPL_ATTR_NORETURN()
 static void
 unknown_directive(const char *mode, char type, VALUE fmt)
 {
@@ -167,8 +168,8 @@ unknown_directive(const char *mode, char type, VALUE fmt)
         snprintf(unknown, sizeof(unknown), "\\x%.2x", type & 0xff);
     }
     fmt = rb_str_quote_unprintable(fmt);
-    rb_warning("unknown %s directive '%s' in '%"PRIsVALUE"'",
-               mode, unknown, fmt);
+    rb_raise(rb_eArgError, "unknown %s directive '%s' in '%"PRIsVALUE"'",
+            mode, unknown, fmt);
 }
 
 static float
@@ -208,6 +209,7 @@ pack_pack(rb_execution_context_t *ec, VALUE ary, VALUE fmt, VALUE buffer)
     int integer_size, bigendian_p;
 
     StringValue(fmt);
+    rb_must_asciicompat(fmt);
     p = RSTRING_PTR(fmt);
     pend = p + RSTRING_LEN(fmt);
 
@@ -217,6 +219,7 @@ pack_pack(rb_execution_context_t *ec, VALUE ary, VALUE fmt, VALUE buffer)
     else {
         if (!RB_TYPE_P(buffer, T_STRING))
             rb_raise(rb_eTypeError, "buffer must be String, not %s", rb_obj_classname(buffer));
+        rb_str_modify(buffer);
         res = buffer;
     }
 
@@ -476,40 +479,24 @@ pack_pack(rb_execution_context_t *ec, VALUE ary, VALUE fmt, VALUE buffer)
             goto pack_integer;
 
           case 's':		/* s for int16_t, s! for signed short */
-            integer_size = NATINT_LEN(short, 2);
-            bigendian_p = BIGENDIAN_P();
-            goto pack_integer;
-
           case 'S':		/* S for uint16_t, S! for unsigned short */
             integer_size = NATINT_LEN(short, 2);
             bigendian_p = BIGENDIAN_P();
             goto pack_integer;
 
           case 'i':		/* i and i! for signed int */
-            integer_size = (int)sizeof(int);
-            bigendian_p = BIGENDIAN_P();
-            goto pack_integer;
-
           case 'I':		/* I and I! for unsigned int */
             integer_size = (int)sizeof(int);
             bigendian_p = BIGENDIAN_P();
             goto pack_integer;
 
           case 'l':		/* l for int32_t, l! for signed long */
-            integer_size = NATINT_LEN(long, 4);
-            bigendian_p = BIGENDIAN_P();
-            goto pack_integer;
-
           case 'L':		/* L for uint32_t, L! for unsigned long */
             integer_size = NATINT_LEN(long, 4);
             bigendian_p = BIGENDIAN_P();
             goto pack_integer;
 
           case 'q':		/* q for int64_t, q! for signed long long */
-            integer_size = NATINT_LEN_Q;
-            bigendian_p = BIGENDIAN_P();
-            goto pack_integer;
-
           case 'Q':		/* Q for uint64_t, Q! for unsigned long long */
             integer_size = NATINT_LEN_Q;
             bigendian_p = BIGENDIAN_P();
@@ -550,7 +537,7 @@ pack_pack(rb_execution_context_t *ec, VALUE ary, VALUE fmt, VALUE buffer)
                 bigendian_p = explicit_endian == '>';
             }
             if (integer_size > MAX_INTEGER_PACK_SIZE)
-                rb_bug("unexpected intger size for pack: %d", integer_size);
+                rb_bug("unexpected integer size for pack: %d", integer_size);
             while (len-- > 0) {
                 char intbuf[MAX_INTEGER_PACK_SIZE];
 
@@ -938,13 +925,14 @@ hex2num(char c)
 # define AVOID_CC_BUG
 #endif
 
-/* unpack mode */
-#define UNPACK_ARRAY 0
-#define UNPACK_BLOCK 1
-#define UNPACK_1 2
+enum unpack_mode {
+    UNPACK_ARRAY,
+    UNPACK_BLOCK,
+    UNPACK_1
+};
 
 static VALUE
-pack_unpack_internal(VALUE str, VALUE fmt, int mode, long offset)
+pack_unpack_internal(VALUE str, VALUE fmt, enum unpack_mode mode, long offset)
 {
 #define hexdigits ruby_hexdigits
     char *s, *send;
@@ -973,6 +961,7 @@ pack_unpack_internal(VALUE str, VALUE fmt, int mode, long offset)
 
     StringValue(str);
     StringValue(fmt);
+    rb_must_asciicompat(fmt);
 
     if (offset < 0) rb_raise(rb_eArgError, "offset can't be negative");
     len = RSTRING_LEN(str);
@@ -1623,7 +1612,7 @@ pack_unpack_internal(VALUE str, VALUE fmt, int mode, long offset)
 static VALUE
 pack_unpack(rb_execution_context_t *ec, VALUE str, VALUE fmt, VALUE offset)
 {
-    int mode = rb_block_given_p() ? UNPACK_BLOCK : UNPACK_ARRAY;
+    enum unpack_mode mode = rb_block_given_p() ? UNPACK_BLOCK : UNPACK_ARRAY;
     return pack_unpack_internal(str, fmt, mode, RB_NUM2LONG(offset));
 }
 

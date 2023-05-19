@@ -201,6 +201,7 @@
 # - #getlocal: Returns a new time converted to local time.
 # - #utc (aliased as #gmtime): Converts time to UTC in place.
 # - #localtime: Converts time to local time in place.
+# - #deconstruct_keys: Returns a hash of time components used in pattern-matching.
 #
 # === Methods for Rounding
 #
@@ -293,6 +294,15 @@ class Time
   #
   #   Time.new # => 2021-04-24 17:27:46.0512465 -0500
   #
+  # With one string argument that represents a time, returns a new
+  # \Time object based on the given argument, in the local timezone.
+  #
+  #   Time.new('2000-12-31 23:59:59.5')              # => 2000-12-31 23:59:59.5 -0600
+  #   Time.new('2000-12-31 23:59:59.5 +0900')        # => 2000-12-31 23:59:59.5 +0900
+  #   Time.new('2000-12-31 23:59:59.5', in: '+0900') # => 2000-12-31 23:59:59.5 +0900
+  #   Time.new('2000-12-31 23:59:59.5')              # => 2000-12-31 23:59:59.5 -0600
+  #   Time.new('2000-12-31 23:59:59.56789', precision: 3) # => 2000-12-31 23:59:59.567 -0600
+  #
   # With one to six arguments, returns a new \Time object
   # based on the given arguments, in the local timezone.
   #
@@ -330,11 +340,16 @@ class Time
   #     Time.new(2000, 1, 1, 0, 0)  # => 2000-01-01 00:00:00 -0600
   #     Time.new(2000, 1, 1, 0, 59) # => 2000-01-01 00:59:00 -0600
   #
-  # - +sec+: Second in range (0..59), or 60 if +usec+ is zero:
+  # - +sec+: Second in range (0...61):
   #
   #     Time.new(2000, 1, 1, 0, 0, 0)  # => 2000-01-01 00:00:00 -0600
   #     Time.new(2000, 1, 1, 0, 0, 59) # => 2000-01-01 00:00:59 -0600
   #     Time.new(2000, 1, 1, 0, 0, 60) # => 2000-01-01 00:01:00 -0600
+  #
+  #   +sec+ may be Float or Rational.
+  #
+  #     Time.new(2000, 1, 1, 0, 0, 59.5)  # => 2000-12-31 23:59:59.5 +0900
+  #     Time.new(2000, 1, 1, 0, 0, 59.7r) # => 2000-12-31 23:59:59.7 +0900
   #
   # These values may be:
   #
@@ -362,7 +377,12 @@ class Time
   #   Time.new(in: '-12:00')
   #   # => 2022-08-23 08:49:26.1941467 -1200
   #
-  def initialize(year = (now = true), mon = nil, mday = nil, hour = nil, min = nil, sec = nil, zone = nil, in: nil)
+  # - +precision+: maximum effective digits in sub-second part, default is 9.
+  #   More digits will be truncated, as other operations of \Time.
+  #   Ignored unless the first argument is a string.
+  #
+  def initialize(year = (now = true), mon = (str = year; nil), mday = nil, hour = nil, min = nil, sec = nil, zone = nil,
+                 in: nil, precision: 9)
     if zone
       if Primitive.arg!(:in)
         raise ArgumentError, "timezone argument given as positional and keyword arguments"
@@ -373,6 +393,10 @@ class Time
 
     if now
       return Primitive.time_init_now(zone)
+    end
+
+    if str and Primitive.time_init_parse(str, zone, precision)
+      return self
     end
 
     Primitive.time_init_args(year, mon, mday, hour, min, sec, zone)

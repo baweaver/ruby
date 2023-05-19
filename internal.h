@@ -25,6 +25,9 @@
 /* Prevent compiler from reordering access */
 #define ACCESS_ONCE(type,x) (*((volatile type *)&(x)))
 
+#define UNDEF_P         RB_UNDEF_P
+#define NIL_OR_UNDEF_P  RB_NIL_OR_UNDEF_P
+
 #include "ruby/ruby.h"
 
 /* Following macros were formerly defined in this header but moved to somewhere
@@ -40,7 +43,6 @@
 /* internal/gc.h */
 #undef NEWOBJ_OF
 #undef RB_NEWOBJ_OF
-#undef RB_OBJ_WRITE
 
 /* internal/hash.h */
 #undef RHASH_IFNONE

@@ -20,6 +20,16 @@ struct sync_waiter {
     struct ccan_list_node node;
 };
 
+static inline rb_fiber_t*
+nonblocking_fiber(rb_fiber_t *fiber)
+{
+    if (rb_fiberptr_blocking(fiber)) {
+        return NULL;
+    }
+
+    return fiber;
+}
+
 struct queue_sleep_arg {
     VALUE self;
     VALUE timeout;
@@ -37,8 +47,7 @@ sync_wakeup(struct ccan_list_head *head, long max)
         ccan_list_del_init(&cur->node);
 
         if (cur->th->status != THREAD_KILLED) {
-
-            if (cur->th->scheduler != Qnil && rb_fiberptr_blocking(cur->fiber) == 0) {
+            if (cur->th->scheduler != Qnil && cur->fiber) {
                 rb_fiber_scheduler_unblock(cur->th->scheduler, cur->self, rb_fiberptr_self(cur->fiber));
             }
             else {
@@ -306,7 +315,7 @@ do_mutex_lock(VALUE self, int interruptible_p)
                 struct sync_waiter sync_waiter = {
                     .self = self,
                     .th = th,
-                    .fiber = fiber
+                    .fiber = nonblocking_fiber(fiber)
                 };
 
                 ccan_list_add_tail(&mutex->waitq, &sync_waiter.node);
@@ -318,6 +327,10 @@ do_mutex_lock(VALUE self, int interruptible_p)
                 }
             }
             else {
+                if (!th->vm->thread_ignore_deadlock && rb_fiber_threadptr(mutex->fiber) == th) {
+                    rb_raise(rb_eThreadError, "deadlock; lock already owned by another fiber belonging to the same thread");
+                }
+
                 enum rb_thread_status prev_status = th->status;
                 rb_hrtime_t *timeout = 0;
                 rb_hrtime_t rel = rb_msec2hrtime(100);
@@ -339,7 +352,7 @@ do_mutex_lock(VALUE self, int interruptible_p)
                 struct sync_waiter sync_waiter = {
                     .self = self,
                     .th = th,
-                    .fiber = fiber
+                    .fiber = nonblocking_fiber(fiber)
                 };
 
                 ccan_list_add_tail(&mutex->waitq, &sync_waiter.node);
@@ -422,46 +435,43 @@ rb_mutex_owned_p(VALUE self)
 static const char *
 rb_mutex_unlock_th(rb_mutex_t *mutex, rb_thread_t *th, rb_fiber_t *fiber)
 {
-    const char *err = NULL;
-
     if (mutex->fiber == 0) {
-        err = "Attempt to unlock a mutex which is not locked";
+        return "Attempt to unlock a mutex which is not locked";
     }
     else if (mutex->fiber != fiber) {
-        err = "Attempt to unlock a mutex which is locked by another thread/fiber";
+        return "Attempt to unlock a mutex which is locked by another thread/fiber";
     }
-    else {
-        struct sync_waiter *cur = 0, *next;
 
-        mutex->fiber = 0;
-        ccan_list_for_each_safe(&mutex->waitq, cur, next, node) {
-            ccan_list_del_init(&cur->node);
+    struct sync_waiter *cur = 0, *next;
 
-            if (cur->th->scheduler != Qnil && rb_fiberptr_blocking(cur->fiber) == 0) {
-                rb_fiber_scheduler_unblock(cur->th->scheduler, cur->self, rb_fiberptr_self(cur->fiber));
-                goto found;
-            }
-            else {
-                switch (cur->th->status) {
-                  case THREAD_RUNNABLE: /* from someone else calling Thread#run */
-                  case THREAD_STOPPED_FOREVER: /* likely (rb_mutex_lock) */
-                    rb_threadptr_interrupt(cur->th);
-                    goto found;
-                  case THREAD_STOPPED: /* probably impossible */
-                    rb_bug("unexpected THREAD_STOPPED");
-                  case THREAD_KILLED:
-                    /* not sure about this, possible in exit GC? */
-                    rb_bug("unexpected THREAD_KILLED");
-                    continue;
-                }
+    mutex->fiber = 0;
+    thread_mutex_remove(th, mutex);
+
+    ccan_list_for_each_safe(&mutex->waitq, cur, next, node) {
+        ccan_list_del_init(&cur->node);
+
+        if (cur->th->scheduler != Qnil && cur->fiber) {
+            rb_fiber_scheduler_unblock(cur->th->scheduler, cur->self, rb_fiberptr_self(cur->fiber));
+            return NULL;
+        }
+        else {
+            switch (cur->th->status) {
+                case THREAD_RUNNABLE: /* from someone else calling Thread#run */
+                case THREAD_STOPPED_FOREVER: /* likely (rb_mutex_lock) */
+                rb_threadptr_interrupt(cur->th);
+                return NULL;
+                case THREAD_STOPPED: /* probably impossible */
+                rb_bug("unexpected THREAD_STOPPED");
+                case THREAD_KILLED:
+                /* not sure about this, possible in exit GC? */
+                rb_bug("unexpected THREAD_KILLED");
+                continue;
             }
         }
-
-    found:
-        thread_mutex_remove(th, mutex);
     }
 
-    return err;
+    // We did not find any threads to wake up, so we can just return with no error:
+    return NULL;
 }
 
 /*
@@ -638,21 +648,25 @@ rb_mutex_allow_trap(VALUE self, int val)
 /* Queue */
 
 #define queue_waitq(q) UNALIGNED_MEMBER_PTR(q, waitq)
-PACKED_STRUCT_UNALIGNED(struct rb_queue {
+#define queue_list(q) UNALIGNED_MEMBER_PTR(q, que)
+RBIMPL_ATTR_PACKED_STRUCT_UNALIGNED_BEGIN()
+struct rb_queue {
     struct ccan_list_head waitq;
     rb_serial_t fork_gen;
     const VALUE que;
     int num_waiting;
-});
+} RBIMPL_ATTR_PACKED_STRUCT_UNALIGNED_END();
 
 #define szqueue_waitq(sq) UNALIGNED_MEMBER_PTR(sq, q.waitq)
+#define szqueue_list(sq) UNALIGNED_MEMBER_PTR(sq, q.que)
 #define szqueue_pushq(sq) UNALIGNED_MEMBER_PTR(sq, pushq)
-PACKED_STRUCT_UNALIGNED(struct rb_szqueue {
+RBIMPL_ATTR_PACKED_STRUCT_UNALIGNED_BEGIN()
+struct rb_szqueue {
     struct rb_queue q;
     int num_waiting_push;
     struct ccan_list_head pushq;
     long max;
-});
+} RBIMPL_ATTR_PACKED_STRUCT_UNALIGNED_END();
 
 static void
 queue_mark(void *ptr)
@@ -892,7 +906,7 @@ rb_queue_initialize(int argc, VALUE *argv, VALUE self)
     if ((argc = rb_scan_args(argc, argv, "01", &initial)) == 1) {
         initial = rb_to_array(initial);
     }
-    RB_OBJ_WRITE(self, &q->que, ary_buf_new());
+    RB_OBJ_WRITE(self, queue_list(q), ary_buf_new());
     ccan_list_head_init(queue_waitq(q));
     if (argc == 1) {
         rb_ary_concat(q->que, initial);
@@ -1029,13 +1043,19 @@ static VALUE
 queue_do_pop(VALUE self, struct rb_queue *q, int should_block, VALUE timeout)
 {
     check_array(self, q->que);
-    rb_hrtime_t end = queue_timeout2hrtime(timeout);
-
-    while (RARRAY_LEN(q->que) == 0) {
+    if (RARRAY_LEN(q->que) == 0) {
         if (!should_block) {
             rb_raise(rb_eThreadError, "queue empty");
         }
-        else if (queue_closed_p(self)) {
+
+        if (RTEST(rb_equal(INT2FIX(0), timeout))) {
+            return Qnil;
+        }
+    }
+
+    rb_hrtime_t end = queue_timeout2hrtime(timeout);
+    while (RARRAY_LEN(q->que) == 0) {
+        if (queue_closed_p(self)) {
             return queue_closed_result(self, q);
         }
         else {
@@ -1045,7 +1065,7 @@ queue_do_pop(VALUE self, struct rb_queue *q, int should_block, VALUE timeout)
             assert(queue_closed_p(self) == 0);
 
             struct queue_waiter queue_waiter = {
-                .w = {.self = self, .th = ec->thread_ptr, .fiber = ec->fiber_ptr},
+                .w = {.self = self, .th = ec->thread_ptr, .fiber = nonblocking_fiber(ec->fiber_ptr)},
                 .as = {.q = q}
             };
 
@@ -1159,7 +1179,7 @@ rb_szqueue_initialize(VALUE self, VALUE vmax)
         rb_raise(rb_eArgError, "queue size must be positive");
     }
 
-    RB_OBJ_WRITE(self, &sq->q.que, ary_buf_new());
+    RB_OBJ_WRITE(self, szqueue_list(sq), ary_buf_new());
     ccan_list_head_init(szqueue_waitq(sq));
     ccan_list_head_init(szqueue_pushq(sq));
     sq->max = max;
@@ -1232,21 +1252,27 @@ rb_szqueue_max_set(VALUE self, VALUE vmax)
 static VALUE
 rb_szqueue_push(rb_execution_context_t *ec, VALUE self, VALUE object, VALUE non_block, VALUE timeout)
 {
-    rb_hrtime_t end = queue_timeout2hrtime(timeout);
-    bool timed_out = false;
     struct rb_szqueue *sq = szqueue_ptr(self);
 
-    while (queue_length(self, &sq->q) >= sq->max) {
+    if (queue_length(self, &sq->q) >= sq->max) {
         if (RTEST(non_block)) {
             rb_raise(rb_eThreadError, "queue full");
         }
-        else if (queue_closed_p(self)) {
-            break;
+
+        if (RTEST(rb_equal(INT2FIX(0), timeout))) {
+            return Qnil;
+        }
+    }
+
+    rb_hrtime_t end = queue_timeout2hrtime(timeout);
+    while (queue_length(self, &sq->q) >= sq->max) {
+        if (queue_closed_p(self)) {
+            raise_closed_queue_error(self);
         }
         else {
             rb_execution_context_t *ec = GET_EC();
             struct queue_waiter queue_waiter = {
-                .w = {.self = self, .th = ec->thread_ptr, .fiber = ec->fiber_ptr},
+                .w = {.self = self, .th = ec->thread_ptr, .fiber = nonblocking_fiber(ec->fiber_ptr)},
                 .as = {.sq = sq}
             };
 
@@ -1262,17 +1288,10 @@ rb_szqueue_push(rb_execution_context_t *ec, VALUE self, VALUE object, VALUE non_
             };
             rb_ensure(queue_sleep, (VALUE)&queue_sleep_arg, szqueue_sleep_done, (VALUE)&queue_waiter);
             if (!NIL_P(timeout) && rb_hrtime_now() >= end) {
-                timed_out = true;
-                break;
+                return Qnil;
             }
         }
     }
-
-    if (queue_closed_p(self)) {
-        raise_closed_queue_error(self);
-    }
-
-    if (timed_out) return Qnil;
 
     return queue_do_push(self, &sq->q, object);
 }
@@ -1486,7 +1505,7 @@ rb_condvar_wait(int argc, VALUE *argv, VALUE self)
     struct sync_waiter sync_waiter = {
         .self = args.mutex,
         .th = ec->thread_ptr,
-        .fiber = ec->fiber_ptr
+        .fiber = nonblocking_fiber(ec->fiber_ptr)
     };
 
     ccan_list_add_tail(&cv->waitq, &sync_waiter.node);

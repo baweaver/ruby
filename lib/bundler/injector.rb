@@ -2,7 +2,7 @@
 
 module Bundler
   class Injector
-    INJECTED_GEMS = "injected gems".freeze
+    INJECTED_GEMS = "injected gems"
 
     def self.inject(new_deps, options = {})
       injector = new(new_deps, options)
@@ -70,7 +70,7 @@ module Bundler
 
         show_warning("No gems were removed from the gemfile.") if deps.empty?
 
-        deps.each {|dep| Bundler.ui.confirm "#{SharedHelpers.pretty_dependency(dep, false)} was removed." }
+        deps.each {|dep| Bundler.ui.confirm "#{SharedHelpers.pretty_dependency(dep)} was removed." }
       end
 
       # Invalidate the cached Bundler.definition.
@@ -235,7 +235,7 @@ module Bundler
 
         gemfile.each_with_index do |line, index|
           next unless !line.nil? && line.strip.start_with?(block_name)
-          if gemfile[index + 1] =~ /^\s*end\s*$/
+          if /^\s*end\s*$/.match?(gemfile[index + 1])
             gemfile[index] = nil
             gemfile[index + 1] = nil
           end

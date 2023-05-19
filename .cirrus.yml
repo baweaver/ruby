@@ -10,7 +10,7 @@ env:
 
 task:
   name: Arm64 Graviton2 / $CC
-  skip: "changesIncludeOnly('doc/**', '**.{md,rdoc}', '.document')"
+  skip: "changesIncludeOnly('doc/**', '**.{md,rdoc,ronn,[1-8]}', '.document')"
   arm_container:
     # We use the arm64 images at https://github.com/ruby/ruby-ci-image/pkgs/container/ruby-ci-image .
     image: ghcr.io/ruby/ruby-ci-image:$CC
@@ -54,7 +54,6 @@ task:
   make_extract-extlibs_script: make extract-extlibs
   make_incs_script: make incs
   make_script: make
-  make_leaked-globals_script: make leaked-globals
   make_test_script: make test
   make_install_script: make install
   install_gems_for_test_script: $RUBY_PREFIX/bin/gem install --no-doc timezone tzinfo
@@ -66,7 +65,7 @@ task:
 yjit_task:
   name: Arm64 Graviton2 / $CC YJIT
   auto_cancellation: $CIRRUS_BRANCH != 'master'
-  skip: "changesIncludeOnly('doc/**', '**.{md,rdoc}')"
+  skip: "changesIncludeOnly('doc/**', '**.{md,rdoc,ronn,[1-8]}', '.document')"
   arm_container:
     # We use the arm64 images at https://github.com/ruby/ruby-ci-image/pkgs/container/ruby-ci-image .
     image: ghcr.io/ruby/ruby-ci-image:$CC
@@ -89,7 +88,7 @@ yjit_task:
     matrix:
       - CC: clang-12
         configure: --enable-yjit=dev
-        rustup_init: --default-toolchain=1.58.1
+        rustup_init: --default-toolchain=1.58.0
       - CC: gcc-11
         configure: --enable-yjit
   id_script: id
@@ -129,5 +128,6 @@ yjit_task:
   full_build_script: source $HOME/.cargo/env && make
   cargo_test_script: source $HOME/.cargo/env && cd yjit && cargo test
   make_test_script: source $HOME/.cargo/env && make test RUN_OPTS="--yjit-call-threshold=1 --yjit-verify-ctx"
-  make_test_all_script: source $HOME/.cargo/env && make test-all RUN_OPTS="--yjit-call-threshold=1" TESTOPTS="$RUBY_TESTOPTS"
-  make_test_spec_script: source $HOME/.cargo/env && make test-spec RUN_OPTS="--yjit-call-threshold=1"
+  make_test_all_script: source $HOME/.cargo/env && make test-all RUN_OPTS="--yjit-call-threshold=1 --yjit-verify-ctx" TESTOPTS="$RUBY_TESTOPTS"
+  make_test_spec_script: source $HOME/.cargo/env && make test-spec RUN_OPTS="--yjit-call-threshold=1 --yjit-verify-ctx"
+  clippy_script: source $HOME/.cargo/env && cd yjit && cargo clippy --all-targets --all-features

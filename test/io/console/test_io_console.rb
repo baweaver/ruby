@@ -49,6 +49,15 @@ class TestIO_Console < Test::Unit::TestCase
       assert_include(e.message, IO::NULL)
     end
   end
+
+  def test_bad_keyword
+    omit if RUBY_ENGINE == 'jruby'
+    assert_raise_with_message(ArgumentError, /unknown keyword:.*bad/) do
+      File.open(IO::NULL) do |f|
+        f.raw(bad: 0)
+      end
+    end
+  end
 end
 
 defined?(PTY) and defined?(IO.console) and TestIO_Console.class_eval do
@@ -440,7 +449,9 @@ defined?(PTY) and defined?(IO.console) and TestIO_Console.class_eval do
   def run_pty(src, n = 1)
     pend("PTY.spawn cannot control terminal on JRuby") if RUBY_ENGINE == 'jruby'
 
-    r, w, pid = PTY.spawn(EnvUtil.rubybin, "-I#{TestIO_Console::PATHS.join(File::PATH_SEPARATOR)}", "-rio/console", "-e", src)
+    args = ["-I#{TestIO_Console::PATHS.join(File::PATH_SEPARATOR)}", "-rio/console", "-e", src]
+    args.shift if args.first == "-I" # statically linked
+    r, w, pid = PTY.spawn(EnvUtil.rubybin, *args)
   rescue RuntimeError
     omit $!
   else

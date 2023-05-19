@@ -108,11 +108,17 @@ BT = Class.new(bt) do
 
   def wn=(wn)
     unless wn == 1
-      if /(?:\A|\s)--jobserver-(?:auth|fds)=\K(\d+),(\d+)/ =~ ENV.delete("MAKEFLAGS")
+      if /(?:\A|\s)--jobserver-(?:auth|fds)=(?:(\d+),(\d+)|fifo:((?:\\.|\S)+))/ =~ ENV.delete("MAKEFLAGS")
         begin
-          r = IO.for_fd($1.to_i(10), "rb", autoclose: false)
-          w = IO.for_fd($2.to_i(10), "wb", autoclose: false)
-        rescue => e
+          if fifo = $3
+            fifo.gsub!(/\\(?=.)/, '')
+            r = File.open(fifo, IO::RDONLY|IO::NONBLOCK|IO::BINARY)
+            w = File.open(fifo, IO::WRONLY|IO::NONBLOCK|IO::BINARY)
+          else
+            r = IO.for_fd($1.to_i(10), "rb", autoclose: false)
+            w = IO.for_fd($2.to_i(10), "wb", autoclose: false)
+          end
+        rescue
           r.close if r
         else
           r.close_on_exec = true
@@ -663,7 +669,7 @@ end
 
 def assert_finish(timeout_seconds, testsrc, message = '')
   add_assertion testsrc, -> as do
-    if defined?(RubyVM::MJIT) && RubyVM::MJIT.enabled? # for --jit-wait
+    if defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled? # for --jit-wait
       timeout_seconds *= 3
     end
 

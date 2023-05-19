@@ -9,10 +9,11 @@
 
 **********************************************************************/
 
+#include "internal/cmdlineopt.h"
 #include "ruby/ruby.h"
 #include "version.h"
 #include "vm_core.h"
-#include "mjit.h"
+#include "rjit.h"
 #include "yjit.h"
 #include <stdio.h>
 
@@ -59,14 +60,19 @@ const int ruby_api_version[] = {
 #ifndef RUBY_FULL_REVISION
 # define RUBY_FULL_REVISION RUBY_REVISION
 #endif
+#ifdef YJIT_SUPPORT
+#define YJIT_DESCRIPTION " +YJIT " STRINGIZE(YJIT_SUPPORT)
+#else
+#define YJIT_DESCRIPTION " +YJIT"
+#endif
 const char ruby_version[] = RUBY_VERSION;
 const char ruby_revision[] = RUBY_FULL_REVISION;
 const char ruby_release_date[] = RUBY_RELEASE_DATE;
 const char ruby_platform[] = RUBY_PLATFORM;
 const int ruby_patchlevel = RUBY_PATCHLEVEL;
 const char ruby_description[] = RUBY_DESCRIPTION_WITH("");
-static const char ruby_description_with_mjit[] = RUBY_DESCRIPTION_WITH(" +MJIT");
-static const char ruby_description_with_yjit[] = RUBY_DESCRIPTION_WITH(" +YJIT");
+static const char ruby_description_with_rjit[] = RUBY_DESCRIPTION_WITH(" +RJIT");
+static const char ruby_description_with_yjit[] = RUBY_DESCRIPTION_WITH(YJIT_DESCRIPTION);
 const char ruby_copyright[] = "ruby - Copyright (C) "
     RUBY_BIRTH_YEAR_STR "-" RUBY_RELEASE_YEAR_STR " "
     RUBY_AUTHOR;
@@ -120,22 +126,28 @@ Init_version(void)
     rb_provide("ruby2_keywords.rb");
 }
 
-#if USE_MJIT
-#define MJIT_OPTS_ON mjit_opts.on
+#if USE_RJIT
+#define RJIT_OPTS_ON opt->rjit.on
 #else
-#define MJIT_OPTS_ON 0
+#define RJIT_OPTS_ON 0
+#endif
+
+#if USE_YJIT
+#define YJIT_OPTS_ON opt->yjit
+#else
+#define YJIT_OPTS_ON 0
 #endif
 
 void
-Init_ruby_description(void)
+Init_ruby_description(ruby_cmdline_options_t *opt)
 {
     VALUE description;
 
-    if (MJIT_OPTS_ON) {
-        rb_dynamic_description = ruby_description_with_mjit;
-        description = MKSTR(description_with_mjit);
+    if (RJIT_OPTS_ON) {
+        rb_dynamic_description = ruby_description_with_rjit;
+        description = MKSTR(description_with_rjit);
     }
-    else if (rb_yjit_enabled_p()) {
+    else if (YJIT_OPTS_ON) {
         rb_dynamic_description = ruby_description_with_yjit;
         description = MKSTR(description_with_yjit);
     }

@@ -700,13 +700,12 @@ enum_flat_map(VALUE obj)
 
 /*
  *  call-seq:
- *    to_a -> array
+ *    to_a(*args) -> array
  *
  *  Returns an array containing the items in +self+:
  *
  *    (0..4).to_a # => [0, 1, 2, 3, 4]
  *
- *  Enumerable#entries is an alias for Enumerable#to_a.
  */
 static VALUE
 enum_to_a(int argc, VALUE *argv, VALUE obj)
@@ -746,8 +745,8 @@ enum_to_h_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, hash))
 
 /*
  *  call-seq:
- *    to_h -> hash
- *    to_h {|element| ... }  -> hash
+ *    to_h(*args) -> hash
+ *    to_h(*args) {|element| ... }  -> hash
  *
  *  When +self+ consists of 2-element arrays,
  *  returns a hash each of whose entries is the key-value pair
@@ -779,7 +778,7 @@ inject_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, p))
 
     ENUM_WANT_SVALUE();
 
-    if (memo->v1 == Qundef) {
+    if (UNDEF_P(memo->v1)) {
         MEMO_V1_SET(memo, i);
     }
     else {
@@ -796,7 +795,7 @@ inject_op_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, p))
 
     ENUM_WANT_SVALUE();
 
-    if (memo->v1 == Qundef) {
+    if (UNDEF_P(memo->v1)) {
         MEMO_V1_SET(memo, i);
     }
     else if (SYMBOL_P(name = memo->u3.value)) {
@@ -820,9 +819,9 @@ ary_inject_op(VALUE ary, VALUE init, VALUE op)
     long i, n;
 
     if (RARRAY_LEN(ary) == 0)
-        return init == Qundef ? Qnil : init;
+        return UNDEF_P(init) ? Qnil : init;
 
-    if (init == Qundef) {
+    if (UNDEF_P(init)) {
         v = RARRAY_AREF(ary, 0);
         i = 1;
         if (RARRAY_LEN(ary) == 1)
@@ -1000,7 +999,6 @@ ary_inject_op(VALUE ary, VALUE init, VALUE op)
  *    "Memo: 3; element: 3"
  *    "Memo: 6; element: 4"
  *
- *  Enumerable#reduce is an alias for Enumerable#inject.
  *
  */
 static VALUE
@@ -1051,7 +1049,7 @@ enum_inject(int argc, VALUE *argv, VALUE obj)
 
     memo = MEMO_NEW(init, Qnil, op);
     rb_block_call(obj, id_each, 0, 0, iter, (VALUE)memo);
-    if (memo->v1 == Qundef) return Qnil;
+    if (UNDEF_P(memo->v1)) return Qnil;
     return memo->v1;
 }
 
@@ -1373,7 +1371,6 @@ sort_by_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, _data))
 static int
 sort_by_cmp(const void *ap, const void *bp, void *data)
 {
-    struct cmp_opt_data cmp_opt = { 0, 0 };
     VALUE a;
     VALUE b;
     VALUE ary = (VALUE)data;
@@ -1385,7 +1382,7 @@ sort_by_cmp(const void *ap, const void *bp, void *data)
     a = *(VALUE *)ap;
     b = *(VALUE *)bp;
 
-    return OPTIMIZED_CMP(a, b, cmp_opt);
+    return OPTIMIZED_CMP(a, b);
 }
 
 /*
@@ -1677,7 +1674,7 @@ enum_any(int argc, VALUE *argv, VALUE obj)
 DEFINE_ENUMFUNCS(one)
 {
     if (RTEST(result)) {
-        if (memo->v1 == Qundef) {
+        if (UNDEF_P(memo->v1)) {
             MEMO_V1_SET(memo, Qtrue);
         }
         else if (memo->v1 == Qtrue) {
@@ -1713,11 +1710,10 @@ cmpint_reenter_check(struct nmin_data *data, VALUE val)
 static int
 nmin_cmp(const void *ap, const void *bp, void *_data)
 {
-    struct cmp_opt_data cmp_opt = { 0, 0 };
     struct nmin_data *data = (struct nmin_data *)_data;
     VALUE a = *(const VALUE *)ap, b = *(const VALUE *)bp;
 #define rb_cmpint(cmp, a, b) rb_cmpint(cmpint_reenter_check(data, (cmp)), a, b)
-    return OPTIMIZED_CMP(a, b, cmp_opt);
+    return OPTIMIZED_CMP(a, b);
 #undef rb_cmpint
 }
 
@@ -1827,7 +1823,7 @@ nmin_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, _data))
     else
         cmpv = i;
 
-    if (data->limit != Qundef) {
+    if (!UNDEF_P(data->limit)) {
         int c = data->cmpfunc(&cmpv, &data->limit, data);
         if (data->rev)
             c = -c;
@@ -1962,7 +1958,7 @@ enum_one(int argc, VALUE *argv, VALUE obj)
     WARN_UNUSED_BLOCK(argc);
     rb_block_call(obj, id_each, 0, 0, ENUMFUNC(one), (VALUE)memo);
     result = memo->v1;
-    if (result == Qundef) return Qfalse;
+    if (UNDEF_P(result)) return Qfalse;
     return result;
 }
 
@@ -2027,7 +2023,6 @@ enum_none(int argc, VALUE *argv, VALUE obj)
 
 struct min_t {
     VALUE min;
-    struct cmp_opt_data cmp_opt;
 };
 
 static VALUE
@@ -2037,11 +2032,11 @@ min_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
 
     ENUM_WANT_SVALUE();
 
-    if (memo->min == Qundef) {
+    if (UNDEF_P(memo->min)) {
         memo->min = i;
     }
     else {
-        if (OPTIMIZED_CMP(i, memo->min, memo->cmp_opt) < 0) {
+        if (OPTIMIZED_CMP(i, memo->min) < 0) {
             memo->min = i;
         }
     }
@@ -2056,7 +2051,7 @@ min_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
 
     ENUM_WANT_SVALUE();
 
-    if (memo->min == Qundef) {
+    if (UNDEF_P(memo->min)) {
         memo->min = i;
     }
     else {
@@ -2130,7 +2125,7 @@ static VALUE
 enum_min(int argc, VALUE *argv, VALUE obj)
 {
     VALUE memo;
-    struct min_t *m = NEW_CMP_OPT_MEMO(struct min_t, memo);
+    struct min_t *m = NEW_MEMO_FOR(struct min_t, memo);
     VALUE result;
     VALUE num;
 
@@ -2138,8 +2133,6 @@ enum_min(int argc, VALUE *argv, VALUE obj)
        return rb_nmin_run(obj, num, 0, 0, 0);
 
     m->min = Qundef;
-    m->cmp_opt.opt_methods = 0;
-    m->cmp_opt.opt_inited = 0;
     if (rb_block_given_p()) {
         rb_block_call(obj, id_each, 0, 0, min_ii, memo);
     }
@@ -2147,13 +2140,12 @@ enum_min(int argc, VALUE *argv, VALUE obj)
         rb_block_call(obj, id_each, 0, 0, min_i, memo);
     }
     result = m->min;
-    if (result == Qundef) return Qnil;
+    if (UNDEF_P(result)) return Qnil;
     return result;
 }
 
 struct max_t {
     VALUE max;
-    struct cmp_opt_data cmp_opt;
 };
 
 static VALUE
@@ -2163,11 +2155,11 @@ max_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
 
     ENUM_WANT_SVALUE();
 
-    if (memo->max == Qundef) {
+    if (UNDEF_P(memo->max)) {
         memo->max = i;
     }
     else {
-        if (OPTIMIZED_CMP(i, memo->max, memo->cmp_opt) > 0) {
+        if (OPTIMIZED_CMP(i, memo->max) > 0) {
             memo->max = i;
         }
     }
@@ -2182,7 +2174,7 @@ max_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
 
     ENUM_WANT_SVALUE();
 
-    if (memo->max == Qundef) {
+    if (UNDEF_P(memo->max)) {
         memo->max = i;
     }
     else {
@@ -2255,7 +2247,7 @@ static VALUE
 enum_max(int argc, VALUE *argv, VALUE obj)
 {
     VALUE memo;
-    struct max_t *m = NEW_CMP_OPT_MEMO(struct max_t, memo);
+    struct max_t *m = NEW_MEMO_FOR(struct max_t, memo);
     VALUE result;
     VALUE num;
 
@@ -2263,8 +2255,6 @@ enum_max(int argc, VALUE *argv, VALUE obj)
        return rb_nmin_run(obj, num, 0, 1, 0);
 
     m->max = Qundef;
-    m->cmp_opt.opt_methods = 0;
-    m->cmp_opt.opt_inited = 0;
     if (rb_block_given_p()) {
         rb_block_call(obj, id_each, 0, 0, max_ii, (VALUE)memo);
     }
@@ -2272,7 +2262,7 @@ enum_max(int argc, VALUE *argv, VALUE obj)
         rb_block_call(obj, id_each, 0, 0, max_i, (VALUE)memo);
     }
     result = m->max;
-    if (result == Qundef) return Qnil;
+    if (UNDEF_P(result)) return Qnil;
     return result;
 }
 
@@ -2280,7 +2270,6 @@ struct minmax_t {
     VALUE min;
     VALUE max;
     VALUE last;
-    struct cmp_opt_data cmp_opt;
 };
 
 static void
@@ -2288,16 +2277,16 @@ minmax_i_update(VALUE i, VALUE j, struct minmax_t *memo)
 {
     int n;
 
-    if (memo->min == Qundef) {
+    if (UNDEF_P(memo->min)) {
         memo->min = i;
         memo->max = j;
     }
     else {
-        n = OPTIMIZED_CMP(i, memo->min, memo->cmp_opt);
+        n = OPTIMIZED_CMP(i, memo->min);
         if (n < 0) {
             memo->min = i;
         }
-        n = OPTIMIZED_CMP(j, memo->max, memo->cmp_opt);
+        n = OPTIMIZED_CMP(j, memo->max);
         if (n > 0) {
             memo->max = j;
         }
@@ -2313,14 +2302,14 @@ minmax_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, _memo))
 
     ENUM_WANT_SVALUE();
 
-    if (memo->last == Qundef) {
+    if (UNDEF_P(memo->last)) {
         memo->last = i;
         return Qnil;
     }
     j = memo->last;
     memo->last = Qundef;
 
-    n = OPTIMIZED_CMP(j, i, memo->cmp_opt);
+    n = OPTIMIZED_CMP(j, i);
     if (n == 0)
         i = j;
     else if (n < 0) {
@@ -2340,7 +2329,7 @@ minmax_ii_update(VALUE i, VALUE j, struct minmax_t *memo)
 {
     int n;
 
-    if (memo->min == Qundef) {
+    if (UNDEF_P(memo->min)) {
         memo->min = i;
         memo->max = j;
     }
@@ -2365,7 +2354,7 @@ minmax_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, _memo))
 
     ENUM_WANT_SVALUE();
 
-    if (memo->last == Qundef) {
+    if (UNDEF_P(memo->last)) {
         memo->last = i;
         return Qnil;
     }
@@ -2422,23 +2411,21 @@ static VALUE
 enum_minmax(VALUE obj)
 {
     VALUE memo;
-    struct minmax_t *m = NEW_CMP_OPT_MEMO(struct minmax_t, memo);
+    struct minmax_t *m = NEW_MEMO_FOR(struct minmax_t, memo);
 
     m->min = Qundef;
     m->last = Qundef;
-    m->cmp_opt.opt_methods = 0;
-    m->cmp_opt.opt_inited = 0;
     if (rb_block_given_p()) {
         rb_block_call(obj, id_each, 0, 0, minmax_ii, memo);
-        if (m->last != Qundef)
+        if (!UNDEF_P(m->last))
             minmax_ii_update(m->last, m->last, m);
     }
     else {
         rb_block_call(obj, id_each, 0, 0, minmax_i, memo);
-        if (m->last != Qundef)
+        if (!UNDEF_P(m->last))
             minmax_i_update(m->last, m->last, m);
     }
-    if (m->min != Qundef) {
+    if (!UNDEF_P(m->min)) {
         return rb_assoc_new(m->min, m->max);
     }
     return rb_assoc_new(Qnil, Qnil);
@@ -2447,18 +2434,17 @@ enum_minmax(VALUE obj)
 static VALUE
 min_by_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
 {
-    struct cmp_opt_data cmp_opt = { 0, 0 };
     struct MEMO *memo = MEMO_CAST(args);
     VALUE v;
 
     ENUM_WANT_SVALUE();
 
     v = enum_yield(argc, i);
-    if (memo->v1 == Qundef) {
+    if (UNDEF_P(memo->v1)) {
         MEMO_V1_SET(memo, v);
         MEMO_V2_SET(memo, i);
     }
-    else if (OPTIMIZED_CMP(v, memo->v1, cmp_opt) < 0) {
+    else if (OPTIMIZED_CMP(v, memo->v1) < 0) {
         MEMO_V1_SET(memo, v);
         MEMO_V2_SET(memo, i);
     }
@@ -2522,18 +2508,17 @@ enum_min_by(int argc, VALUE *argv, VALUE obj)
 static VALUE
 max_by_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
 {
-    struct cmp_opt_data cmp_opt = { 0, 0 };
     struct MEMO *memo = MEMO_CAST(args);
     VALUE v;
 
     ENUM_WANT_SVALUE();
 
     v = enum_yield(argc, i);
-    if (memo->v1 == Qundef) {
+    if (UNDEF_P(memo->v1)) {
         MEMO_V1_SET(memo, v);
         MEMO_V2_SET(memo, i);
     }
-    else if (OPTIMIZED_CMP(v, memo->v1, cmp_opt) > 0) {
+    else if (OPTIMIZED_CMP(v, memo->v1) > 0) {
         MEMO_V1_SET(memo, v);
         MEMO_V2_SET(memo, i);
     }
@@ -2606,20 +2591,18 @@ struct minmax_by_t {
 static void
 minmax_by_i_update(VALUE v1, VALUE v2, VALUE i1, VALUE i2, struct minmax_by_t *memo)
 {
-    struct cmp_opt_data cmp_opt = { 0, 0 };
-
-    if (memo->min_bv == Qundef) {
+    if (UNDEF_P(memo->min_bv)) {
         memo->min_bv = v1;
         memo->max_bv = v2;
         memo->min = i1;
         memo->max = i2;
     }
     else {
-        if (OPTIMIZED_CMP(v1, memo->min_bv, cmp_opt) < 0) {
+        if (OPTIMIZED_CMP(v1, memo->min_bv) < 0) {
             memo->min_bv = v1;
             memo->min = i1;
         }
-        if (OPTIMIZED_CMP(v2, memo->max_bv, cmp_opt) > 0) {
+        if (OPTIMIZED_CMP(v2, memo->max_bv) > 0) {
             memo->max_bv = v2;
             memo->max = i2;
         }
@@ -2629,7 +2612,6 @@ minmax_by_i_update(VALUE v1, VALUE v2, VALUE i1, VALUE i2, struct minmax_by_t *m
 static VALUE
 minmax_by_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, _memo))
 {
-    struct cmp_opt_data cmp_opt = { 0, 0 };
     struct minmax_by_t *memo = MEMO_FOR(struct minmax_by_t, _memo);
     VALUE vi, vj, j;
     int n;
@@ -2638,7 +2620,7 @@ minmax_by_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, _memo))
 
     vi = enum_yield(argc, i);
 
-    if (memo->last_bv == Qundef) {
+    if (UNDEF_P(memo->last_bv)) {
         memo->last_bv = vi;
         memo->last = i;
         return Qnil;
@@ -2647,7 +2629,7 @@ minmax_by_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, _memo))
     j = memo->last;
     memo->last_bv = Qundef;
 
-    n = OPTIMIZED_CMP(vj, vi, cmp_opt);
+    n = OPTIMIZED_CMP(vj, vi);
     if (n == 0) {
         i = j;
         vi = vj;
@@ -2705,7 +2687,7 @@ enum_minmax_by(VALUE obj)
     m->last_bv = Qundef;
     m->last = Qundef;
     rb_block_call(obj, id_each, 0, 0, minmax_by_i, memo);
-    if (m->last_bv != Qundef)
+    if (!UNDEF_P(m->last_bv))
         minmax_by_i_update(m->last_bv, m->last_bv, m->last, m->last, m);
     m = MEMO_FOR(struct minmax_by_t, memo);
     return rb_assoc_new(m->min, m->max);
@@ -2737,8 +2719,6 @@ member_i(RB_BLOCK_CALL_FUNC_ARGLIST(iter, args))
  *    {foo: 0, bar: 1, baz: 2}.include?(:foo)  # => true
  *    {foo: 0, bar: 1, baz: 2}.include?('foo') # => false
  *    {foo: 0, bar: 1, baz: 2}.include?(0)     # => false
- *
- *  Enumerable#member? is an alias for Enumerable#include?.
  *
  */
 
@@ -3033,7 +3013,6 @@ each_cons_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, args))
 static VALUE
 enum_each_cons_size(VALUE obj, VALUE args, VALUE eobj)
 {
-    struct cmp_opt_data cmp_opt = { 0, 0 };
     const VALUE zero = LONG2FIX(0);
     VALUE n, size;
     long cons_size = NUM2LONG(RARRAY_AREF(args, 0));
@@ -3043,7 +3022,7 @@ enum_each_cons_size(VALUE obj, VALUE args, VALUE eobj)
     if (NIL_P(size)) return Qnil;
 
     n = add_int(size, 1 - cons_size);
-    return (OPTIMIZED_CMP(n, zero, cmp_opt) == -1) ? zero : n;
+    return (OPTIMIZED_CMP(n, zero) == -1) ? zero : n;
 }
 
 /*
@@ -3185,7 +3164,7 @@ zip_i(RB_BLOCK_CALL_FUNC_ARGLIST(val, memoval))
 
             v[1] = RARRAY_AREF(args, i);
             rb_rescue2(call_next, (VALUE)v, call_stop, (VALUE)v, rb_eStopIteration, (VALUE)0);
-            if (v[0] == Qundef) {
+            if (UNDEF_P(v[0])) {
                 RARRAY_ASET(args, i, Qnil);
                 v[0] = Qnil;
             }
@@ -3834,7 +3813,7 @@ slicebefore_i(RB_BLOCK_CALL_FUNC_ARGLIST(yielder, enumerator))
 /*
  *  call-seq:
  *    slice_before(pattern)       -> enumerator
- *    slice_before {|array| ... } -> enumerator
+ *    slice_before {|elt| ... } -> enumerator
  *
  *  With argument +pattern+, returns an enumerator that uses the pattern
  *  to partition elements into arrays ("slices").
@@ -4155,7 +4134,7 @@ slicewhen_ii(RB_BLOCK_CALL_FUNC_ARGLIST(i, _memo))
 
     ENUM_WANT_SVALUE();
 
-    if (memo->prev_elt == Qundef) {
+    if (UNDEF_P(memo->prev_elt)) {
         /* The first element */
         memo->prev_elt = i;
         memo->prev_elts = rb_ary_new3(1, i);
@@ -4395,7 +4374,7 @@ sum_iter_bignum(VALUE i, struct enum_sum_memo *memo)
 static void
 sum_iter_rational(VALUE i, struct enum_sum_memo *memo)
 {
-    if (memo->r == Qundef) {
+    if (UNDEF_P(memo->r)) {
         memo->r = i;
     }
     else {
@@ -4616,7 +4595,7 @@ enum_sum(int argc, VALUE* argv, VALUE obj)
     else {
         if (memo.n != 0)
             memo.v = rb_fix_plus(LONG2FIX(memo.n), memo.v);
-        if (memo.r != Qundef) {
+        if (!UNDEF_P(memo.r)) {
             memo.v = rb_rational_plus(memo.r, memo.v);
         }
         return memo.v;

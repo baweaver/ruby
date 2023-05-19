@@ -152,14 +152,14 @@
 # OptionParser supports the ability to coerce command line arguments
 # into objects for us.
 #
-# OptionParser comes with a few ready-to-use kinds of  type
+# OptionParser comes with a few ready-to-use kinds of type
 # coercion. They are:
 #
-# - Date  -- Anything accepted by +Date.parse+
-# - DateTime -- Anything accepted by +DateTime.parse+
-# - Time -- Anything accepted by +Time.httpdate+ or +Time.parse+
-# - URI  -- Anything accepted by +URI.parse+
-# - Shellwords -- Anything accepted by +Shellwords.shellwords+
+# - Date  -- Anything accepted by +Date.parse+ (need to require +optparse/date+)
+# - DateTime -- Anything accepted by +DateTime.parse+ (need to require +optparse/date+)
+# - Time -- Anything accepted by +Time.httpdate+ or +Time.parse+ (need to require +optparse/time+)
+# - URI  -- Anything accepted by +URI.parse+ (need to require +optparse/uri+)
+# - Shellwords -- Anything accepted by +Shellwords.shellwords+ (need to require +optparse/shellwords+)
 # - String -- Any non-empty string
 # - Integer -- Any integer. Will convert octal. (e.g. 124, -3, 040)
 # - Float -- Any float. (e.g. 10, 3.14, -100E+13)
@@ -425,7 +425,7 @@
 # If you have any questions, file a ticket at http://bugs.ruby-lang.org.
 #
 class OptionParser
-  OptionParser::Version = "0.2.0"
+  OptionParser::Version = "0.4.0.pre.1"
 
   # :stopdoc:
   NoArgument = [NO_ARGUMENT = :NONE, nil].freeze
@@ -1148,6 +1148,7 @@ XXX
     @summary_indent = indent
     @default_argv = ARGV
     @require_exact = false
+    @raise_unknown = true
     add_officious
     yield self if block_given?
   end
@@ -1224,6 +1225,9 @@ XXX
   # Whether to require that options match exactly (disallows providing
   # abbreviated long option as short option).
   attr_accessor :require_exact
+
+  # Whether to raise at unknown option.
+  attr_accessor :raise_unknown
 
   #
   # Heading banner preceding summary.
@@ -1639,9 +1643,11 @@ XXX
           begin
             sw, = complete(:long, opt, true)
             if require_exact && !sw.long.include?(arg)
+              throw :terminate, arg unless raise_unknown
               raise InvalidOption, arg
             end
           rescue ParseError
+            throw :terminate, arg unless raise_unknown
             raise $!.set_option(arg, true)
           end
           begin
@@ -1673,6 +1679,7 @@ XXX
               end
             end
           rescue ParseError
+            throw :terminate, arg unless raise_unknown
             raise $!.set_option(arg, true)
           end
           begin
@@ -1768,7 +1775,16 @@ XXX
   #   # params["bar"] = "x"  # --bar x
   #   # params["zot"] = "z"  # --zot Z
   #
-  def getopts(*args)
+  # Option +symbolize_names+ (boolean) specifies whether returned Hash keys should be Symbols; defaults to +false+ (use Strings).
+  #
+  #   params = ARGV.getopts("ab:", "foo", "bar:", "zot:Z;zot option", symbolize_names: true)
+  #   # params[:a] = true   # -a
+  #   # params[:b] = "1"    # -b1
+  #   # params[:foo] = "1"  # --foo
+  #   # params[:bar] = "x"  # --bar x
+  #   # params[:zot] = "z"  # --zot Z
+  #
+  def getopts(*args, symbolize_names: false)
     argv = Array === args.first ? args.shift : default_argv
     single_options, *long_options = *args
 
@@ -1797,14 +1813,14 @@ XXX
     end
 
     parse_in_order(argv, result.method(:[]=))
-    result
+    symbolize_names ? result.transform_keys(&:to_sym) : result
   end
 
   #
   # See #getopts.
   #
-  def self.getopts(*args)
-    new.getopts(*args)
+  def self.getopts(*args, symbolize_names: false)
+    new.getopts(*args, symbolize_names: symbolize_names)
   end
 
   #
@@ -1903,10 +1919,13 @@ XXX
   # directory ~/.options, then the basename with '.options' suffix
   # under XDG and Haiku standard places.
   #
-  def load(filename = nil)
+  # The optional +into+ keyword argument works exactly like that accepted in
+  # method #parse.
+  #
+  def load(filename = nil, into: nil)
     unless filename
       basename = File.basename($0, '.*')
-      return true if load(File.expand_path(basename, '~/.options')) rescue nil
+      return true if load(File.expand_path(basename, '~/.options'), into: into) rescue nil
       basename << ".options"
       return [
         # XDG
@@ -1918,11 +1937,11 @@ XXX
         '~/config/settings',
       ].any? {|dir|
         next if !dir or dir.empty?
-        load(File.expand_path(basename, dir)) rescue nil
+        load(File.expand_path(basename, dir), into: into) rescue nil
       }
     end
     begin
-      parse(*IO.readlines(filename).each {|s| s.chomp!})
+      parse(*File.readlines(filename, chomp: true), into: into)
       true
     rescue Errno::ENOENT, Errno::ENOTDIR
       false
@@ -2074,10 +2093,23 @@ XXX
       f |= Regexp::IGNORECASE if /i/ =~ o
       f |= Regexp::MULTILINE if /m/ =~ o
       f |= Regexp::EXTENDED if /x/ =~ o
-      k = o.delete("imx")
-      k = nil if k.empty?
+      case o = o.delete("imx")
+      when ""
+      when "u"
+        s = s.encode(Encoding::UTF_8)
+      when "e"
+        s = s.encode(Encoding::EUC_JP)
+      when "s"
+        s = s.encode(Encoding::SJIS)
+      when "n"
+        f |= Regexp::NOENCODING
+      else
+        raise OptionParser::InvalidArgument, "unknown regexp option - #{o}"
+      end
+    else
+      s ||= all
     end
-    Regexp.new(s || all, f, k)
+    Regexp.new(s, f)
   end
 
   #
@@ -2266,8 +2298,8 @@ XXX
     #   rescue OptionParser::ParseError
     #   end
     #
-    def getopts(*args)
-      options.getopts(self, *args)
+    def getopts(*args, symbolize_names: false)
+      options.getopts(self, *args, symbolize_names: symbolize_names)
     end
 
     #

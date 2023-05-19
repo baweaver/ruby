@@ -536,6 +536,20 @@ pub fn ldur(cb: &mut CodeBlock, rt: A64Opnd, rn: A64Opnd) {
     cb.write_bytes(&bytes);
 }
 
+/// LDURH - load a byte from memory, zero-extend it, and write it to a register
+pub fn ldurh(cb: &mut CodeBlock, rt: A64Opnd, rn: A64Opnd) {
+    let bytes: [u8; 4] = match (rt, rn) {
+        (A64Opnd::Reg(rt), A64Opnd::Mem(rn)) => {
+            assert!(mem_disp_fits_bits(rn.disp), "Expected displacement to be 9 bits or less");
+
+            LoadStore::ldurh(rt.reg_no, rn.base_reg_no, rn.disp as i16).into()
+        },
+        _ => panic!("Invalid operands for LDURH")
+    };
+
+    cb.write_bytes(&bytes);
+}
+
 /// LDURB - load a byte from memory, zero-extend it, and write it to a register
 pub fn ldurb(cb: &mut CodeBlock, rt: A64Opnd, rn: A64Opnd) {
     let bytes: [u8; 4] = match (rt, rn) {
@@ -889,10 +903,25 @@ pub fn strh_post(cb: &mut CodeBlock, rt: A64Opnd, rn: A64Opnd) {
 pub fn stur(cb: &mut CodeBlock, rt: A64Opnd, rn: A64Opnd) {
     let bytes: [u8; 4] = match (rt, rn) {
         (A64Opnd::Reg(rt), A64Opnd::Mem(rn)) => {
-            assert!(rt.num_bits == rn.num_bits, "Expected registers to be the same size");
+            assert!(rn.num_bits == 32 || rn.num_bits == 64);
             assert!(mem_disp_fits_bits(rn.disp), "Expected displacement to be 9 bits or less");
 
-            LoadStore::stur(rt.reg_no, rn.base_reg_no, rn.disp as i16, rt.num_bits).into()
+            LoadStore::stur(rt.reg_no, rn.base_reg_no, rn.disp as i16, rn.num_bits).into()
+        },
+        _ => panic!("Invalid operand combination to stur instruction.")
+    };
+
+    cb.write_bytes(&bytes);
+}
+
+/// STURH - store a value in a register at a memory address
+pub fn sturh(cb: &mut CodeBlock, rt: A64Opnd, rn: A64Opnd) {
+    let bytes: [u8; 4] = match (rt, rn) {
+        (A64Opnd::Reg(rt), A64Opnd::Mem(rn)) => {
+            assert!(rn.num_bits == 16);
+            assert!(mem_disp_fits_bits(rn.disp), "Expected displacement to be 9 bits or less");
+
+            LoadStore::sturh(rt.reg_no, rn.base_reg_no, rn.disp as i16).into()
         },
         _ => panic!("Invalid operand combination to stur instruction.")
     };
@@ -1105,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn test_adds_imm_negatve() {
+    fn test_adds_imm_negative() {
         check_bytes("201c00f1", |cb| adds(cb, X0, X1, A64Opnd::new_imm(-7)));
     }
 
@@ -1130,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn test_and_32b_immedaite() {
+    fn test_and_32b_immediate() {
         check_bytes("404c0012", |cb| and(cb, W0, W2, A64Opnd::new_uimm(0xfffff)));
     }
 
@@ -1310,6 +1339,12 @@ mod tests {
     }
 
     #[test]
+    fn test_ldurh_memory() {
+        check_bytes("2a004078", |cb| ldurh(cb, W10, A64Opnd::new_mem(64, X1, 0)));
+        check_bytes("2ab04778", |cb| ldurh(cb, W10, A64Opnd::new_mem(64, X1, 123)));
+    }
+
+    #[test]
     fn test_ldur_memory() {
         check_bytes("20b047f8", |cb| ldur(cb, X0, A64Opnd::new_mem(64, X1, 123)));
     }
@@ -1464,8 +1499,13 @@ mod tests {
     }
 
     #[test]
-    fn test_stur() {
+    fn test_stur_64_bits() {
         check_bytes("6a0108f8", |cb| stur(cb, X10, A64Opnd::new_mem(64, X11, 128)));
+    }
+
+    #[test]
+    fn test_stur_32_bits() {
+        check_bytes("6a0108b8", |cb| stur(cb, X10, A64Opnd::new_mem(32, X11, 128)));
     }
 
     #[test]

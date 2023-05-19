@@ -37,14 +37,14 @@
 /**
  * Convenient casting macro.
  *
- * @param   obj  An object, which is in fact an ::RRegexp.
- * @return  The passed object casted to ::RRegexp.
+ * @param   obj  An object, which is in fact an ::RObject.
+ * @return  The passed object casted to ::RObject.
  */
 #define ROBJECT(obj)          RBIMPL_CAST((struct RObject *)(obj))
 /** @cond INTERNAL_MACRO */
 #define ROBJECT_EMBED_LEN_MAX ROBJECT_EMBED_LEN_MAX
 #define ROBJECT_EMBED         ROBJECT_EMBED
-#define ROBJECT_NUMIV         ROBJECT_NUMIV
+#define ROBJECT_IV_CAPACITY   ROBJECT_IV_CAPACITY
 #define ROBJECT_IVPTR         ROBJECT_IVPTR
 /** @endcond */
 
@@ -74,17 +74,6 @@ enum ruby_robject_flags {
     ROBJECT_EMBED = RUBY_FL_USER1
 };
 
-#if !USE_RVARGC
-/**
- * This is an enum because GDB wants it (rather than a macro).  People need not
- * bother.
- */
-enum ruby_robject_consts {
-    /** Max possible number of instance variables that can be embedded. */
-    ROBJECT_EMBED_LEN_MAX = RBIMPL_EMBED_LEN_MAX_OF(VALUE)
-};
-#endif
-
 struct st_table;
 
 /**
@@ -96,14 +85,6 @@ struct RObject {
     /** Basic part, including flags and class. */
     struct RBasic basic;
 
-#if USE_RVARGC
-    /**
-    * Number of instance variables.  This is per object; objects might
-    * differ in this field even if they have the identical classes.
-    */
-    uint32_t numiv;
-#endif
-
     /** Object's specific fields. */
     union {
 
@@ -112,14 +93,6 @@ struct RObject {
          * this pattern.
          */
         struct {
-#if !USE_RVARGC
-            /**
-             * Number of instance variables.  This is per object; objects might
-             * differ in this field even if they have the identical classes.
-             */
-            uint32_t numiv;
-#endif
-
             /** Pointer to a C array that holds instance variables. */
             VALUE *ivptr;
 
@@ -134,7 +107,6 @@ struct RObject {
             struct rb_id_table *iv_index_tbl;
         } heap;
 
-#if USE_RVARGC
         /* Embedded instance variables. When an object is small enough, it
          * uses this area to store the instance variables.
          *
@@ -144,53 +116,15 @@ struct RObject {
          *   2. Zero length arrays are not supported by all compilers
          */
         VALUE ary[1];
-#else
-        /**
-        * Embedded instance  variables.  When  an object  is small  enough, it
-        * uses this area to store the instance variables.
-        */
-        VALUE ary[ROBJECT_EMBED_LEN_MAX];
-#endif
     } as;
 };
 
 /* Offsets for YJIT */
 #ifndef __cplusplus
-# if USE_RVARGC
-static const int32_t ROBJECT_OFFSET_NUMIV = offsetof(struct RObject, numiv);
-# else
-static const int32_t ROBJECT_OFFSET_NUMIV = offsetof(struct RObject, as.heap.numiv);
-# endif
 static const int32_t ROBJECT_OFFSET_AS_HEAP_IVPTR = offsetof(struct RObject, as.heap.ivptr);
 static const int32_t ROBJECT_OFFSET_AS_HEAP_IV_INDEX_TBL = offsetof(struct RObject, as.heap.iv_index_tbl);
 static const int32_t ROBJECT_OFFSET_AS_ARY = offsetof(struct RObject, as.ary);
 #endif
-
-RBIMPL_ATTR_PURE_UNLESS_DEBUG()
-RBIMPL_ATTR_ARTIFICIAL()
-/**
- * Queries the number of instance variables.
- *
- * @param[in]  obj  Object in question.
- * @return     Its number of instance variables.
- * @pre        `obj` must be an instance of ::RObject.
- */
-static inline uint32_t
-ROBJECT_NUMIV(VALUE obj)
-{
-    RBIMPL_ASSERT_TYPE(obj, RUBY_T_OBJECT);
-
-#if USE_RVARGC
-    return ROBJECT(obj)->numiv;
-#else
-    if (RB_FL_ANY_RAW(obj, ROBJECT_EMBED)) {
-        return ROBJECT_EMBED_LEN_MAX;
-    }
-    else {
-        return ROBJECT(obj)->as.heap.numiv;
-    }
-#endif
-}
 
 RBIMPL_ATTR_PURE_UNLESS_DEBUG()
 RBIMPL_ATTR_ARTIFICIAL()

@@ -1,13 +1,7 @@
 # frozen_string_literal: false
 #
 #   irb/init.rb - irb initialize module
-#   	$Release Version: 0.9.6$
-#   	$Revision$
 #   	by Keiju ISHITSUKA(keiju@ruby-lang.org)
-#
-# --
-#
-#
 #
 
 module IRB # :nodoc:
@@ -44,8 +38,8 @@ module IRB # :nodoc:
     @CONF[:IRB_RC] = nil
 
     @CONF[:USE_SINGLELINE] = false unless defined?(ReadlineInputMethod)
-    @CONF[:USE_COLORIZE] = !ENV['NO_COLOR']
-    @CONF[:USE_AUTOCOMPLETE] = true
+    @CONF[:USE_COLORIZE] = (nc = ENV['NO_COLOR']).nil? || nc.empty?
+    @CONF[:USE_AUTOCOMPLETE] = ENV.fetch("IRB_USE_AUTOCOMPLETE", "true") != "false"
     @CONF[:INSPECT_MODE] = true
     @CONF[:USE_TRACER] = false
     @CONF[:USE_LOADER] = false
@@ -158,6 +152,16 @@ module IRB # :nodoc:
     @CONF[:LC_MESSAGES] = Locale.new
 
     @CONF[:AT_EXIT] = []
+
+    @CONF[:COMMAND_ALIASES] = {
+      # Symbol aliases
+      :'$' => :show_source,
+      :'@' => :whereami,
+      # Keyword aliases
+      :break => :irb_break,
+      :catch => :irb_catch,
+      :next => :irb_next,
+    }
   end
 
   def IRB.set_measure_callback(type = nil, arg = nil, &block)
@@ -255,8 +259,20 @@ module IRB # :nodoc:
       when "--nosingleline", "--noreadline"
         @CONF[:USE_SINGLELINE] = false
       when "--multiline", "--reidline"
+        if opt == "--reidline"
+          warn <<~MSG.strip
+            --reidline is deprecated, please use --multiline instead.
+          MSG
+        end
+
         @CONF[:USE_MULTILINE] = true
       when "--nomultiline", "--noreidline"
+        if opt == "--noreidline"
+          warn <<~MSG.strip
+            --noreidline is deprecated, please use --nomultiline instead.
+          MSG
+        end
+
         @CONF[:USE_MULTILINE] = false
       when /^--extra-doc-dir(?:=(.+))?/
         opt = $1 || argv.shift
@@ -379,17 +395,15 @@ module IRB # :nodoc:
     end
     if xdg_config_home = ENV["XDG_CONFIG_HOME"]
       irb_home = File.join(xdg_config_home, "irb")
-      unless File.exist? irb_home
-        require 'fileutils'
-        FileUtils.mkdir_p irb_home
+      if File.directory?(irb_home)
+        yield proc{|rc| irb_home + "/irb#{rc}"}
       end
-      yield proc{|rc| irb_home + "/irb#{rc}"}
     end
     if home = ENV["HOME"]
       yield proc{|rc| home+"/.irb#{rc}"}
+      yield proc{|rc| home+"/.config/irb/irb#{rc}"}
     end
     current_dir = Dir.pwd
-    yield proc{|rc| current_dir+"/.config/irb/irb#{rc}"}
     yield proc{|rc| current_dir+"/.irb#{rc}"}
     yield proc{|rc| current_dir+"/irb#{rc.sub(/\A_?/, '.')}"}
     yield proc{|rc| current_dir+"/_irb#{rc}"}
@@ -407,8 +421,6 @@ module IRB # :nodoc:
     end
   end
 
-
-  DefaultEncodings = Struct.new(:external, :internal)
   class << IRB
     private
     def set_encoding(extern, intern = nil, override: true)

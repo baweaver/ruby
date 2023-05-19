@@ -1266,7 +1266,7 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
     begin;
       class Bug < RuntimeError
         def backtrace
-          IO.readlines(IO::NULL)
+          File.readlines(IO::NULL)
         end
       end
       bug = Bug.new '[ruby-core:85939] [Bug #14577]'
@@ -1412,6 +1412,18 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
     end;
   end
 
+  def test_marshal_circular_cause
+    begin
+      raise RuntimeError, "err", [], cause: Exception.new
+    rescue => e
+    end
+    dump = Marshal.dump(e).sub(/o:\x0EException\x08;.0;.0;.0/, "@\x05")
+    assert_raise_with_message(ArgumentError, /circular cause/, ->{dump.inspect}) do
+      e = Marshal.load(dump)
+      assert_same(e, e.cause)
+    end
+  end
+
   def test_super_in_method_missing
     assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
     begin;
@@ -1456,5 +1468,71 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
     end
     assert_match("BOO!", e.full_message.lines.first)
     assert_equal({ highlight: Exception.to_tty? }, opt_)
+  end
+
+  def test_full_message_with_encoding
+    message = "\u{dc}bersicht"
+    begin
+      begin
+        raise message
+      rescue => e
+        raise "\n#{e.message}"
+      end
+    rescue => e
+    end
+    assert_include(e.full_message, message)
+  end
+
+  def test_syntax_error_detailed_message
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "detail.rb"), "#{<<~"begin;"}\n#{<<~'end;'}")
+      begin;
+        class SyntaxError
+          def detailed_message(**)
+            Thread.new {}.join
+            "<#{super}>\n""<#{File.basename(__FILE__)}>"
+          rescue ThreadError => e
+            e.message
+          end
+        end
+      end;
+      pattern = /^<detail\.rb>/
+      assert_in_out_err(%W[-r#{dir}/detail -], "1+", [], pattern)
+
+      File.write(File.join(dir, "main.rb"), "#{<<~"begin;"}\n#{<<~'end;'}")
+      begin;
+        1 +
+      end;
+      assert_in_out_err(%W[-r#{dir}/detail #{dir}/main.rb]) do |stdout, stderr,|
+        assert_empty(stdout)
+        assert_not_empty(stderr.grep(pattern))
+        error, = stderr.grep(/unexpected end-of-input/)
+        assert_not_nil(error)
+        assert_match(/<.*unexpected end-of-input.*>/, error)
+      end
+    end
+  end
+
+  def test_syntax_error_path
+    e = assert_raise(SyntaxError) {
+      eval("1+", nil, "test_syntax_error_path.rb")
+    }
+    assert_equal("test_syntax_error_path.rb", e.path)
+
+    Dir.mktmpdir do |dir|
+      lib = File.join(dir, "syntax_error-path.rb")
+      File.write(lib, "#{<<~"begin;"}\n#{<<~'end;'}")
+      begin;
+        class SyntaxError
+          def detailed_message(**)
+            STDERR.puts "\n""path=#{path}\n"
+            super
+          end
+        end
+      end;
+      main = File.join(dir, "syntax_error.rb")
+      File.write(main, "1+\n")
+      assert_in_out_err(%W[-r#{lib} #{main}], "", [], [:*, "\n""path=#{main}\n", :*])
+    end
   end
 end

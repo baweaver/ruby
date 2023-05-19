@@ -3,14 +3,18 @@
 #![allow(unused_imports)]
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::fmt;
 use std::convert::From;
+use std::io::Write;
 use std::mem::take;
-use crate::cruby::{VALUE};
+use crate::codegen::{gen_outlined_exit, gen_counted_exit};
+use crate::cruby::{VALUE, SIZEOF_VALUE_I32};
 use crate::virtualmem::{CodePtr};
-use crate::asm::{CodeBlock, uimm_num_bits, imm_num_bits};
-use crate::core::{Context, Type, TempMapping};
+use crate::asm::{CodeBlock, uimm_num_bits, imm_num_bits, OutlinedCb};
+use crate::core::{Context, Type, TempMapping, RegTemps, MAX_REG_TEMPS, MAX_TEMP_TYPES};
 use crate::options::*;
+use crate::stats::*;
 
 #[cfg(target_arch = "x86_64")]
 use crate::backend::x86_64::*;
@@ -71,6 +75,20 @@ pub enum Opnd
     // Output of a preceding instruction in this block
     InsnOut{ idx: usize, num_bits: u8 },
 
+    /// Pointer to a slot on the VM stack
+    Stack {
+        /// Index from stack top. Used for conversion to StackOpnd.
+        idx: i32,
+        /// Number of bits for Opnd::Reg and Opnd::Mem.
+        num_bits: u8,
+        /// ctx.stack_size when this operand is made. Used with idx for Opnd::Reg.
+        stack_size: u8,
+        /// ctx.sp_offset when this operand is made. Used with idx for Opnd::Mem.
+        sp_offset: i8,
+        /// ctx.reg_temps when this operand is read. Used for register allocation.
+        reg_temps: Option<RegTemps>
+    },
+
     // Low-level operands, for lowering
     Imm(i64),           // Raw signed immediate
     UImm(u64),          // Raw unsigned immediate
@@ -84,6 +102,7 @@ impl fmt::Debug for Opnd {
         match self {
             Self::None => write!(fmt, "None"),
             Value(val) => write!(fmt, "Value({val:?})"),
+            Stack { idx, sp_offset, .. } => write!(fmt, "SP[{}]", *sp_offset as i32 - idx - 1),
             InsnOut { idx, num_bits } => write!(fmt, "Out{num_bits}({idx})"),
             Imm(signed) => write!(fmt, "{signed:x}_i64"),
             UImm(unsigned) => write!(fmt, "{unsigned:x}_u64"),
@@ -108,8 +127,8 @@ impl Opnd
                 })
             },
 
-            Opnd::InsnOut{idx, num_bits } => {
-                assert!(num_bits == 64);
+            Opnd::InsnOut{idx, num_bits: out_num_bits } => {
+                assert!(num_bits <= out_num_bits);
                 Opnd::Mem(Mem {
                     base: MemBase::InsnOut(idx),
                     disp: disp,
@@ -142,7 +161,7 @@ impl Opnd
     }
 
     /// Get the size in bits for this operand if there is one.
-    fn num_bits(&self) -> Option<u8> {
+    pub fn num_bits(&self) -> Option<u8> {
         match *self {
             Opnd::Reg(Reg { num_bits, .. }) => Some(num_bits),
             Opnd::Mem(Mem { num_bits, .. }) => Some(num_bits),
@@ -157,6 +176,7 @@ impl Opnd
             Opnd::Reg(reg) => Some(Opnd::Reg(reg.with_num_bits(num_bits))),
             Opnd::Mem(Mem { base, disp, .. }) => Some(Opnd::Mem(Mem { base, disp, num_bits })),
             Opnd::InsnOut { idx, .. } => Some(Opnd::InsnOut { idx, num_bits }),
+            Opnd::Stack { idx, stack_size, sp_offset, reg_temps, .. } => Some(Opnd::Stack { idx, num_bits, stack_size, sp_offset, reg_temps }),
             _ => None,
         }
     }
@@ -210,6 +230,26 @@ impl Opnd
     pub fn match_num_bits(opnds: &[Opnd]) -> u8 {
         Self::match_num_bits_iter(opnds.iter())
     }
+
+    /// Calculate Opnd::Stack's index from the stack bottom.
+    pub fn stack_idx(&self) -> u8 {
+        match self {
+            Opnd::Stack { idx, stack_size, .. } => {
+                (*stack_size as isize - *idx as isize - 1) as u8
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    /// Get the index for stack temp registers.
+    pub fn reg_idx(&self) -> usize {
+        match self {
+            Opnd::Stack { .. } => {
+                self.stack_idx() as usize % get_option!(num_temp_regs)
+            },
+            _ => unreachable!(),
+        }
+    }
 }
 
 impl From<usize> for Opnd {
@@ -253,18 +293,20 @@ impl From<VALUE> for Opnd {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Target
 {
-    CodePtr(CodePtr),   // Pointer to a piece of YJIT-generated code (e.g. side-exit)
-    FunPtr(*const u8),  // Pointer to a C function
-    Label(usize),       // A label within the generated code
+    /// Pointer to a piece of YJIT-generated code
+    CodePtr(CodePtr),
+    /// Side exit with a counter
+    SideExit { counter: Counter, context: Option<SideExitContext> },
+    /// Pointer to a side exit code
+    SideExitPtr(CodePtr),
+    /// A label within the generated code
+    Label(usize),
 }
 
 impl Target
 {
-    pub fn unwrap_fun_ptr(&self) -> *const u8 {
-        match self {
-            Target::FunPtr(ptr) => *ptr,
-            _ => unreachable!("trying to unwrap {:?} into fun ptr", self)
-        }
+    pub fn side_exit(counter: Counter) -> Target {
+        Target::SideExit { counter, context: None }
     }
 
     pub fn unwrap_label_idx(&self) -> usize {
@@ -277,6 +319,7 @@ impl Target
     pub fn unwrap_code_ptr(&self) -> CodePtr {
         match self {
             Target::CodePtr(ptr) => *ptr,
+            Target::SideExitPtr(ptr) => *ptr,
             _ => unreachable!("trying to unwrap {:?} into code ptr", self)
         }
     }
@@ -328,7 +371,7 @@ pub enum Insn {
     CPushAll,
 
     // C function call with N arguments (variadic)
-    CCall { opnds: Vec<Opnd>, target: Target, out: Opnd },
+    CCall { opnds: Vec<Opnd>, fptr: *const u8, out: Opnd },
 
     // C function return
     CRet(Opnd),
@@ -433,9 +476,9 @@ pub enum Insn {
     // binary OR operation.
     Or { left: Opnd, right: Opnd, out: Opnd },
 
-    /// Pad nop instructions to accomodate Op::Jmp in case the block is
-    /// invalidated.
-    PadEntryExit,
+    /// Pad nop instructions to accommodate Op::Jmp in case the block or the insn
+    /// is invalidated.
+    PadInvalPatch,
 
     // Mark a position in the generated code
     PosMarker(PosMarkerFn),
@@ -471,6 +514,25 @@ impl Insn {
     /// in turn for this instruction.
     pub(super) fn opnd_iter_mut(&mut self) -> InsnOpndMutIterator {
         InsnOpndMutIterator::new(self)
+    }
+
+    /// Get a mutable reference to a Target if it exists.
+    pub(super) fn target_mut(&mut self) -> Option<&mut Target> {
+        match self {
+            Insn::Jbe(target) |
+            Insn::Je(target) |
+            Insn::Jl(target) |
+            Insn::Jmp(target) |
+            Insn::Jne(target) |
+            Insn::Jnz(target) |
+            Insn::Jo(target) |
+            Insn::Jz(target) |
+            Insn::Label(target) |
+            Insn::LeaLabel { target, .. } => {
+                Some(target)
+            }
+            _ => None,
+        }
     }
 
     /// Returns a string that describes which operation this instruction is
@@ -521,7 +583,7 @@ impl Insn {
             Insn::Mov { .. } => "Mov",
             Insn::Not { .. } => "Not",
             Insn::Or { .. } => "Or",
-            Insn::PadEntryExit => "PadEntryExit",
+            Insn::PadInvalPatch => "PadEntryExit",
             Insn::PosMarker(_) => "PosMarker",
             Insn::RShift { .. } => "RShift",
             Insn::Store { .. } => "Store",
@@ -658,7 +720,7 @@ impl<'a> Iterator for InsnOpndIterator<'a> {
             Insn::Jz(_) |
             Insn::Label(_) |
             Insn::LeaLabel { .. } |
-            Insn::PadEntryExit |
+            Insn::PadInvalPatch |
             Insn::PosMarker(_) => None,
             Insn::CPopInto(opnd) |
             Insn::CPush(opnd) |
@@ -755,7 +817,7 @@ impl<'a> InsnOpndMutIterator<'a> {
             Insn::Jz(_) |
             Insn::Label(_) |
             Insn::LeaLabel { .. } |
-            Insn::PadEntryExit |
+            Insn::PadInvalPatch |
             Insn::PosMarker(_) => None,
             Insn::CPopInto(opnd) |
             Insn::CPush(opnd) |
@@ -847,10 +909,19 @@ impl fmt::Debug for Insn {
     }
 }
 
+/// Set of variables used for generating side exits
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SideExitContext {
+    /// PC of the instruction being compiled
+    pub pc: *mut VALUE,
+
+    /// Context when it started to compile the instruction
+    pub ctx: Context,
+}
+
 /// Object into which we assemble instructions to be
 /// optimized and lowered
-pub struct Assembler
-{
+pub struct Assembler {
     pub(super) insns: Vec<Insn>,
 
     /// Parallel vec with insns
@@ -859,20 +930,49 @@ pub struct Assembler
 
     /// Names of labels
     pub(super) label_names: Vec<String>,
+
+    /// Context for generating the current insn
+    pub ctx: Context,
+
+    /// Side exit caches for each SideExitContext
+    pub(super) side_exits: HashMap<SideExitContext, CodePtr>,
+
+    /// PC for Target::SideExit
+    side_exit_pc: Option<*mut VALUE>,
+
+    /// Stack size for Target::SideExit
+    side_exit_stack_size: Option<u8>,
 }
 
 impl Assembler
 {
     pub fn new() -> Self {
-        Self::new_with_label_names(Vec::default())
+        Self::new_with_label_names(Vec::default(), HashMap::default())
     }
 
-    pub fn new_with_label_names(label_names: Vec<String>) -> Self {
+    pub fn new_with_label_names(label_names: Vec<String>, side_exits: HashMap<SideExitContext, CodePtr>) -> Self {
         Self {
             insns: Vec::default(),
             live_ranges: Vec::default(),
-            label_names
+            label_names,
+            ctx: Context::default(),
+            side_exits,
+            side_exit_pc: None,
+            side_exit_stack_size: None,
         }
+    }
+
+    /// Get the list of registers that can be used for stack temps.
+    pub fn get_temp_regs() -> Vec<Reg> {
+        let num_regs = get_option!(num_temp_regs);
+        let mut regs = Self::TEMP_REGS.to_vec();
+        regs.drain(0..num_regs).collect()
+    }
+
+    /// Set a context for generating side exits
+    pub fn set_side_exit_context(&mut self, pc: *mut VALUE, stack_size: u8) {
+        self.side_exit_pc = Some(pc);
+        self.side_exit_stack_size = Some(stack_size);
     }
 
     /// Build an Opnd::InsnOut from the current index of the assembler and the
@@ -888,11 +988,12 @@ impl Assembler
         // Index of this instruction
         let insn_idx = self.insns.len();
 
-        // If we find any InsnOut from previous instructions, we're going to
-        // update the live range of the previous instruction to point to this
-        // one.
-        for opnd in insn.opnd_iter() {
+        let mut insn = insn;
+        let mut opnd_iter = insn.opnd_iter_mut();
+        while let Some(opnd) = opnd_iter.next() {
             match opnd {
+                // If we find any InsnOut from previous instructions, we're going to update
+                // the live range of the previous instruction to point to this one.
                 Opnd::InsnOut { idx, .. } => {
                     assert!(*idx < self.insns.len());
                     self.live_ranges[*idx] = insn_idx;
@@ -901,12 +1002,54 @@ impl Assembler
                     assert!(*idx < self.insns.len());
                     self.live_ranges[*idx] = insn_idx;
                 }
+                // Set current ctx.reg_temps to Opnd::Stack.
+                Opnd::Stack { idx, num_bits, stack_size, sp_offset, reg_temps: None } => {
+                    *opnd = Opnd::Stack {
+                        idx: *idx,
+                        num_bits: *num_bits,
+                        stack_size: *stack_size,
+                        sp_offset: *sp_offset,
+                        reg_temps: Some(self.ctx.get_reg_temps()),
+                    };
+                }
                 _ => {}
+            }
+        }
+
+        // Set a side exit context to Target::SideExit
+        let mut insn = insn;
+        if let Some(Target::SideExit { context, .. }) = insn.target_mut() {
+            // We should skip this when this instruction is being copied from another Assembler.
+            if context.is_none() {
+                *context = Some(SideExitContext {
+                    pc: self.side_exit_pc.unwrap(),
+                    ctx: self.ctx.with_stack_size(self.side_exit_stack_size.unwrap()),
+                });
             }
         }
 
         self.insns.push(insn);
         self.live_ranges.push(insn_idx);
+    }
+
+    /// Get a cached side exit, wrapping a counter if specified
+    pub fn get_side_exit(&mut self, side_exit_context: &SideExitContext, counter: Option<Counter>, ocb: &mut OutlinedCb) -> CodePtr {
+        // Drop type information from a cache key
+        let mut side_exit_context = side_exit_context.clone();
+        side_exit_context.ctx = side_exit_context.ctx.get_generic_ctx();
+
+        // Get a cached side exit
+        let side_exit = match self.side_exits.get(&side_exit_context) {
+            None => {
+                let exit_code = gen_outlined_exit(side_exit_context.pc, &side_exit_context.ctx, ocb);
+                self.side_exits.insert(side_exit_context.clone(), exit_code);
+                exit_code
+            }
+            Some(code_ptr) => *code_ptr,
+        };
+
+        // Wrap a counter if needed
+        gen_counted_exit(side_exit, ocb, counter)
     }
 
     /// Create a new label instance that we can jump to
@@ -917,6 +1060,123 @@ impl Assembler
         let label_idx = self.label_names.len();
         self.label_names.push(name.to_string());
         Target::Label(label_idx)
+    }
+
+    /// Convert Opnd::Stack to Opnd::Mem or Opnd::Reg
+    pub fn lower_stack_opnd(&self, opnd: &Opnd) -> Opnd {
+        // Convert Opnd::Stack to Opnd::Mem
+        fn mem_opnd(opnd: &Opnd) -> Opnd {
+            if let Opnd::Stack { idx, sp_offset, num_bits, .. } = *opnd {
+                incr_counter!(temp_mem_opnd);
+                Opnd::mem(num_bits, SP, (sp_offset as i32 - idx - 1) * SIZEOF_VALUE_I32)
+            } else {
+                unreachable!()
+            }
+        }
+
+        // Convert Opnd::Stack to Opnd::Reg
+        fn reg_opnd(opnd: &Opnd) -> Opnd {
+            let regs = Assembler::get_temp_regs();
+            if let Opnd::Stack { num_bits, .. } = *opnd {
+                incr_counter!(temp_reg_opnd);
+                Opnd::Reg(regs[opnd.reg_idx()]).with_num_bits(num_bits).unwrap()
+            } else {
+                unreachable!()
+            }
+        }
+
+        match opnd {
+            Opnd::Stack { idx, num_bits, stack_size, sp_offset, reg_temps } => {
+                if opnd.stack_idx() < MAX_REG_TEMPS && reg_temps.unwrap().get(opnd.stack_idx()) {
+                    reg_opnd(opnd)
+                } else {
+                    mem_opnd(opnd)
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Allocate a register to a stack temp if available.
+    pub fn alloc_temp_reg(&mut self, stack_idx: u8) {
+        if get_option!(num_temp_regs) == 0 {
+            return;
+        }
+
+        // Allocate a register if there's no conflict.
+        let mut reg_temps = self.ctx.get_reg_temps();
+        if reg_temps.conflicts_with(stack_idx) {
+            assert!(!reg_temps.get(stack_idx));
+        } else {
+            reg_temps.set(stack_idx, true);
+            self.set_reg_temps(reg_temps);
+        }
+    }
+
+    /// Spill all live stack temps from registers to the stack
+    pub fn spill_temps(&mut self) {
+        // Forget registers above the stack top
+        let mut reg_temps = self.ctx.get_reg_temps();
+        for stack_idx in self.ctx.get_stack_size()..MAX_REG_TEMPS {
+            reg_temps.set(stack_idx, false);
+        }
+        self.set_reg_temps(reg_temps);
+
+        // Spill live stack temps
+        if self.ctx.get_reg_temps() != RegTemps::default() {
+            self.comment(&format!("spill_temps: {:08b} -> {:08b}", self.ctx.get_reg_temps().as_u8(), RegTemps::default().as_u8()));
+            for stack_idx in 0..u8::min(MAX_REG_TEMPS, self.ctx.get_stack_size()) {
+                if self.ctx.get_reg_temps().get(stack_idx) {
+                    let idx = self.ctx.get_stack_size() - 1 - stack_idx;
+                    self.spill_temp(self.stack_opnd(idx.into()));
+                    reg_temps.set(stack_idx, false);
+                }
+            }
+            self.ctx.set_reg_temps(reg_temps);
+        }
+
+        // Every stack temp should have been spilled
+        assert_eq!(self.ctx.get_reg_temps(), RegTemps::default());
+    }
+
+    /// Spill a stack temp from a register to the stack
+    fn spill_temp(&mut self, opnd: Opnd) {
+        assert!(self.ctx.get_reg_temps().get(opnd.stack_idx()));
+
+        // Use different RegTemps for dest and src operands
+        let reg_temps = self.ctx.get_reg_temps();
+        let mut mem_temps = reg_temps;
+        mem_temps.set(opnd.stack_idx(), false);
+
+        // Move the stack operand from a register to memory
+        match opnd {
+            Opnd::Stack { idx, num_bits, stack_size, sp_offset, .. } => {
+                self.mov(
+                    Opnd::Stack { idx, num_bits, stack_size, sp_offset, reg_temps: Some(mem_temps) },
+                    Opnd::Stack { idx, num_bits, stack_size, sp_offset, reg_temps: Some(reg_temps) },
+                );
+            }
+            _ => unreachable!(),
+        }
+        incr_counter!(temp_spill);
+    }
+
+    /// Update which stack temps are in a register
+    pub fn set_reg_temps(&mut self, reg_temps: RegTemps) {
+        if self.ctx.get_reg_temps() != reg_temps {
+            self.comment(&format!("reg_temps: {:08b} -> {:08b}", self.ctx.get_reg_temps().as_u8(), reg_temps.as_u8()));
+            self.ctx.set_reg_temps(reg_temps);
+            self.verify_reg_temps();
+        }
+    }
+
+    /// Assert there's no conflict in stack temp register allocation
+    fn verify_reg_temps(&self) {
+        for stack_idx in 0..MAX_REG_TEMPS {
+            if self.ctx.get_reg_temps().get(stack_idx) {
+                assert!(!self.ctx.get_reg_temps().conflicts_with(stack_idx));
+            }
+        }
     }
 
     /// Sets the out field on the various instructions that require allocated
@@ -931,15 +1191,14 @@ impl Assembler
 
         // Mutate the pool bitmap to indicate that the register at that index
         // has been allocated and is live.
-        fn alloc_reg(pool: &mut u32, regs: &Vec<Reg>) -> Reg {
+        fn alloc_reg(pool: &mut u32, regs: &Vec<Reg>) -> Option<Reg> {
             for (index, reg) in regs.iter().enumerate() {
                 if (*pool & (1 << index)) == 0 {
                     *pool |= 1 << index;
-                    return *reg;
+                    return Some(*reg);
                 }
             }
-
-            unreachable!("Register spill not supported");
+            None
         }
 
         // Allocate a specific register
@@ -965,8 +1224,31 @@ impl Assembler
             }
         }
 
+        // Dump live registers for register spill debugging.
+        fn dump_live_regs(insns: Vec<Insn>, live_ranges: Vec<usize>, num_regs: usize, spill_index: usize) {
+            // Convert live_ranges to live_regs: the number of live registers at each index
+            let mut live_regs: Vec<usize> = vec![];
+            let mut end_idxs: Vec<usize> = vec![];
+            for (cur_idx, &end_idx) in live_ranges.iter().enumerate() {
+                end_idxs.push(end_idx);
+                while let Some(end_idx) = end_idxs.iter().position(|&end_idx| cur_idx == end_idx) {
+                    end_idxs.remove(end_idx);
+                }
+                live_regs.push(end_idxs.len());
+            }
+
+            // Dump insns along with live registers
+            for (insn_idx, insn) in insns.iter().enumerate() {
+                eprint!("{:3} ", if spill_index == insn_idx { "==>" } else { "" });
+                for reg in 0..=num_regs {
+                    eprint!("{:1}", if reg < live_regs[insn_idx] { "|" } else { "" });
+                }
+                eprintln!(" [{:3}] {:?}", insn_idx, insn);
+            }
+        }
+
         let live_ranges: Vec<usize> = take(&mut self.live_ranges);
-        let mut asm = Assembler::new_with_label_names(take(&mut self.label_names));
+        let mut asm = Assembler::new_with_label_names(take(&mut self.label_names), take(&mut self.side_exits));
         let mut iterator = self.into_draining_iter();
 
         while let Some((index, mut insn)) = iterator.next_unmapped() {
@@ -1049,8 +1331,17 @@ impl Assembler
                             let reg = opnd.unwrap_reg();
                             Some(take_reg(&mut pool, &regs, &reg))
                         },
-                        _ => {
-                            Some(alloc_reg(&mut pool, &regs))
+                        _ => match alloc_reg(&mut pool, &regs) {
+                            Some(reg) => Some(reg),
+                            None => {
+                                let mut insns = asm.insns;
+                                insns.push(insn);
+                                for insn in iterator.insns {
+                                    insns.push(insn);
+                                }
+                                dump_live_regs(insns, live_ranges, regs.len(), index);
+                                unreachable!("Register spill not supported");
+                            }
                         }
                     };
                 }
@@ -1090,22 +1381,19 @@ impl Assembler
     /// Compile the instructions down to machine code
     /// NOTE: should compile return a list of block labels to enable
     ///       compiling multiple blocks at a time?
-    pub fn compile(self, cb: &mut CodeBlock) -> Vec<u32>
+    pub fn compile(self, cb: &mut CodeBlock, ocb: Option<&mut OutlinedCb>) -> Vec<u32>
     {
         #[cfg(feature = "disasm")]
-        let start_addr = cb.get_write_ptr().raw_ptr();
+        let start_addr = cb.get_write_ptr();
 
         let alloc_regs = Self::get_alloc_regs();
-        let gc_offsets = self.compile_with_regs(cb, alloc_regs);
+        let gc_offsets = self.compile_with_regs(cb, ocb, alloc_regs);
 
         #[cfg(feature = "disasm")]
-        if get_option!(dump_disasm) == DumpDisasm::All || (get_option!(dump_disasm) == DumpDisasm::Inline && cb.inline()) {
-            use crate::disasm::disasm_addr_range;
-            let last_ptr = cb.get_write_ptr();
-            let disasm = disasm_addr_range(cb, start_addr, last_ptr.raw_ptr() as usize - start_addr as usize);
-            if disasm.len() > 0 {
-                println!("{disasm}");
-            }
+        if let Some(dump_disasm) = get_option_ref!(dump_disasm) {
+            use crate::disasm::dump_disasm_addr_range;
+            let end_addr = cb.get_write_ptr();
+            dump_disasm_addr_range(cb, start_addr, end_addr, dump_disasm)
         }
         gc_offsets
     }
@@ -1115,7 +1403,7 @@ impl Assembler
     {
         let mut alloc_regs = Self::get_alloc_regs();
         let alloc_regs = alloc_regs.drain(0..num_regs).collect();
-        self.compile_with_regs(cb, alloc_regs)
+        self.compile_with_regs(cb, None, alloc_regs)
     }
 
     /// Consume the assembler by creating a new draining iterator.
@@ -1132,7 +1420,7 @@ impl Assembler
 /// A struct that allows iterating through an assembler's instructions and
 /// consuming them as it iterates.
 pub struct AssemblerDrainingIterator {
-    insns: std::vec::IntoIter<Insn>,
+    insns: std::iter::Peekable<std::vec::IntoIter<Insn>>,
     index: usize,
     indices: Vec<usize>
 }
@@ -1140,7 +1428,7 @@ pub struct AssemblerDrainingIterator {
 impl AssemblerDrainingIterator {
     fn new(asm: Assembler) -> Self {
         Self {
-            insns: asm.insns.into_iter(),
+            insns: asm.insns.into_iter().peekable(),
             index: 0,
             indices: Vec::default()
         }
@@ -1181,6 +1469,11 @@ impl AssemblerDrainingIterator {
         let index = self.index;
         self.index += 1;
         self.insns.next().map(|insn| (index, insn))
+    }
+
+    /// Returns the next instruction without incrementing the iterator's index.
+    pub fn peek(&mut self) -> Option<&Insn> {
+        self.insns.peek()
     }
 }
 
@@ -1266,8 +1559,9 @@ impl Assembler {
     }
 
     pub fn ccall(&mut self, fptr: *const u8, opnds: Vec<Opnd>) -> Opnd {
+        assert_eq!(self.ctx.get_reg_temps(), RegTemps::default(), "temps must be spilled before ccall");
         let out = self.next_opnd_out(Opnd::match_num_bits(&opnds));
-        self.push_insn(Insn::CCall { target: Target::FunPtr(fptr), opnds, out });
+        self.push_insn(Insn::CCall { fptr, opnds, out });
         out
     }
 
@@ -1288,6 +1582,10 @@ impl Assembler {
 
     pub fn cpop_all(&mut self) {
         self.push_insn(Insn::CPopAll);
+
+        // Re-enable ccall's RegTemps assertion disabled by cpush_all.
+        // cpush_all + cpop_all preserve all stack temp registers, so it's safe.
+        self.set_reg_temps(self.ctx.get_reg_temps());
     }
 
     pub fn cpop_into(&mut self, opnd: Opnd) {
@@ -1300,6 +1598,12 @@ impl Assembler {
 
     pub fn cpush_all(&mut self) {
         self.push_insn(Insn::CPushAll);
+
+        // Mark all temps as not being in registers.
+        // Temps will be marked back as being in registers by cpop_all.
+        // We assume that cpush_all + cpop_all are used for C functions in utils.rs
+        // that don't require spill_temps for GC.
+        self.set_reg_temps(RegTemps::default());
     }
 
     pub fn cret(&mut self, opnd: Opnd) {
@@ -1439,7 +1743,10 @@ impl Assembler {
     }
 
     pub fn load_into(&mut self, dest: Opnd, opnd: Opnd) {
-        self.push_insn(Insn::LoadInto { dest, opnd });
+        match (dest, opnd) {
+            (Opnd::Reg(dest), Opnd::Reg(opnd)) if dest == opnd => {}, // skip if noop
+            _ => self.push_insn(Insn::LoadInto { dest, opnd }),
+        }
     }
 
     #[must_use]
@@ -1474,8 +1781,8 @@ impl Assembler {
         out
     }
 
-    pub fn pad_entry_exit(&mut self) {
-        self.push_insn(Insn::PadEntryExit);
+    pub fn pad_inval_patch(&mut self) {
+        self.push_insn(Insn::PadInvalPatch);
     }
 
     //pub fn pos_marker<F: FnMut(CodePtr)>(&mut self, marker_fn: F)

@@ -23,10 +23,11 @@
 
 #include "eval_intern.h"
 #include "internal.h"
+#include "internal/class.h"
 #include "internal/hash.h"
 #include "internal/symbol.h"
 #include "iseq.h"
-#include "mjit.h"
+#include "rjit.h"
 #include "ruby/debug.h"
 #include "vm_core.h"
 #include "ruby/ractor.h"
@@ -66,6 +67,17 @@ rb_hook_list_mark(rb_hook_list_t *hooks)
     }
 }
 
+void
+rb_hook_list_mark_and_update(rb_hook_list_t *hooks)
+{
+    rb_event_hook_t *hook = hooks->hooks;
+
+    while (hook) {
+        rb_gc_mark_and_move(&hook->data);
+        hook = hook->next;
+    }
+}
+
 static void clean_hooks(const rb_execution_context_t *ec, rb_hook_list_t *list);
 
 void
@@ -81,41 +93,46 @@ rb_hook_list_free(rb_hook_list_t *hooks)
 /* ruby_vm_event_flags management */
 
 void rb_clear_attr_ccs(void);
+void rb_clear_bf_ccs(void);
 
 static void
 update_global_event_hook(rb_event_flag_t prev_events, rb_event_flag_t new_events)
 {
     rb_event_flag_t new_iseq_events = new_events & ISEQ_TRACE_EVENTS;
     rb_event_flag_t enabled_iseq_events = ruby_vm_event_enabled_global_flags & ISEQ_TRACE_EVENTS;
+    bool first_time_iseq_events_p = new_iseq_events & ~enabled_iseq_events;
+    bool enable_c_call   = (prev_events & RUBY_EVENT_C_CALL)   == 0 && (new_events & RUBY_EVENT_C_CALL);
+    bool enable_c_return = (prev_events & RUBY_EVENT_C_RETURN) == 0 && (new_events & RUBY_EVENT_C_RETURN);
+    bool enable_call     = (prev_events & RUBY_EVENT_CALL)     == 0 && (new_events & RUBY_EVENT_CALL);
+    bool enable_return   = (prev_events & RUBY_EVENT_RETURN)   == 0 && (new_events & RUBY_EVENT_RETURN);
 
-    if (new_iseq_events & ~enabled_iseq_events) {
-        // :class events are triggered only in ISEQ_TYPE_CLASS, but mjit_target_iseq_p ignores such iseqs.
-        // Thus we don't need to cancel JIT-ed code for :class events.
-        if (new_iseq_events != RUBY_EVENT_CLASS) {
-            // Stop calling all JIT-ed code. We can't rewrite existing JIT-ed code to trace_ insns for now.
-            mjit_cancel_all("TracePoint is enabled");
-        }
-
-        /* write all ISeqs if and only if new events are added */
+    // Modify ISEQs or CCs to enable tracing
+    if (first_time_iseq_events_p) {
+        // write all ISeqs only when new events are added for the first time
         rb_iseq_trace_set_all(new_iseq_events | enabled_iseq_events);
     }
-    else {
-        // if c_call or c_return is activated:
-        if (((prev_events & RUBY_EVENT_C_CALL)   == 0 && (new_events & RUBY_EVENT_C_CALL)) ||
-            ((prev_events & RUBY_EVENT_C_RETURN) == 0 && (new_events & RUBY_EVENT_C_RETURN))) {
-            rb_clear_attr_ccs();
-        }
+    // if c_call or c_return is activated
+    else if (enable_c_call || enable_c_return) {
+        rb_clear_attr_ccs();
+    }
+    else if (enable_call || enable_return) {
+        rb_clear_bf_ccs();
     }
 
     ruby_vm_event_flags = new_events;
     ruby_vm_event_enabled_global_flags |= new_events;
     rb_objspace_set_event_hook(new_events);
 
-    if (new_events & RUBY_EVENT_TRACEPOINT_ALL) {
-        // Invalidate all code if listening for any TracePoint event.
+    // Invalidate JIT code as needed
+    if (first_time_iseq_events_p || enable_c_call || enable_c_return) {
+        // Invalidate all code when ISEQs are modified to use trace_* insns above.
+        // Also invalidate when enabling c_call or c_return because generated code
+        // never fires these events.
         // Internal events fire inside C routines so don't need special handling.
-        // Do this last so other ractors see updated vm events when they wake up.
+        // Do this after event flags updates so other ractors see updated vm events
+        // when they wake up.
         rb_yjit_tracing_invalidate_all();
+        rb_rjit_tracing_invalidate_all(new_iseq_events);
     }
 }
 
@@ -258,7 +275,7 @@ remove_event_hook(const rb_execution_context_t *ec, const rb_thread_t *filter_th
     while (hook) {
         if (func == 0 || hook->func == func) {
             if (hook->filter.th == filter_th || filter_th == MATCH_ANY_FILTER_TH) {
-                if (data == Qundef || hook->data == data) {
+                if (UNDEF_P(data) || hook->data == data) {
                     hook->hook_flags |= RUBY_EVENT_HOOK_FLAG_DELETED;
                     ret+=1;
                     list->need_clean = true;
@@ -391,7 +408,7 @@ exec_hooks_protected(rb_execution_context_t *ec, rb_hook_list_t *list, const rb_
 }
 
 // pop_p: Whether to pop the frame for the TracePoint when it throws.
-MJIT_FUNC_EXPORTED void
+void
 rb_exec_event_hooks(rb_trace_arg_t *trace_arg, rb_hook_list_t *hooks, int pop_p)
 {
     rb_execution_context_t *ec = trace_arg->ec;
@@ -714,7 +731,7 @@ call_trace_func(rb_event_flag_t event, VALUE proc, VALUE self, ID id, VALUE klas
             klass = RBASIC(klass)->klass;
         }
         else if (FL_TEST(klass, FL_SINGLETON)) {
-            klass = rb_ivar_get(klass, id__attached__);
+            klass = RCLASS_ATTACHED_OBJECT(klass);
         }
     }
 
@@ -853,7 +870,7 @@ rb_tracearg_event(rb_trace_arg_t *trace_arg)
 static void
 fill_path_and_lineno(rb_trace_arg_t *trace_arg)
 {
-    if (trace_arg->path == Qundef) {
+    if (UNDEF_P(trace_arg->path)) {
         get_path_and_lineno(trace_arg->ec, trace_arg->cfp, trace_arg->event, &trace_arg->path, &trace_arg->lineno);
     }
 }
@@ -916,7 +933,7 @@ rb_tracearg_parameters(rb_trace_arg_t *trace_arg)
         if (trace_arg->klass && trace_arg->id) {
             const rb_method_entry_t *me;
             VALUE iclass = Qnil;
-            me = rb_method_entry_without_refinements(trace_arg->klass, trace_arg->id, &iclass);
+            me = rb_method_entry_without_refinements(trace_arg->klass, trace_arg->called_id, &iclass);
             return rb_unnamed_parameters(rb_method_entry_arity(me));
         }
         break;
@@ -957,6 +974,11 @@ VALUE
 rb_tracearg_binding(rb_trace_arg_t *trace_arg)
 {
     rb_control_frame_t *cfp;
+    switch (trace_arg->event) {
+      case RUBY_EVENT_C_CALL:
+      case RUBY_EVENT_C_RETURN:
+        return Qnil;
+    }
     cfp = rb_vm_get_binding_creatable_next_cfp(trace_arg->ec, trace_arg->cfp);
 
     if (cfp && imemo_type_p((VALUE)cfp->iseq, imemo_iseq)) {
@@ -982,7 +1004,7 @@ rb_tracearg_return_value(rb_trace_arg_t *trace_arg)
     else {
         rb_raise(rb_eRuntimeError, "not supported by this event");
     }
-    if (trace_arg->data == Qundef) {
+    if (UNDEF_P(trace_arg->data)) {
         rb_bug("rb_tracearg_return_value: unreachable");
     }
     return trace_arg->data;
@@ -997,7 +1019,7 @@ rb_tracearg_raised_exception(rb_trace_arg_t *trace_arg)
     else {
         rb_raise(rb_eRuntimeError, "not supported by this event");
     }
-    if (trace_arg->data == Qundef) {
+    if (UNDEF_P(trace_arg->data)) {
         rb_bug("rb_tracearg_raised_exception: unreachable");
     }
     return trace_arg->data;
@@ -1014,7 +1036,7 @@ rb_tracearg_eval_script(rb_trace_arg_t *trace_arg)
     else {
         rb_raise(rb_eRuntimeError, "not supported by this event");
     }
-    if (data == Qundef) {
+    if (UNDEF_P(data)) {
         rb_bug("rb_tracearg_raised_exception: unreachable");
     }
     if (rb_obj_is_iseq(data)) {
@@ -1038,7 +1060,7 @@ rb_tracearg_instruction_sequence(rb_trace_arg_t *trace_arg)
     else {
         rb_raise(rb_eRuntimeError, "not supported by this event");
     }
-    if (data == Qundef) {
+    if (UNDEF_P(data)) {
         rb_bug("rb_tracearg_raised_exception: unreachable");
     }
 
@@ -1063,7 +1085,7 @@ rb_tracearg_object(rb_trace_arg_t *trace_arg)
     else {
         rb_raise(rb_eRuntimeError, "not supported by this event");
     }
-    if (trace_arg->data == Qundef) {
+    if (UNDEF_P(trace_arg->data)) {
         rb_bug("rb_tracearg_object: unreachable");
     }
     return trace_arg->data;
@@ -1242,12 +1264,17 @@ rb_tracepoint_enable_for_target(VALUE tpval, VALUE target, VALUE target_line)
     n += rb_iseq_add_local_tracepoint_recursively(iseq, tp->events, tpval, line, target_bmethod);
     rb_hash_aset(tp->local_target_set, (VALUE)iseq, Qtrue);
 
+    if ((tp->events & (RUBY_EVENT_CALL | RUBY_EVENT_RETURN)) &&
+        iseq->body->builtin_attrs & BUILTIN_ATTR_SINGLE_NOARG_INLINE) {
+        rb_clear_bf_ccs();
+    }
 
     if (n == 0) {
         rb_raise(rb_eArgError, "can not enable any hooks");
     }
 
     rb_yjit_tracing_invalidate_all();
+    rb_rjit_tracing_invalidate_all(tp->events);
 
     ruby_vm_event_local_num++;
 

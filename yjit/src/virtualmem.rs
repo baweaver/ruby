@@ -3,7 +3,9 @@
 // usize->pointer casts is viable. It seems like a lot of work for us to participate for not much
 // benefit.
 
-use crate::utils::IntoUsize;
+use std::ptr::NonNull;
+
+use crate::{utils::IntoUsize, backend::ir::Target};
 
 #[cfg(not(test))]
 pub type VirtualMem = VirtualMemory<sys::SystemAllocator>;
@@ -22,7 +24,7 @@ pub type VirtualMem = VirtualMemory<tests::TestingAllocator>;
 /// the code in the region executable.
 pub struct VirtualMemory<A: Allocator> {
     /// Location of the virtual memory region.
-    region_start: *mut u8,
+    region_start: NonNull<u8>,
 
     /// Size of the region in bytes.
     region_size_bytes: usize,
@@ -51,14 +53,22 @@ pub trait Allocator {
     fn mark_writable(&mut self, ptr: *const u8, size: u32) -> bool;
 
     fn mark_executable(&mut self, ptr: *const u8, size: u32);
+
+    fn mark_unused(&mut self, ptr: *const u8, size: u32) -> bool;
 }
 
 /// Pointer into a [VirtualMemory].
 /// We may later change this to wrap an u32.
 /// Note: there is no NULL constant for CodePtr. You should use Option<CodePtr> instead.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Debug)]
-#[repr(C)]
-pub struct CodePtr(*const u8);
+#[repr(C, packed)]
+pub struct CodePtr(NonNull<u8>);
+
+impl CodePtr {
+    pub fn as_side_exit(self) -> Target {
+        Target::SideExitPtr(self)
+    }
+}
 
 /// Errors that can happen when writing to [VirtualMemory]
 #[derive(Debug, PartialEq)]
@@ -71,7 +81,7 @@ use WriteError::*;
 
 impl<A: Allocator> VirtualMemory<A> {
     /// Bring a part of the address space under management.
-    pub fn new(allocator: A, page_size: u32, virt_region_start: *mut u8, size_bytes: usize) -> Self {
+    pub fn new(allocator: A, page_size: u32, virt_region_start: NonNull<u8>, size_bytes: usize) -> Self {
         assert_ne!(0, page_size);
         let page_size_bytes = page_size.as_usize();
 
@@ -91,9 +101,28 @@ impl<A: Allocator> VirtualMemory<A> {
         CodePtr(self.region_start)
     }
 
+    pub fn mapped_end_ptr(&self) -> CodePtr {
+        self.start_ptr().add_bytes(self.mapped_region_bytes)
+    }
+
+    pub fn virtual_end_ptr(&self) -> CodePtr {
+        self.start_ptr().add_bytes(self.region_size_bytes)
+    }
+
+    /// Size of the region in bytes that we have allocated physical memory for.
+    pub fn mapped_region_size(&self) -> usize {
+        self.mapped_region_bytes
+    }
+
     /// Size of the region in bytes where writes could be attempted.
     pub fn virtual_region_size(&self) -> usize {
         self.region_size_bytes
+    }
+
+    /// The granularity at which we can control memory permission.
+    /// On Linux, this is the page size that mmap(2) talks about.
+    pub fn system_page_size(&self) -> usize {
+        self.page_size_bytes
     }
 
     /// Write a single byte. The first write to a page makes it readable.
@@ -106,7 +135,7 @@ impl<A: Allocator> VirtualMemory<A> {
             // Writing within the last written to page, nothing to do
         } else {
             // Switching to a different and potentially new page
-            let start = self.region_start;
+            let start = self.region_start.as_ptr();
             let mapped_region_end = start.wrapping_add(self.mapped_region_bytes);
             let whole_region_end = start.wrapping_add(self.region_size_bytes);
             let alloc = &mut self.allocator;
@@ -175,7 +204,24 @@ impl<A: Allocator> VirtualMemory<A> {
         let mapped_region_bytes: u32 = self.mapped_region_bytes.try_into().unwrap();
 
         // Make mapped region executable
-        self.allocator.mark_executable(region_start, mapped_region_bytes);
+        self.allocator.mark_executable(region_start.as_ptr(), mapped_region_bytes);
+    }
+
+    /// Free a range of bytes. start_ptr must be memory page-aligned.
+    pub fn free_bytes(&mut self, start_ptr: CodePtr, size: u32) {
+        assert_eq!(start_ptr.into_usize() % self.page_size_bytes, 0);
+
+        // Bounds check the request. We should only free memory we manage.
+        let mapped_region = self.start_ptr().raw_ptr()..self.mapped_end_ptr().raw_ptr();
+        let virtual_region = self.start_ptr().raw_ptr()..self.virtual_end_ptr().raw_ptr();
+        let last_byte_to_free = start_ptr.add_bytes(size.saturating_sub(1).as_usize()).raw_ptr();
+        assert!(mapped_region.contains(&start_ptr.raw_ptr()));
+        // On platforms where code page size != memory page size (e.g. Linux), we often need
+        // to free code pages that contain unmapped memory pages. When it happens on the last
+        // code page, it's more appropriate to check the last byte against the virtual region.
+        assert!(virtual_region.contains(&last_byte_to_free));
+
+        self.allocator.mark_unused(start_ptr.0.as_ptr(), size);
     }
 }
 
@@ -184,35 +230,36 @@ impl CodePtr {
     /// been any writes to it through the [VirtualMemory] yet.
     pub fn raw_ptr(self) -> *const u8 {
         let CodePtr(ptr) = self;
-        return ptr;
+        return ptr.as_ptr();
     }
 
     /// Advance the CodePtr. Can return a dangling pointer.
     pub fn add_bytes(self, bytes: usize) -> Self {
         let CodePtr(raw) = self;
-        CodePtr(raw.wrapping_add(bytes))
+        CodePtr(NonNull::new(raw.as_ptr().wrapping_add(bytes)).unwrap())
     }
 
     pub fn into_i64(self) -> i64 {
         let CodePtr(ptr) = self;
-        ptr as i64
+        ptr.as_ptr() as i64
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn into_u64(self) -> u64 {
         let CodePtr(ptr) = self;
-        ptr as u64
+        ptr.as_ptr() as u64
     }
 
     pub fn into_usize(self) -> usize {
         let CodePtr(ptr) = self;
-        ptr as usize
+        ptr.as_ptr() as usize
     }
 }
 
 impl From<*mut u8> for CodePtr {
     fn from(value: *mut u8) -> Self {
         assert!(value as usize != 0);
-        return CodePtr(value);
+        return CodePtr(NonNull::new(value).unwrap());
     }
 }
 
@@ -233,6 +280,10 @@ mod sys {
 
         fn mark_executable(&mut self, ptr: *const u8, size: u32) {
             unsafe { rb_yjit_mark_executable(ptr as VoidPtr, size) }
+        }
+
+        fn mark_unused(&mut self, ptr: *const u8, size: u32) -> bool {
+            unsafe { rb_yjit_mark_unused(ptr as VoidPtr, size) }
         }
     }
 }
@@ -257,6 +308,7 @@ pub mod tests {
     enum AllocRequest {
         MarkWritable{ start_idx: usize, length: usize },
         MarkExecutable{ start_idx: usize, length: usize },
+        MarkUnused,
     }
     use AllocRequest::*;
 
@@ -297,6 +349,13 @@ pub mod tests {
             // We don't try to execute generated code in cfg(test)
             // so no need to actually request executable memory.
         }
+
+        fn mark_unused(&mut self, ptr: *const u8, length: u32) -> bool {
+            self.bounds_check_request(ptr, length);
+            self.requests.push(MarkUnused);
+
+            true
+        }
     }
 
     // Fictional architecture where each page is 4 bytes long
@@ -309,7 +368,7 @@ pub mod tests {
         VirtualMemory::new(
             alloc,
             PAGE_SIZE.try_into().unwrap(),
-            mem_start as *mut u8,
+            NonNull::new(mem_start as *mut u8).unwrap(),
             mem_size,
         )
     }
@@ -352,16 +411,12 @@ pub mod tests {
     #[test]
     fn bounds_checking() {
         use super::WriteError::*;
-        use std::ptr;
         let mut virt = new_dummy_virt_mem();
-
-        let null = CodePtr(ptr::null());
-        assert_eq!(Err(OutOfBounds), virt.write_byte(null, 0));
 
         let one_past_end = virt.start_ptr().add_bytes(virt.virtual_region_size());
         assert_eq!(Err(OutOfBounds), virt.write_byte(one_past_end, 0));
 
-        let end_of_addr_space = CodePtr(usize::MAX as _);
+        let end_of_addr_space = CodePtr(NonNull::new(usize::MAX as _).unwrap());
         assert_eq!(Err(OutOfBounds), virt.write_byte(end_of_addr_space, 0));
     }
 
