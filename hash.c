@@ -5059,6 +5059,11 @@ rb_hash_deconstruct_keys(VALUE hash, VALUE keys)
     /* If no specific keys requested, return self (existing behavior) */
     if (NIL_P(keys)) return hash;
 
+    /* The VM always passes nil or an Array, but the spec suite tests
+     * degenerate inputs (integers, strings, etc). Return self for
+     * anything that isn't an Array, matching the old behavior. */
+    if (!RB_TYPE_P(keys, T_ARRAY)) return hash;
+
     /* Check if all requested keys exist as-is in the hash (the common case) */
     long len = RARRAY_LEN(keys);
     int all_found = 1;
