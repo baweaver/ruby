@@ -1587,6 +1587,9 @@ VALUE
 rb_hash_resurrect(VALUE hash)
 {
     VALUE ret = hash_dup(hash, rb_cHash, 0);
+    if (FL_TEST_RAW(hash, RHASH_HAS_STRING_KEY)) {
+        FL_SET_RAW(ret, RHASH_HAS_STRING_KEY);
+    }
     return ret;
 }
 
@@ -3009,6 +3012,14 @@ rb_hash_replace(VALUE hash, VALUE hash2)
     }
 
     hash_copy(hash, hash2);
+
+    /* Propagate the String-key flag from the source hash */
+    if (FL_TEST_RAW(hash2, RHASH_HAS_STRING_KEY)) {
+        FL_SET_RAW(hash, RHASH_HAS_STRING_KEY);
+    }
+    else {
+        FL_UNSET_RAW(hash, RHASH_HAS_STRING_KEY);
+    }
 
     return hash;
 }
@@ -5063,6 +5074,12 @@ rb_hash_deconstruct_keys(VALUE hash, VALUE keys)
      * degenerate inputs (integers, strings, etc). Return self for
      * anything that isn't an Array, matching the old behavior. */
     if (!RB_TYPE_P(keys, T_ARRAY)) return hash;
+
+    /* Fast exit: if the hash has never had a String key inserted,
+     * all keys are Symbols and the VM's normal [] will find them
+     * directly. Return self with zero work, identical to the
+     * original single-line implementation. */
+    if (!FL_TEST_RAW(hash, RHASH_HAS_STRING_KEY)) return hash;
 
     /* Check if all requested keys exist as-is in the hash (the common case) */
     long len = RARRAY_LEN(keys);

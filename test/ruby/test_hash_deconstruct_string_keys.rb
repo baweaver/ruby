@@ -178,6 +178,73 @@ class TestHashDeconstructKeysStringResolution < Test::Unit::TestCase
     assert_equal 25, matched
   end
 
+  # === **rest patterns (known limitation) ===
+
+  def test_rest_pattern_does_not_resolve_string_keys
+    # **rest causes the VM to pass nil for keys, which returns self.
+    # The VM then drives key?/delete on self, and key?(:name) fails
+    # on a string-keyed hash. This is a known limitation.
+    h = { "name" => "Alice", "age" => 30 }
+    matched = case h
+              in { name: String => name, **rest }
+                name
+              else
+                nil
+              end
+    assert_nil matched, "**rest patterns do not support string-key resolution (known limitation)"
+  end
+
+  # === Flag propagation ===
+
+  def test_replace_propagates_flag
+    h = { a: 1 }
+    h.replace({ "name" => "Alice" })
+    result = h.deconstruct_keys([:name])
+    assert_equal "Alice", result[:name]
+  end
+
+  def test_replace_clears_flag
+    h = { "a" => 1 }
+    h.replace({ b: 2 })
+    result = h.deconstruct_keys([:b])
+    assert_same h, result
+  end
+
+  def test_dup_preserves_flag
+    original = { "name" => "Alice" }
+    duped = original.dup
+    result = duped.deconstruct_keys([:name])
+    assert_equal "Alice", result[:name]
+  end
+
+  # === compare_by_identity ===
+
+  def test_compare_by_identity_does_not_set_flag
+    h = {}.compare_by_identity
+    h["name"] = "Alice"
+    # RHASH_STRING_KEY_P excludes identity hashes, so the flag is never set.
+    # deconstruct_keys returns self, and the VM's key?(:name) fails.
+    matched = case h
+              in { name: String }
+                true
+              else
+                false
+              end
+    assert_equal false, matched
+  end
+
+  # === Partial resolution and error messages ===
+
+  def test_partial_resolution_returns_resolved_hash_not_self
+    h = { "name" => "Alice" }
+    # :name resolves, :missing does not.
+    result = h.deconstruct_keys([:name, :missing])
+    assert_equal "Alice", result[:name]
+    assert_equal false, result.key?(:missing)
+    # The result is NOT self because string fallback did help for :name
+    refute_same h, result
+  end
+
   # === Array of hashes (common JSON pattern) ===
 
   def test_select_from_array_of_string_keyed_hashes
