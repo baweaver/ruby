@@ -27,6 +27,7 @@ enum ruby_rhash_flags {
     RHASH_AR_TABLE_SIZE_SHIFT = (FL_USHIFT+4),
     RHASH_AR_TABLE_BOUND_MASK = (FL_USER8|FL_USER9|FL_USER10|FL_USER11), /* FL 8..11 */
     RHASH_AR_TABLE_BOUND_SHIFT = (FL_USHIFT+8),
+    RHASH_HAS_STRING_KEY = FL_USER12,                                    /* FL 12 */
 
     // we can not put it in "enum" because it can exceed "int" range.
 #define RHASH_LEV_MASK (FL_USER13 | FL_USER14 | FL_USER15 |                /* FL 13..19 */ \

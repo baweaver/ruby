@@ -2962,6 +2962,7 @@ rb_hash_aset(VALUE hash, VALUE key, VALUE val)
         RHASH_UPDATE_ITER(hash, iter_p, key, hash_aset, val);
     }
     else {
+        FL_SET_RAW(hash, RHASH_HAS_STRING_KEY);
         RHASH_UPDATE_ITER(hash, iter_p, key, hash_aset_str, val);
     }
     return val;
@@ -5055,7 +5056,50 @@ rb_hash_to_proc(VALUE hash)
 static VALUE
 rb_hash_deconstruct_keys(VALUE hash, VALUE keys)
 {
-    return hash;
+    /* If no specific keys requested, return self (existing behavior) */
+    if (NIL_P(keys)) return hash;
+
+    /* Check if all requested keys exist as-is in the hash (the common case) */
+    long len = RARRAY_LEN(keys);
+    int all_found = 1;
+    for (long i = 0; i < len; i++) {
+        VALUE key = RARRAY_AREF(keys, i);
+        st_data_t val;
+        if (!hash_stlike_lookup(hash, key, &val)) {
+            all_found = 0;
+            break;
+        }
+    }
+
+    /* All keys found directly — return self (zero alloc, same as before) */
+    if (all_found) return hash;
+
+    /* Some keys missing. If any of them are symbols, try string equivalents.
+     * Build a result hash with symbol keys mapped to their string-key values. */
+    VALUE result = rb_hash_new_with_size(len);
+    st_data_t val;
+    int any_resolved_via_string = 0;
+
+    for (long i = 0; i < len; i++) {
+        VALUE key = RARRAY_AREF(keys, i);
+
+        if (hash_stlike_lookup(hash, key, &val)) {
+            rb_hash_aset(result, key, (VALUE)val);
+        }
+        else if (SYMBOL_P(key)) {
+            VALUE str_key = rb_sym2str(key);
+            if (hash_stlike_lookup(hash, str_key, &val)) {
+                rb_hash_aset(result, key, (VALUE)val);
+                any_resolved_via_string = 1;
+            }
+        }
+    }
+
+    /* If no string fallback actually helped, return self so that error
+     * messages (NoMatchingPatternKeyError) show the original hash. */
+    if (!any_resolved_via_string) return hash;
+
+    return result;
 }
 
 static int
@@ -5121,6 +5165,14 @@ rb_hash_bulk_insert(long argc, const VALUE *argv, VALUE hash)
     HASH_ASSERT(argc % 2 == 0);
     if (argc > 0) {
         st_index_t size = argc / 2;
+
+        /* Set RHASH_HAS_STRING_KEY if any key is a String */
+        for (long i = 0; i < argc; i += 2) {
+            if (RB_TYPE_P(argv[i], T_STRING)) {
+                FL_SET_RAW(hash, RHASH_HAS_STRING_KEY);
+                break;
+            }
+        }
 
         if (RHASH_AR_TABLE_P(hash) &&
             (RHASH_AR_TABLE_SIZE(hash) + size <= RHASH_AR_TABLE_MAX_SIZE)) {
