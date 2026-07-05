@@ -1601,9 +1601,7 @@ VALUE
 rb_hash_resurrect(VALUE hash)
 {
     VALUE ret = hash_dup(hash, rb_cHash, 0);
-    if (FL_TEST_RAW(hash, RHASH_HAS_STRING_KEY)) {
-        FL_SET_RAW(ret, RHASH_HAS_STRING_KEY);
-    }
+    /* RHASH_HAS_STRING_KEY propagation handled by hash_copy */
     return ret;
 }
 
@@ -3027,11 +3025,11 @@ rb_hash_replace(VALUE hash, VALUE hash2)
 
     hash_copy(hash, hash2);
 
-    /* Propagate the String-key flag from the source hash */
-    if (FL_TEST_RAW(hash2, RHASH_HAS_STRING_KEY)) {
-        FL_SET_RAW(hash, RHASH_HAS_STRING_KEY);
-    }
-    else {
+    /* hash_copy propagates RHASH_HAS_STRING_KEY from source.
+     * But replace may be overwriting a string-keyed hash with a
+     * symbol-only hash, so we must clear the flag in that case.
+     * (hash_copy only ORs the flag on, never clears it.) */
+    if (!FL_TEST_RAW(hash2, RHASH_HAS_STRING_KEY)) {
         FL_UNSET_RAW(hash, RHASH_HAS_STRING_KEY);
     }
 
