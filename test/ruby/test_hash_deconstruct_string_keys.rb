@@ -245,6 +245,53 @@ class TestHashDeconstructKeysStringResolution < Test::Unit::TestCase
     refute_same h, result
   end
 
+  # === Invariant: any operation yielding a hash with a String key
+  #     must preserve the flag so pattern matching works. ===
+
+  def test_merge_preserves_flag
+    h = {}; h["name"] = "Alice"
+    merged = h.merge({})
+    assert_pattern_matches merged, :name, "Alice"
+  end
+
+  def test_select_preserves_flag
+    h = {}; h["name"] = "Alice"; h["age"] = 30
+    selected = h.select { |_, v| v.is_a?(String) }
+    assert_pattern_matches selected, :name, "Alice"
+  end
+
+  def test_reject_preserves_flag
+    h = {}; h["name"] = "Alice"; h["junk"] = nil
+    rejected = h.reject { |_, v| v.nil? }
+    assert_pattern_matches rejected, :name, "Alice"
+  end
+
+  def test_transform_values_preserves_flag
+    h = {}; h["name"] = "alice"
+    transformed = h.transform_values(&:upcase)
+    assert_pattern_matches transformed, :name, "ALICE"
+  end
+
+  def test_compact_preserves_flag
+    h = {}; h["a"] = 1; h["b"] = nil
+    compacted = h.compact
+    assert_pattern_matches compacted, :a, 1
+  end
+
+  def test_to_h_block_preserves_flag
+    h = {}; h["name"] = "Alice"
+    converted = h.to_h { |key, val| [key, val] }
+    assert_pattern_matches converted, :name, "Alice"
+  end
+
+  private
+
+  def assert_pattern_matches(hash, sym_key, expected_value)
+    result = hash.deconstruct_keys([sym_key])
+    assert_equal expected_value, result[sym_key],
+      "Expected #{hash.inspect}.deconstruct_keys([#{sym_key.inspect}]) to resolve, got #{result.inspect}"
+  end
+
   # === Array of hashes (common JSON pattern) ===
 
   def test_select_from_array_of_string_keyed_hashes

@@ -1548,6 +1548,20 @@ hash_copy(VALUE ret, VALUE hash)
 
         rb_gc_writebarrier_remember(ret);
     }
+
+    /* Propagate RHASH_HAS_STRING_KEY through all copy paths.
+     * This is the single choke point for merge, select, reject,
+     * transform_values, compact, to_h, dup, and any other operation
+     * that derives a new hash from an existing one via hash_copy.
+     *
+     * Invariant: a hash containing a String key must never carry
+     * an unset flag. A stale SET flag costs one unnecessary scan
+     * in deconstruct_keys; a stale UNSET flag silently breaks
+     * pattern matching. We prefer the former over the latter. */
+    if (FL_TEST_RAW(hash, RHASH_HAS_STRING_KEY)) {
+        FL_SET_RAW(ret, RHASH_HAS_STRING_KEY);
+    }
+
     return ret;
 }
 
